@@ -271,9 +271,10 @@ func presetChannelMap(preset providerpreset.ChannelPreset, local map[string]any)
 	if preset.ID == "beeftv" {
 		base, _ := local["baseUrl"].(string)
 		if base == "https://beeftv.app" {
-			result["baseUrl"] = base
+			// 旧版内置渠道地址随预设一起迁到梦由心生AI 聚合站。
+			result["baseUrl"] = "https://api.lk888.ai"
 		} else if key, _ := local["apiKey"].(string); base == "" && key != "" {
-			result["baseUrl"] = "https://beeftv.app"
+			result["baseUrl"] = "https://api.lk888.ai"
 		}
 	}
 	return result, nil

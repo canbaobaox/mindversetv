@@ -11,7 +11,6 @@ import type { AssistantAttachment, AssistantGenerationProposal, AssistantSkillSe
 import type { CanvasNodeData } from "@/types/canvas";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { SkillInstallModal } from "@/pages/skills/skill-install-modal";
-import { AssistantPublicationEntry } from "@/pages/skills/assistant-publication-entry";
 import { Link } from "react-router";
 import { attachmentFromCanvasReference, attachmentRangeError, readAssistantInputDraft, saveAssistantInputDraft, uploadAssistantAttachment, type AssistantInputDraft } from "@/services/assistant-attachments";
 import { CanvasAssistantAttachments } from "./canvas-assistant-attachments";
@@ -240,7 +239,7 @@ export function CanvasAssistantSidebar(props: Props) {
                         </span>
                     ) : null}
                 </div>
-                <Link to="/skills" className="canvas-assistant-meta" aria-label="打开技能市场和我的投稿">技能</Link>
+                <Link to="/skills" className="canvas-assistant-meta" aria-label="打开技能市场">技能</Link>
                 <Tooltip title="新对话">
                     <Button type="text" size="small" aria-label="新对话" disabled={assistant.streaming || assistant.sessionBusy} icon={<MessageSquarePlus className="size-4" />} onClick={() => void assistant.startNewSession()} />
                 </Tooltip>
@@ -332,7 +331,6 @@ export function CanvasAssistantSidebar(props: Props) {
                 ))}
 
                 <CanvasAssistantPlan plan={assistant.plan} />
-                <AssistantPublicationEntry canvasId={assistant.canvasId} turnCount={assistant.turns.length} running={assistant.streaming} />
                 {props.continuation?.notice ? <div className="canvas-assistant-card" aria-label="自动继续状态">
                     <span role="status">{props.continuation.notice}</span>
                     <div className="canvas-assistant-card-actions">

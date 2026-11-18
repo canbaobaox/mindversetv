@@ -131,15 +131,25 @@ func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, look
 		return assistant.Provider{}, AssistantReasonModelNotConfigured
 	}
 	if channel.ID == "beeftv" && (channel.Pinned || channel.CredentialRef == "beeftv") {
-		allowed := false
-		for _, candidate := range managedModels {
-			if assistantModelAlias(channel, candidate) == modelID {
-				allowed = true
-				break
+		// 官方模型目录白名单只在托管凭证真实存在时生效；内置渠道改走自填 Key
+		// 后，模型由渠道自己的目录决定，不再受官方目录约束。
+		managed := false
+		if lookup != nil {
+			if _, _, ok := lookup(channel.ID, channel.CredentialRef, strings.TrimSpace(channel.BaseURL)); ok {
+				managed = true
 			}
 		}
-		if !allowed {
-			return assistant.Provider{}, AssistantReasonModelNotConfigured
+		if managed {
+			allowed := false
+			for _, candidate := range managedModels {
+				if assistantModelAlias(channel, candidate) == modelID {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return assistant.Provider{}, AssistantReasonModelNotConfigured
+			}
 		}
 	}
 	protocol, protocolOK := ChannelModelProtocol(channel, modelID)

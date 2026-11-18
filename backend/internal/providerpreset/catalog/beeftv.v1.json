@@ -1,7 +1,7 @@
 {
   "id": "beeftv",
-  "displayName": "BeefTV",
-  "baseUrl": "https://beeftv.app",
+  "displayName": "梦由心生AI",
+  "baseUrl": "https://api.lk888.ai",
   "catalogProtocol": "openai",
   "presetVersion": 1,
   "pinned": true,

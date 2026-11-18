@@ -12,7 +12,6 @@ import { SkillEditorDrawer } from "./skill-editor-drawer";
 import { SkillInstallModal } from "./skill-install-modal";
 import { SkillDetailModal } from "./skill-detail-drawer";
 import { SkillMarketInstallConfirmModal, isOfficialBuiltinMarketSkill, type SkillMarketInstallConfirmRequest } from "./skill-market-install-confirm-modal";
-import { SkillPublishingPanel } from "./publishing-panel";
 import { MarketFilePreview } from "./market-file-preview";
 import { SkillFileDetails } from "./skill-file-details";
 import { skillFailureMessage } from "./skill-feedback";
@@ -27,7 +26,7 @@ const SKILL_PAGE_SIZE = 20;
 export default function SkillMarketplace() {
     const { message, modal } = App.useApp();
     const [params, setParams] = useSearchParams();
-    const tab = ["market", "mine", "publish"].includes(params.get("tab") || "") ? params.get("tab")! : "market";
+    const tab = ["market", "mine"].includes(params.get("tab") || "") ? params.get("tab")! : "market";
     const [items, setItems] = useState<MarketItem[]>([]);
     const [publicItems, setPublicItems] = useState<PublicMarketSkill[]>([]);
     const [publicNotice, setPublicNotice] = useState("");
@@ -93,7 +92,6 @@ export default function SkillMarketplace() {
         }
     };
     useEffect(() => {
-        if (tab === "publish") return;
         let stale = false;
         setLoading(true); setError("");
         const timer = setTimeout(() => {
@@ -264,13 +262,13 @@ export default function SkillMarketplace() {
     const headerProps = {
         title: "技能",
         navigationLabel: "技能分类",
-        tabs: [{ value: "market", label: "技能市场" }, { value: "mine", label: "我的技能" }, { value: "publish", label: "我的投稿" }],
+        tabs: [{ value: "market", label: "技能市场" }, { value: "mine", label: "我的技能" }],
         value: tab,
         onChange: changeTab,
         trailing: scriptAutoRunControl,
     };
     return <WorkspacePage className="skill-market-page collection-page" scroll={false}>
-        {tab === "publish" ? <SkillPublishingPanel planId={params.get("planId") || undefined} renderHeader={controls => <CollectionHeader {...headerProps} {...controls} />} /> : <>
+        <>
             <CollectionHeader
                 {...headerProps}
                 search={{ value: query, placeholder: "搜索技能", onChange: (value) => { setQuery(value); setPage(1); } }}
@@ -282,7 +280,7 @@ export default function SkillMarketplace() {
             />
             <div className="skill-market-content">
             {tab === "market" ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <SegmentedControl size="sm" value={marketSource} onChange={(v) => setMarketSource(v as "all" | "beeftv" | "public")} options={[{ value: "all", label: "全部来源" }, { value: "beeftv", label: "BeefTV 市场" }, { value: "public", label: "公共技能目录" }]} />
+                <SegmentedControl size="sm" value={marketSource} onChange={(v) => setMarketSource(v as "all" | "beeftv" | "public")} options={[{ value: "all", label: "全部来源" }, { value: "beeftv", label: "MindVerseTV 市场" }, { value: "public", label: "公共技能目录" }]} />
             </div> : null}
             {tab === "market" && publicNotice && marketSource !== "beeftv" ? <Alert type="info" showIcon title={publicNotice} className="mb-3" /> : null}
             {error ? <Alert type="error" showIcon title={error} action={<Button size="small" onClick={reload}>重试</Button>} /> : loading ? <Skeleton active paragraph={{ rows: 6 }} /> : <>
@@ -337,7 +335,6 @@ export default function SkillMarketplace() {
                                 { key: "fork", label: "创建私人副本", onClick: () => void action(async () => openEditor((await forkSkill(skill.skillId)).skill), "已创建私人副本") },
                             ] : [
                                 { key: "edit", label: "编辑技能", onClick: () => void action(async () => openEditor((await getSkill(skill.skillId)).skill), undefined, "无法打开技能编辑", "请刷新“我的技能”后重新打开。") },
-                                { key: "publish", label: "分享投稿", onClick: () => setParams({ tab: "publish", skillId: skill.skillId }) },
                             ]),
                             ...(skill.isOwner ? [{ type: "divider" as const }, { key: "delete", label: "删除技能", danger: true, onClick: () => deleteLocal(skill) }] : []),
                         ] }}><Button type="text" size="small" aria-label={`管理${skill.skillName}`} disabled={busy} icon={<MoreHorizontal className="size-4" />} /></Dropdown>
@@ -347,7 +344,8 @@ export default function SkillMarketplace() {
             </>}
             </div>
             {!loading && !error && (total > SKILL_PAGE_SIZE || page > 1) ? <nav className="skill-market-pagination" aria-label="技能分页"><Button disabled={page <= 1} onClick={() => setPage(n => n - 1)}>上一页</Button><span>第 {page} / {Math.max(1, Math.ceil(total / SKILL_PAGE_SIZE))} 页 · 共 {total} 项</span><Button disabled={page * SKILL_PAGE_SIZE >= total} onClick={() => setPage(n => n + 1)}>下一页</Button></nav> : null}
-        </>}
+        </>
+
         <AppModal flush scrollBody className="skill-release-dialog" wrapClassName="skill-release-wrap" open={Boolean(release)} title={release?.name || "技能详情"} onCancel={() => { setRelease(null); setParams({ tab: "market" }); }} footer={<Button type="primary" loading={busy} disabled={!canInstallMarketRelease({ busy, installedLoading, installedError, installation: releaseInstallation, unsupportedReasons: releaseUnsupported })} onClick={() => { if (release) requestInstall(release, true); }}>{releaseInstallation === "installed" ? "已安装" : releaseInstallation === "update" ? "更新此版本" : "安装此版本"}</Button>} width="min(760px, calc(100vw - 32px))">
             {release ? <div className="skill-market-preview" tabIndex={0} role="region" aria-label="技能详情内容">
                 <div className="skill-release-overview">

@@ -683,11 +683,9 @@ func (c *Runtime) cleanupUninstalledPackageDir(previous map[string]Record, next 
 const bundledPluginsSubdir = "bundled-plugins"
 
 // BundledBuiltinPluginNames is the single source of truth for default built-in
-// plugin directories shipped inside the BeefTV desktop app (agent-host/bundled-plugins).
+// plugin directories shipped inside the MindVerseTV desktop app (agent-host/bundled-plugins).
 var BundledBuiltinPluginNames = []string{
 	"beeftv-plugin-market",
-	"beeftv-plugin-ll2",
-	"beeftv-plugin-ysdui",
 }
 
 var (
@@ -705,7 +703,7 @@ func isBundledBuiltinPlugin(name string) bool {
 }
 
 // BundledSampleDir resolves a built-in plugin package directory shipped with
-// BeefTV (only beeftv-plugin-market and beeftv-plugin-ll2). Market plugins are
+// MindVerseTV (only beeftv-plugin-market). Market plugins are
 // never bundled inside the desktop app and are always installed online.
 func BundledSampleDir(name string) (string, bool) {
 	executable, _ := runtimeExecutable()

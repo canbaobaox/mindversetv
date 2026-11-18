@@ -177,7 +177,7 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                 message.warning(`${latestChannel.name || "当前渠道"}的连接配置已改变，已忽略旧的拉取结果`);
                 return;
             }
-            if (localMode && isBuiltinBeefTVChannel(latestChannel)) {
+            if (localMode && isBuiltinBeefTVChannel(latestChannel) && beefConnection?.state === "connected") {
                 const server = await getLocalModelConfig();
                 if (!requests.current.current(channel.id, request)) return;
                 const current = useConfigStore.getState().config;
@@ -238,7 +238,7 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
             const failed = results.filter((item) => !item.cancelled && !item.result.models.length);
             if (successful.length) {
                 const resultMap = new Map(successful.map((item) => [item.channel.id, item.result] as const));
-                const refreshedManagedBeefTV = localMode && successful.some((item) => isBuiltinBeefTVChannel(item.channel));
+                const refreshedManagedBeefTV = localMode && beefConnection?.state === "connected" && successful.some((item) => isBuiltinBeefTVChannel(item.channel));
                 const server = refreshedManagedBeefTV ? await getLocalModelConfig() : null;
                 const current = useConfigStore.getState().config;
                 const nextChannels = current.channels.map((channel) => {
@@ -297,13 +297,13 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                                     <div className="min-w-0 flex-1 basis-52">
                                         <h3 id={`channel-${channel.id}-title`} className="flex items-center gap-2 text-sm font-semibold">
                                             {builtinBeefTV ? <img src={beefTVAppIcon} alt="" className="size-5 shrink-0 object-contain" draggable={false} /> : <ModelLogo icon={MODEL_SERVICE_PRESETS.find((preset) => preset.id === servicePresetFor(channel))?.icon} size={20} />}
-                                            {builtinBeefTV ? "官方算力（已停用）" : channel.name || "未命名渠道"}
+                                            {channel.name || "未命名渠道"}
                                         </h3>
                                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground/55">
                                             {builtinBeefTV ? (
                                                 <>
                                                     <span>已保存 {channel.models.length} 个模型</span>
-                                                    <span>MindVerseTV 已移除官方算力连接；请添加自填模型渠道（Base URL + Key，Key 只存本地）</span>
+                                                    <span>梦由心生AI 聚合渠道；请在编辑中填写 API Key（Key 只存本地），然后拉取模型</span>
                                                 </>
                                             ) : (
                                                 <span>{pluginChannel ? "插件提供" : channelProtocolLabel(channel)} · 已保存 {channel.models.length} 个模型</span>
@@ -315,16 +315,13 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                                     </div>
                                     <div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto sm:shrink-0">
                                         {builtinBeefTV && catalogSyncFailed ? <Button loading={beefBusy} onClick={() => void retryCatalog()}>重试更新模型列表</Button> : null}
-                                        {builtinBeefTV ? (
-                                            <span className="text-xs text-foreground/55">官方算力连接已移除；请添加自填模型渠道</span>
-                                        ) : null}
                                         {!topazUpscale ? (
                                         <Button
                                             className="h-10 sm:h-8"
                                             size="small"
                                             icon={<RefreshCw className="size-3.5" />}
                                             loading={loadingChannelIds.includes(channel.id)}
-                                            disabled={loadingChannelIds.includes("all") || (builtinBeefTV && beefConnection?.state !== "connected")}
+                                            disabled={loadingChannelIds.includes("all") || (builtinBeefTV && beefConnection?.state !== "connected" && !channelHasManagedBeefTVCredential(channel))}
                                             onClick={() => void refreshChannelModels(channel)}
                                         >
                                             拉取模型
@@ -415,35 +412,26 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                                                             onBlur={(event) => updateChannel(channel.id, { baseUrl: normalizeChannelBaseUrl(event.target.value) })}
                                                         />
                                                     </Form.Item>
-                                                    {builtinBeefTV ? (
-                                                        <Form.Item label="账号连接" className="mb-0 sm:col-span-2">
-                                                            <p className="m-0 text-sm leading-6 text-foreground/80">{beefTVConnectionLabel(beefConnection)}</p>
-                                                            {beefConnection?.balance === "zero" ? <p className="mt-1 text-xs leading-5 text-foreground/55">余额为 0 时仍可查看模型。生成时会提示余额不足。</p> : null}
-                                                        </Form.Item>
-                                                    ) : (
-                                                        <>
-                                                            <Form.Item label="API Key" htmlFor={`channel-${channel.id}-api-key`} className="mb-0 sm:col-span-1">
-                                                                <Input.Password
-                                                                    id={`channel-${channel.id}-api-key`}
-                                                                    autoComplete="new-password"
-                                                                    value={channel.apiKey}
-                                                                    placeholder={channel.apiFormat === "gemini" ? "填写 Gemini API Key" : "填写当前渠道 API Key"}
-                                                                    onChange={(event) => updateChannel(channel.id, { apiKey: event.target.value })}
-                                                                    onBlur={(event) => updateChannel(channel.id, { apiKey: event.target.value.trim() })}
-                                                                />
-                                                            </Form.Item>
-                                                            <Form.Item label="Secret Key（可选）" htmlFor={`channel-${channel.id}-secret-key`} className="mb-0 sm:col-span-1" extra="即梦等 AK/SK 协议需要；其他协议留空。">
-                                                                <Input.Password
-                                                                    id={`channel-${channel.id}-secret-key`}
-                                                                    autoComplete="new-password"
-                                                                    value={channel.secretKey || ""}
-                                                                    placeholder="填写 Secret Key"
-                                                                    onChange={(event) => updateChannel(channel.id, { secretKey: event.target.value })}
-                                                                    onBlur={(event) => updateChannel(channel.id, { secretKey: event.target.value.trim() })}
-                                                                />
-                                                            </Form.Item>
-                                                        </>
-                                                    )}
+                                                    <Form.Item label="API Key" htmlFor={`channel-${channel.id}-api-key`} className="mb-0 sm:col-span-1">
+                                                        <Input.Password
+                                                            id={`channel-${channel.id}-api-key`}
+                                                            autoComplete="new-password"
+                                                            value={channel.apiKey}
+                                                            placeholder={channel.apiFormat === "gemini" ? "填写 Gemini API Key" : "填写当前渠道 API Key"}
+                                                            onChange={(event) => updateChannel(channel.id, { apiKey: event.target.value })}
+                                                            onBlur={(event) => updateChannel(channel.id, { apiKey: event.target.value.trim() })}
+                                                        />
+                                                    </Form.Item>
+                                                    <Form.Item label="Secret Key（可选）" htmlFor={`channel-${channel.id}-secret-key`} className="mb-0 sm:col-span-1" extra="即梦等 AK/SK 协议需要；其他协议留空。">
+                                                        <Input.Password
+                                                            id={`channel-${channel.id}-secret-key`}
+                                                            autoComplete="new-password"
+                                                            value={channel.secretKey || ""}
+                                                            placeholder="填写 Secret Key"
+                                                            onChange={(event) => updateChannel(channel.id, { secretKey: event.target.value })}
+                                                            onBlur={(event) => updateChannel(channel.id, { secretKey: event.target.value.trim() })}
+                                                        />
+                                                    </Form.Item>
                                                     <div className="sm:col-span-2">
                                                         <ChannelHeadersEditor value={channel.headers} onChange={(headers) => updateChannel(channel.id, { headers })} />
                                                     </div>
@@ -532,8 +520,7 @@ export function modelConfigChannelStatusLabel(channel: ModelChannel, persistence
     if (isBuiltinBeefTVChannel(channel)) {
         if (connection?.state === "connected") return beefTVConnectionLabel(connection);
         if (connection?.state && connection.state !== "disconnected") return beefTVConnectionLabel(connection);
-        if (channelHasManagedBeefTVCredential(channel)) return "待确认连接";
-        return "未连接";
+        // 官方连接已移除：按自填渠道的规则显示状态。
     }
     if (!channelHasGenerationCredential(channel) && !channelAllowsEmptyAPIKey(channel)) return "待配置";
     if (persistence.status === "saving") return "保存中";

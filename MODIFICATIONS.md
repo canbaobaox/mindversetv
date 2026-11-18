@@ -160,3 +160,16 @@
 ## 2026-11-18 用户确认后补改（2）
 
 - ll2、银盛·云枢壹算两项模型服务预设已从“选择服务商”列表删除（`web/src/lib/model-service-presets.ts` 的 MODEL_SERVICE_PRESETS）；插件包文件与旧渠道兼容代码仍在仓库内，未删除，旧渠道不受影响。模型入口只留：第三方模型服务（OpenAI 兼容 API，聚合平台走它自填）、OpenAI、Google Gemini、火山方舟。
+
+## 2026-11-19 用户装机后补改（3）
+
+用户装好 v2.2.5 安装包后逐屏点出四处残留，一并改掉：
+
+- 首页卡片“Beef Agent”改名“MindVerseTV Agent”（`web/src/pages/home/home-data.ts`；内部 id 与跳转不变）。
+- 技能市场筛选“BeefTV 市场”改名“MindVerseTV 市场”（`web/src/pages/skills/marketplace.tsx`；筛选值 `beeftv` 不变）。
+- “我的投稿”功能整组去掉：技能页投稿 tab、入口菜单、投稿面板（`publishing-panel.tsx`、`publication-detail-content.tsx` 已删）、助手侧栏的投稿待确认卡片（`assistant-publication-entry.tsx` 已删）；后端投稿接口未动（无界面调用，留作死代码待清理）。
+- LL2、银盛·云枢壹算两款插件移出安装包：`plugin-packages/bundled-plugin-dirs.txt` 只留市场插件；`backend/internal/plugins/package_fetch.go` 的 `BundledBuiltinPluginNames` 同步去掉两项；`Dockerfile` 不再拷两家客户端；`docs/desktop-release.md` 与 `docs/content/docs/plugins/plugin-system.mdx` 的随包清单同步。插件包源码仍在仓库内，可从插件中心在线安装；对应测试已同步（删 `TestBuiltinLL2PluginPreinstalledAndRegistersProviders`，`TestBundledPluginDirsManifestAndDesktopAgentHostResolution` 只验市场插件）。
+- 内置渠道改成梦由心生AI 聚合站：预设 `backend/internal/providerpreset/catalog/beeftv.v1.json` 的显示名改“梦由心生AI”、地址改 `https://api.lk888.ai`（站方公开文档 https://myxsai.com/api 与 https://myxsai.com/apidoc 标注的 BASE_URL，OpenAI 兼容写法 `https://api.lk888.ai/v1`，后端请求时自动补 `/v1`）；`backend/internal/workspace/provider_state.go` 把旧地址 `https://beeftv.app` 的已存配置迁到新地址。只写公开地址，不写任何 Key；Key 由用户在编辑框里自填、只存本地。
+- 内置渠道改走自填 Key：设置页标题与提示不再写“官方算力（已停用）”，改为渠道名与“请在编辑中填写 API Key（Key 只存本地），然后拉取模型”；编辑框里内置渠道也能填 API Key（原先只显示已断开的官方账号连接）；“拉取模型”在填好 Key 后可用（`web/src/services/api/image-models.ts`：有自填 Key 时不再走官方连接拉取目录，改走后端 `/ai/models` 中转；`channel-settings-pane.tsx` 的单条与批量拉取在无官方连接时直接用拉取结果，不再等服务端合并）；状态文案按自填渠道规则显示（未填 Key 显示“待配置”）。助手模型白名单（`backend/internal/modelcatalog/assistant.go`）只在托管凭证真实存在时生效，自填 Key 的渠道不受官方目录约束。
+- 内部标识不动：渠道 id 仍为 `beeftv`、credentialRef 仍为 `beeftv`、协议 `beeftv://`、环境变量 `BEEFTV_*`、macOS bundle ID 等均保留，以保旧画布与旧配置兼容。
+- 验证：`bun run typecheck` 与 `bun run build:desktop`（待跑）；后端 Go 未在本机编译（无 Go 工具链），由 GitHub Actions 构建时验证。

@@ -73,7 +73,9 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 export type ChannelModelFetchResult = { models: string[]; catalog: ChannelModelCatalogItem[] };
 
 export async function fetchChannelModels(channel: ModelChannel, viaBackend = false, signal?: AbortSignal): Promise<ChannelModelFetchResult> {
-    const managed = channel.id === "beeftv" && (channel.pinned || Boolean(channel.credentialRef));
+    // 内置渠道改走自填 Key 后，不再经官方连接拉取目录，改按普通 OpenAI 兼容渠道走后端中转。
+    const hasOwnKey = Boolean(channel.apiKey?.trim()) || channel.hasApiKey === true;
+    const managed = channel.id === "beeftv" && (channel.pinned || Boolean(channel.credentialRef)) && !hasOwnKey;
     const connectionEpoch = getBeefTVConnectionEpoch();
     if (managed) {
         viaBackend = true;
