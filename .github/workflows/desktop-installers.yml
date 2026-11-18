@@ -135,19 +135,19 @@ jobs:
           platform='${{ matrix.platform }}'
           payload='backend/cmd/desktop/build/bin'
           suffix='-setup.exe'
-          if [[ "$platform" == darwin-* ]]; then payload="$payload/BeefTV.app"; suffix='.dmg'; fi
-          if [[ "$platform" == linux-* ]]; then payload="$payload/BeefTV-linux"; suffix='.deb'; fi
-          command=(python scripts/smoke-desktop-installer.py --platform "$platform" --installer "dist/BeefTV-${version}-${platform}${suffix}" --payload "$payload")
+          if [[ "$platform" == darwin-* ]]; then payload="$payload/MindVerseTV.app"; suffix='.dmg'; fi
+          if [[ "$platform" == linux-* ]]; then payload="$payload/MindVerseTV-linux"; suffix='.deb'; fi
+          command=(python scripts/smoke-desktop-installer.py --platform "$platform" --installer "dist/MindVerseTV-${version}-${platform}${suffix}" --payload "$payload")
           if [[ "$platform" == linux-* ]]; then xvfb-run -a dbus-run-session -- "${command[@]}"; else "${command[@]}"; fi
       - name: Verify DEB dependencies on clean Ubuntu
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "${PWD}/dist:/packages:ro" ubuntu:24.04 sh -ec '
             apt-get update
-            apt-get install -y /packages/BeefTV-*.deb
+            apt-get install -y /packages/MindVerseTV-*.deb
             dpkg --audit
             dpkg --verify beeftv
-            ldd /opt/beeftv/BeefTV-linux/BeefTV > /tmp/links
+            ldd /opt/beeftv/MindVerseTV-linux/MindVerseTV > /tmp/links
             cat /tmp/links
             ! grep -q "not found" /tmp/links
           '
@@ -156,6 +156,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-check-${{ matrix.platform }}
-          path: dist/BeefTV-*
+          path: dist/MindVerseTV-*
           retention-days: 7
           if-no-files-found: error
