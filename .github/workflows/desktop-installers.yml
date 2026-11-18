@@ -34,6 +34,8 @@ jobs:
     name: Installer (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+      permissions:
+          contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -151,11 +153,13 @@ jobs:
             cat /tmp/links
             ! grep -q "not found" /tmp/links
           '
-      - name: Preserve installer artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer-check-${{ matrix.platform }}
-          path: dist/MindVerseTV-*
-          retention-days: 7
-          if-no-files-found: error
+          - name: Publish installer to release
+                if: github.event_name == 'workflow_dispatch'
+                      env:
+                              GH_TOKEN: ${{ github.token }}
+                                    run: |
+                                            set -euo pipefail
+                                                    version="$(tr -d '[:space:]' < VERSION)"
+                                                            platform='${{ matrix.platform }}'
+                                                                    gh release view "$version" >/dev/null 2>&1 || gh release create "$version" --title "MindVerseTV $version" --notes "MindVerseTV $version 安装包（Windows/macOS/Linux）。" || true
+                                                                            gh release upload "$version" "dist/MindVerseTV-${version}-${platform}*" --clobber
