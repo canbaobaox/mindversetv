@@ -40,21 +40,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            platform: darwin-arm64
-            target: darwin/arm64
-            node_arch: arm64
-          - os: macos-15
-            platform: darwin-amd64
-            target: darwin/amd64
-            node_arch: x64
           - os: windows-2022
             platform: windows-amd64
             target: windows/amd64
-            node_arch: x64
-          - os: ubuntu-24.04
-            platform: linux-amd64
-            target: linux/amd64
             node_arch: x64
     steps:
       - uses: actions/checkout@v4
@@ -183,5 +171,5 @@ jobs:
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
           platform='${{ matrix.platform }}'
-          gh release view "$version" >/dev/null 2>&1 || gh release create "$version" --title "MindVerseTV $version" --notes "MindVerseTV $version 安装包（Windows/macOS/Linux）。" || true
+          gh release view "$version" >/dev/null 2>&1 || gh release create "$version" --title "MindVerseTV $version" --notes "MindVerseTV $version 安装包（Windows）。" || true
           gh release upload "$version" "dist/MindVerseTV-${version}-${platform}*" --clobber
