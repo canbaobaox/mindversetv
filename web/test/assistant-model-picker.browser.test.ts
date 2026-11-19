@@ -87,26 +87,40 @@ test("default multimodal selection and explicit off persist without changing the
     } finally { await page.close(); }
 }, 30000);
 
-test("connected account can disconnect and expose the authorization action again", async () => {
+test("connected channel card has no disconnect or authorization action; managed channel stays connected", async () => {
     connectionState = "connected"; catalogReadFailures = 0; disconnectCalls = 0;
     const page = await browser.newPage({ viewport: { width: 390, height: 700 } });
     try {
         await page.goto(new URL("/settings", server.url).toString());
-        await page.getByRole("button", { name: "断开连接", exact: true }).click();
-        const connect = page.locator("button:not(.ant-btn-loading)").filter({ hasText: /^连接 BeefTV$/ });
-        await connect.waitFor({ timeout: 5000 });
-        expect(disconnectCalls).toBe(1);
-        expect(connectionState).toBe("disconnected");
-        expect(await connect.isEnabled()).toBe(true);
+        // MindVerseTV 已移除官方账号 OAuth：设置页不再提供断开连接与重新授权入口。
+        expect(await page.getByRole("button", { name: "断开连接", exact: true }).count()).toBe(0);
+        expect(await page.getByRole("button", { name: "连接 BeefTV", exact: true }).count()).toBe(0);
+        expect(disconnectCalls).toBe(0);
+        const channel = page.locator("section.settings-channel").first();
+        const pull = channel.getByRole("button", { name: "拉取模型", exact: true });
+        await pull.waitFor();
+        const pullDeadline = Date.now() + 5000;
+        while (!(await pull.isEnabled()) && Date.now() < pullDeadline) {
+            await page.waitForTimeout(25);
+        }
+        expect(await pull.isEnabled()).toBe(true);
     } finally { await page.close(); }
 }, 30000);
 
 test("settings retries failed connected catalog read and retains authorization default intent", async () => {
-    connectionState = "disconnected"; catalogReadFailures = 0; failFirstStartCatalogRead = true;
+    connectionState = "connection_error"; catalogReadFailures = 0; failFirstStartCatalogRead = true;
     const page = await browser.newPage(); await page.goto(new URL("/settings", server.url).toString());
-    await page.getByRole("button", { name: "连接 BeefTV", exact: true }).click();
     const retry = page.getByRole("button", { name: "重试更新模型列表" });
-    await retry.waitFor(); await retry.click();
+    await retry.waitFor();
+    // 第一次重试走 connect() 拉起连接并触发目录同步，首个目录读取失败，仍显示重试。
+    await retry.click();
+    while (startCalls < 1) await page.waitForTimeout(25);
+    await page.waitForFunction(() => {
+        const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("重试更新模型列表"));
+        return Boolean(button) && !button.classList.contains("ant-btn-loading");
+    });
+    expect(startCalls).toBe(1);
+    await retry.click();
     await retry.waitFor({ state: "hidden" });
     await page.getByRole("combobox", { name: "助手模型" }).click();
     expect(await page.locator('.ant-select-item-option-selected').innerText()).toContain("gpt-6-astra");

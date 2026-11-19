@@ -361,10 +361,6 @@ func TestDynamicPartnerHotOnboardingPersistenceExpirationAndSecurity(t *testing.
 	if _, _, staleErr := svc.ResolvePartnerIconFile("beeftv-plugin-acme", "00000000000000000000000000000000"); staleErr == nil {
 		t.Fatal("expected unknown ?v= icon hash to return 404")
 	}
-	keysURL, err := ResolvePartnerKeysURL(context.Background(), dataDir, "acme")
-	if err != nil || keysURL != server.URL+"/register?ref=beeftv" {
-		t.Fatalf("ResolvePartnerKeysURL(acme) = %q, err=%v", keysURL, err)
-	}
 	acmeView, ok := ByID(svc.List(), "beeftv-plugin-acme")
 	if !ok || acmeView.Source != OriginOfficial || !acmeView.Manifest.Trusted || acmeView.Status != StatusEnabled {
 		t.Fatalf("unexpected installed dynamic partner view: %#v (ok=%v)", acmeView, ok)

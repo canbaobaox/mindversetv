@@ -268,7 +268,7 @@ test("account settings opens problem diagnostics as its own section without leav
             json: { code: 0, data: { taskCount: 3, apiCallCount: 5 } },
         }));
         await page.goto(server.url.toString());
-        await page.getByRole("button", { name: "登录 BeefTV", exact: true }).click();
+        await page.getByRole("button", { name: "账户设置", exact: true }).click();
         const modal = page.locator(".account-settings-modal");
         const diagnostics = modal.getByRole("button", { name: "问题诊断", exact: true });
         const url = page.url();
@@ -286,13 +286,12 @@ test("account settings opens problem diagnostics as its own section without leav
     }
 }, 30000);
 
-test("opening sidebar account modal never auto-starts OAuth; explicit login, changelog, and manual sync retry work", async () => {
-    failCatalogReads = 1;
+test("opening sidebar account modal never auto-starts a connection; account pane states no official login, changelog works, and model tab points to self-filled channels", async () => {
     const page = await browser.newPage({ viewport: { width: 960, height: 760 } });
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        const trigger = page.getByRole("button", { name: "登录 BeefTV", exact: true });
+        const trigger = page.getByRole("button", { name: "账户设置", exact: true });
         await trigger.waitFor();
         expect(connectionReads).toBe(1);
 
@@ -310,18 +309,16 @@ test("opening sidebar account modal never auto-starts OAuth; explicit login, cha
         await changelogDialog.locator(".ant-modal-close").click();
         await changelogDialog.waitFor({ state: "hidden" });
 
+        // MindVerseTV 已移除官方账号登录：账号页只说明去模型渠道自填，不再有登录按钮。
         await modal.getByRole("button", { name: "账号与余额" }).click();
-        await modal.getByRole("button", { name: /^登\s*录$/ }).click();
-        await modal.getByText("测试账号").waitFor();
-        expect(startCalls).toBe(1);
+        await modal.getByText("MindVerseTV 不提供官方账号登录；请在模型渠道自填 Base URL 与 Key。").waitFor();
+        expect(await modal.getByRole("button", { name: /^登\s*录$/ }).count()).toBe(0);
+        expect(startCalls).toBe(0);
 
         await modal.getByRole("button", { name: "模型", exact: true }).click();
-        await modal.getByText("模型同步失败").waitFor();
-        expect(catalogReads).toBe(1);
-
-        await modal.getByRole("button", { name: "重试同步", exact: true }).click();
-        await modal.getByText("已连接，模型已同步到本地").waitFor();
-        expect(catalogReads).toBe(2);
+        await modal.getByText("MindVerseTV 不提供官方账号登录，请自填模型渠道").waitFor();
+        expect(await modal.getByRole("button", { name: "管理渠道", exact: true }).isVisible()).toBe(true);
+        expect(startCalls).toBe(0);
     } finally {
         await page.close();
     }
@@ -333,7 +330,7 @@ test("catalog_failed keeps authenticated account identity/wallet and retries bac
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        const trigger = page.getByRole("button", { name: "BeefTV 账户：测试账号", exact: true });
+        const trigger = page.getByRole("button", { name: "MindVerseTV 账户：测试账号", exact: true });
         await trigger.waitFor();
         await trigger.click();
 
@@ -359,7 +356,7 @@ test("connection_error with catalogFailed=true retries backend finalize from mod
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        await page.getByRole("button", { name: "登录 BeefTV", exact: true }).click();
+        await page.getByRole("button", { name: "账户设置", exact: true }).click();
         const modal = page.locator(".account-settings-modal");
         await modal.waitFor();
         await modal.getByRole("button", { name: "模型", exact: true }).click();
@@ -378,7 +375,7 @@ test("stale background poll cannot overwrite a newer connection action result", 
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        const trigger = page.getByRole("button", { name: "等待登录确认", exact: true });
+        const trigger = page.getByRole("button", { name: "等待确认", exact: true });
         await trigger.waitFor();
         await trigger.click();
         const modal = page.locator(".account-settings-modal");
@@ -461,7 +458,7 @@ test("account balance pane shows live balance, switches CNY/USD methods cleanly,
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        await page.getByRole("button", { name: "BeefTV 账户：测试账号", exact: true }).click();
+        await page.getByRole("button", { name: "MindVerseTV 账户：测试账号", exact: true }).click();
         const modal = page.locator(".account-settings-modal");
         await modal.waitFor();
         await modal.getByText("¥ 28.50").waitFor();
@@ -651,7 +648,7 @@ test("topup info failure blocks unverified payment submission until retried; car
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        await page.getByRole("button", { name: "BeefTV 账户：测试账号", exact: true }).click();
+        await page.getByRole("button", { name: "MindVerseTV 账户：测试账号", exact: true }).click();
         const modal = page.locator(".account-settings-modal");
         await modal.waitFor();
 
@@ -744,7 +741,7 @@ test("slow topup/info response cannot overwrite a newer reconciled balance from 
             }));
         });
         await page.goto(server.url.toString());
-        await page.getByRole("button", { name: "BeefTV 账户：测试账号", exact: true }).click();
+        await page.getByRole("button", { name: "MindVerseTV 账户：测试账号", exact: true }).click();
         const modal = page.locator(".account-settings-modal");
         await modal.waitFor();
 
@@ -767,44 +764,22 @@ test("slow topup/info response cannot overwrite a newer reconciled balance from 
     }
 }, 30000);
 
-test("connected account balance pane supports direct switch-account, logout, and task completion sound toggle", async () => {
+test("connected account balance pane shows balance without switch-account or logout actions, and task completion sound toggle works", async () => {
     connectionState = "connected";
     const page = await browser.newPage({ viewport: { width: 960, height: 760 } });
     try {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await page.goto(server.url.toString());
-        await page.getByRole("button", { name: "BeefTV 账户：测试账号", exact: true }).click();
+        await page.getByRole("button", { name: "MindVerseTV 账户：测试账号", exact: true }).click();
         const modal = page.locator(".account-settings-modal");
         await modal.waitFor();
         await modal.getByText("¥ 28.50").waitFor();
 
-        // Switch account disconnects first and immediately starts a new connection flow.
-        await modal.getByRole("button", { name: "切换账号", exact: true }).click();
-        const pollDeadline = Date.now() + 5000;
-        while ((disconnectCalls < 1 || startCalls < 1) && Date.now() < pollDeadline) {
-            await page.waitForTimeout(25);
-        }
-        expect(disconnectCalls).toBe(1);
-        expect(startCalls).toBe(1);
-        await modal.getByRole("button", { name: "退出登录", exact: true }).waitFor();
-
-        // Logout requires explicit confirmation; cancelling keeps the account connected.
-        await modal.getByRole("button", { name: "退出登录", exact: true }).click();
-        const confirmDialog = page.locator(".ant-modal-confirm");
-        await confirmDialog.waitFor();
-        await confirmDialog.getByRole("button", { name: /^取\s*消$/ }).click();
-        await confirmDialog.waitFor({ state: "hidden" });
-        expect(disconnectCalls).toBe(1);
-        expect(await modal.getByRole("button", { name: "退出登录", exact: true }).count()).toBe(1);
-
-        // Confirming logout disconnects and returns to the unauthenticated login state.
-        await modal.getByRole("button", { name: "退出登录", exact: true }).click();
-        await confirmDialog.waitFor();
-        await confirmDialog.getByRole("button", { name: /^退\s*出\s*登\s*录$/ }).click();
-        await modal.getByRole("button", { name: /^登\s*录$/ }).waitFor();
-        expect(disconnectCalls).toBe(2);
+        // MindVerseTV 已移除官方账号：已连接的账号页不再提供切换账号与退出登录。
         expect(await modal.getByRole("button", { name: "切换账号", exact: true }).count()).toBe(0);
         expect(await modal.getByRole("button", { name: "退出登录", exact: true }).count()).toBe(0);
+        expect(startCalls).toBe(0);
+        expect(disconnectCalls).toBe(0);
 
         // General settings exposes the task completion sound switch (default off).
         await modal.getByRole("button", { name: "通用设置", exact: true }).click();

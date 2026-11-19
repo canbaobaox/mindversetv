@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -473,43 +472,4 @@ func (s *Service) NextPartnerSyncDelay(defaultDelay time.Duration, now time.Time
 		}
 	}
 	return delay
-}
-
-// ResolvePartnerKeysURL 从官方精选注册表校验并返回指定合作伙伴的 HTTPS 领 Key / 返佣跳转地址。
-func ResolvePartnerKeysURL(ctx context.Context, dataDir, idOrPreset string) (string, error) {
-	needle := strings.TrimSpace(idOrPreset)
-	if needle == "" {
-		return "", fmt.Errorf("未指定合作伙伴标识")
-	}
-	cachePath := ""
-	if strings.TrimSpace(dataDir) != "" {
-		cachePath = filepath.Join(dataDir, "plugins", "market-registry-cache.json")
-	}
-	raw := readCuratedRegistryWithCache(ctx, NpmMirrorRegistry, cachePath)
-	if len(raw) == 0 {
-		return "", fmt.Errorf("无法读取合作伙伴列表")
-	}
-	var payload curatedRegistryPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return "", fmt.Errorf("解析合作伙伴列表失败")
-	}
-	for _, entry := range payload.Builtins {
-		if !isPartnerBuiltinEntry(entry) {
-			continue
-		}
-		presetID := derivePartnerPresetID(entry)
-		if strings.TrimSpace(entry.ID) != needle && presetID != needle {
-			continue
-		}
-		if keysURL := sanitizeHTTPSURL(entry.KeysURL); keysURL != "" {
-			return keysURL, nil
-		}
-		if webURL := sanitizeHTTPSURL(entry.WebsiteURL); webURL != "" {
-			return webURL, nil
-		}
-		if homeURL := sanitizeHTTPSURL(entry.Homepage); homeURL != "" {
-			return homeURL, nil
-		}
-	}
-	return "", fmt.Errorf("未找到合作伙伴 %q 的有效跳转链接", needle)
 }
