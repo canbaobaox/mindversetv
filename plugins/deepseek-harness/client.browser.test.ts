@@ -209,7 +209,9 @@ test('focus and polling preserve an unchanged iframe and native session', async 
   expect(await page.frameLocator('iframe').locator('body').evaluate(element => (element.ownerDocument.defaultView as any).retained)).toBe(true)
   expect(await page.evaluate(() => (window as any).nativeMounts)).toBe(1)
   await page.close()
-}, 10_000)
+// 状态轮询间隔 5 秒：上一次可见性刷新若恰好吃掉一次整点 tick，下一次轮询要再等满 5 秒，
+// 10 秒总超时在慢机器上会被测试超时先抢掉，改成 20 秒留足一个完整间隔的余量。
+}, 20_000)
 
 test('a changed workspace source clears old canvas context while retaining the native conversation', async () => {
   const state = await openWorkbench()
