@@ -1,5 +1,5 @@
 import { Alert, App, Button, Form, Input, Popconfirm, Segmented, Select } from "antd";
-import { Bug, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Bug, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { ModelEditorModal } from "@/components/model-editor-modal";
@@ -19,6 +19,7 @@ import { ModelLogo } from "@/components/model-logo";
 import beefTVAppIcon from "../../../../assets/app-icon.png";
 import { MODEL_SERVICE_PRESETS, isTopazUpscaleChannel, channelAllowsEmptyAPIKey, mergeSavedServiceChannel, pluginServices, servicePresetFor } from "@/lib/model-service-presets";
 import { workspaceCapabilities } from "@/services/workspace-mode";
+import { getDesktopAppBinding } from "@/services/desktop-runtime";
 import { localWorkspaceConfig } from "@/lib/user-session";
 import { getLocalModelConfig } from "@/services/api/workspace";
 import { commitModelConfig, flushModelConfig, getModelConfigPersistenceState, subscribeModelConfigPersistence, type ModelConfigPersistenceState } from "@/services/model-config-repository";
@@ -56,6 +57,12 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
     const cancelCatalog = (id: string) => {
         requests.current.cancel(id);
         setLoadingChannelIds((items) => items.filter((item) => item !== id));
+    };
+    const openMyxsaiRegister = async (event: React.MouseEvent<HTMLElement>) => {
+        const openInBrowser = getDesktopAppBinding()?.OpenMyxsaiRegister;
+        if (!openInBrowser) return;
+        event.preventDefault();
+        await openInBrowser();
     };
 
     const userChannels = config.channels.filter((channel) => channel.scope !== "system");
@@ -298,6 +305,20 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                                         <h3 id={`channel-${channel.id}-title`} className="flex items-center gap-2 text-sm font-semibold">
                                             {builtinBeefTV ? <img src={beefTVAppIcon} alt="" className="size-5 shrink-0 object-contain" draggable={false} /> : <ModelLogo icon={MODEL_SERVICE_PRESETS.find((preset) => preset.id === servicePresetFor(channel))?.icon} size={20} />}
                                             {channel.name || "未命名渠道"}
+                                            {builtinBeefTV ? (
+                                                <Button
+                                                    size="small"
+                                                    type="link"
+                                                    className="h-6 px-1 text-xs font-normal"
+                                                    icon={<ExternalLink className="size-3.5" />}
+                                                    href="https://myxsai.com/register"
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    onClick={(event) => void openMyxsaiRegister(event)}
+                                                >
+                                                    去注册
+                                                </Button>
+                                            ) : null}
                                         </h3>
                                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground/55">
                                             {builtinBeefTV ? (

@@ -172,4 +172,12 @@
 - 内置渠道改成梦由心生AI 聚合站：预设 `backend/internal/providerpreset/catalog/beeftv.v1.json` 的显示名改“梦由心生AI”、地址改 `https://api.lk888.ai`（站方公开文档 https://myxsai.com/api 与 https://myxsai.com/apidoc 标注的 BASE_URL，OpenAI 兼容写法 `https://api.lk888.ai/v1`，后端请求时自动补 `/v1`）；`backend/internal/workspace/provider_state.go` 把旧地址 `https://beeftv.app` 的已存配置迁到新地址。只写公开地址，不写任何 Key；Key 由用户在编辑框里自填、只存本地。
 - 内置渠道改走自填 Key：设置页标题与提示不再写“官方算力（已停用）”，改为渠道名与“请在编辑中填写 API Key（Key 只存本地），然后拉取模型”；编辑框里内置渠道也能填 API Key（原先只显示已断开的官方账号连接）；“拉取模型”在填好 Key 后可用（`web/src/services/api/image-models.ts`：有自填 Key 时不再走官方连接拉取目录，改走后端 `/ai/models` 中转；`channel-settings-pane.tsx` 的单条与批量拉取在无官方连接时直接用拉取结果，不再等服务端合并）；状态文案按自填渠道规则显示（未填 Key 显示“待配置”）。助手模型白名单（`backend/internal/modelcatalog/assistant.go`）只在托管凭证真实存在时生效，自填 Key 的渠道不受官方目录约束。
 - 内部标识不动：渠道 id 仍为 `beeftv`、credentialRef 仍为 `beeftv`、协议 `beeftv://`、环境变量 `BEEFTV_*`、macOS bundle ID 等均保留，以保旧画布与旧配置兼容。
-- 验证：`bun run typecheck` 与 `bun run build:desktop`（待跑）；后端 Go 未在本机编译（无 Go 工具链），由 GitHub Actions 构建时验证。
+- 验证：`bun run typecheck` 与 `bun run build:desktop` 均已通过；后端 Go 未在本机编译（无 Go 工具链），GitHub Actions 构建验证通过（Windows 任务成功，安装包 2026-11-19 00:55 已上架 Release v2.2.5）。
+
+## 2026-11-20 注册按钮
+
+用户要求在“本地模型渠道”页梦由心生AI 渠道名旁加一键注册按钮：
+
+- 渠道名后加“去注册”按钮（`web/src/pages/settings/channel-settings-pane.tsx`，仅内置渠道显示），点开 https://myxsai.com/register（实测返回 200）。
+- 桌面端走新 Wails 绑定 `OpenMyxsaiRegister`（`backend/cmd/desktop/app.go`，`wailsruntime.BrowserOpenURL` 打开系统浏览器）；网页预览无绑定时退回普通 `target="_blank"` 链接。绑定类型（`web/src/services/desktop-runtime.ts`）与绑定方法清单测试（`backend/cmd/desktop/app_test.go` 的 `TestDesktopAppBoundMethodsStayTiny`）同步更新。`OpenSkillMarketURL` 只放行 beeftv.app/skills 与回环地址，不能复用，故新加方法。
+- 验证：`bun run typecheck` 与 `bun run build:desktop` 均已通过，产物含“去注册”与 myxsai.com/register；`node scripts/structure-budget.mjs` 通过；后端 Go 未在本机编译（无 Go 工具链），由 GitHub Actions 构建验证。

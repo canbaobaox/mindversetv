@@ -169,6 +169,15 @@ func (a *DesktopApp) OpenBeefTVX() error {
 	return nil
 }
 
+func (a *DesktopApp) OpenMyxsaiRegister() error {
+	ctx, err := a.dialogContext()
+	if err != nil {
+		return err
+	}
+	wailsruntime.BrowserOpenURL(ctx, "https://myxsai.com/register")
+	return nil
+}
+
 func (a *DesktopApp) SaveOwnedMedia(fileName string, resourceID string) (bool, error) {
 	return a.saveToChosenPath(fileName, func(path string) error {
 		return a.copyMedia(resourceID, path)

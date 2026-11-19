@@ -57,6 +57,7 @@ export type DesktopRuntimeBinding = {
     OpenBeefTVX?: () => Promise<void>;
     OpenBeefTVWebsite?: () => Promise<void>;
     OpenBeefTVGitHub?: () => Promise<void>;
+    OpenMyxsaiRegister?: () => Promise<void>;
 };
 
 export type DesktopStorageUsage = { dataDir: string; usedBytes: number; freeBytes: number; previousDir?: string; previousBytes?: number };
