@@ -1,6 +1,6 @@
 import { isAIUpscaleTask, isDefinitePreAdmissionClientReject, isVideoSubtitleEraseTask, unknownSubmissionMetadata, upscaleObservationFailureMetadata, UPSCALE_OBSERVATION_TIMEOUT_MS } from "@/lib/canvas/canvas-ai-upscale-task";
 import { recoverUpscaleTask } from "@/services/api/media-upscale";
-import { createVideoSubtitleEraseTask, recoverVideoSubtitleEraseTask } from "@/services/api/video-subtitle-erase";
+import { createVideoSubtitleEraseTask, recoverVideoSubtitleEraseTask, SMART_ERASE_MODE_SPECS, type SmartEraseType } from "@/services/api/video-subtitle-erase";
 import { bindBackendCanvasGenerationResult } from "@/services/canvas-generation-consumer";
 import { findGenerationTaskByOperation, queryGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { getImageBlob, resolveImageUrl, uploadImage } from "@/services/image-storage";
@@ -17,6 +17,7 @@ import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { fitNodeSize, VIDEO_NODE_MAX_SIZE } from "@/lib/canvas/canvas-node-size";
 import { mediaResultMetadata } from "@/lib/canvas/canvas-node-semantics";
 import { persistOwnedCanvasMediaNodes } from "@/lib/canvas/canvas-media-persist";
+import { extractVideoAudioToCanvasNode } from "@/lib/canvas/extract-video-audio";
 import { generationErrorMessage } from "@/lib/generation-error";
 import { getMediaBlob, resolveMediaUrl } from "@/services/file-storage";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
@@ -71,6 +72,9 @@ export function useCanvasMediaTools({
     const { message, modal } = App.useApp();
     const [panoramaConfigNodeId, setPanoramaConfigNodeId] = useState<string | null>(null);
     const [subtitleEraseNodeId, setSubtitleEraseNodeId] = useState<string | null>(null);
+    const [subtitleEraseInitialType, setSubtitleEraseInitialType] = useState<SmartEraseType>("subtitle");
+    const [extractingAudioNodeId, setExtractingAudioNodeId] = useState<string | null>(null);
+    const extractingAudioNodeRef = useRef(false);
     const projectIdRef = useRef(projectId);
     const depthObserversRef = useRef(new Set<AbortController>());
     projectIdRef.current = projectId;
@@ -80,6 +84,8 @@ export function useCanvasMediaTools({
     useEffect(() => {
         setPanoramaConfigNodeId(null);
         setSubtitleEraseNodeId(null);
+        extractingAudioNodeRef.current = false;
+        setExtractingAudioNodeId(null);
     }, [projectId]);
 
     useEffect(() => () => {
@@ -258,7 +264,8 @@ export function useCanvasMediaTools({
         }
     }, [bindGenerationTask, finishGenerationRequest, mountedRef, nodesRef, observeAIUpscale, projectId, setNodes, startGenerationRequest]);
 
-    const openVideoSubtitleErase = useCallback((node: CanvasNodeData) => {
+    const openVideoSubtitleErase = useCallback((node: CanvasNodeData, initialType?: SmartEraseType) => {
+        setSubtitleEraseInitialType(initialType ?? node.metadata?.videoSmartEraseType ?? "subtitle");
         setSubtitleEraseNodeId(node.id);
     }, []);
 
@@ -266,6 +273,11 @@ export function useCanvasMediaTools({
         if (!mountedRef.current || projectIdRef.current !== projectId) return;
         const childId = nanoid();
         const clientOperationId = nanoid();
+        const eraseType: SmartEraseType = options.eraseType || "subtitle";
+        const modeSpec = SMART_ERASE_MODE_SPECS[eraseType];
+        const modeTitle = modeSpec.label;
+        const processingLabel = modeSpec.processingLabel;
+        const promptText = modeSpec.promptForTitle(node.title || "视频");
         const size = fitNodeSize(
             node.metadata?.naturalWidth || node.width,
             node.metadata?.naturalHeight || node.height,
@@ -276,7 +288,7 @@ export function useCanvasMediaTools({
         const pendingChild: CanvasNodeData = {
             id: childId,
             type: CanvasNodeType.Video,
-            title: `${node.title || "视频"} · 去字幕`,
+            title: `${node.title || "视频"} · ${modeTitle}`,
             position: { x: node.position.x + node.width + 96, y: node.position.y + (outputCount % 4) * (size.height + 32) },
             width: size.width,
             height: size.height,
@@ -284,10 +296,11 @@ export function useCanvasMediaTools({
                 status: "loading",
                 taskType: "canvas_video",
                 generationSubmissionState: "submitting",
-                processingLabel: "正在消除视频字幕",
-                prompt: `从「${node.title || "视频"}」消除画面字幕`,
+                processingLabel,
+                prompt: promptText,
                 generatedFromNodeId: node.id,
                 videoSubtitleEraseSourceNodeId: node.id,
+                videoSmartEraseType: eraseType,
                 taskClientOperationId: clientOperationId,
             }),
         };
@@ -310,12 +323,10 @@ export function useCanvasMediaTools({
             if (submitRequest.signal.aborted || !mountedRef.current || projectIdRef.current !== projectId || !ownsPendingChild(nodesRef.current.find(item => item.id === childId))) return;
 
             try {
+                const { quote: _quote, ...taskOptions } = options;
                 const created = await createVideoSubtitleEraseTask({
-                    resourceId: options.resourceId,
+                    ...taskOptions,
                     channelId: "beeftv",
-                    eraseMethod: options.eraseMethod,
-                    subtitleModel: options.subtitleModel,
-                    ...(options.region ? { region: options.region } : {}),
                     clientOperationId,
                     projectId,
                     nodeId: childId,
@@ -531,6 +542,53 @@ export function useCanvasMediaTools({
         }
     }, [beginMediaOperation, connectionsRef, message, persistMediaNodes, setConnections, setNodes]);
 
+    const extractPureAudioNodeFromVideo = useCallback(async (node: CanvasNodeData) => {
+        const operation = beginMediaOperation();
+        if (!operation.isCurrent() || extractingAudioNodeRef.current) return;
+        if (!node.metadata?.content && !node.metadata?.storageKey) {
+            message.warning("视频节点为空，无法提取音频");
+            return;
+        }
+        extractingAudioNodeRef.current = true;
+        setExtractingAudioNodeId(node.id);
+        pageUi.getState().setHoveredNodeId(null);
+        pageUi.getState().setToolbarNodeId(null);
+        const progress = startUploadStatus("提取音频为节点", "解码视频音轨并保存 WAV", 3);
+        try {
+            const { audioNode, connection, durationMs } = await operation.wait(
+                extractVideoAudioToCanvasNode(node, nodesRef.current, { signal: operation.signal }),
+            );
+            operation.run(() => progress.update("写入画布音频节点", 2));
+            const updatedCurrent = durationMs > 0 && !node.metadata?.durationMs
+                ? nodesRef.current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, durationMs } } : item))
+                : nodesRef.current;
+            const nextNodes = [...updatedCurrent, audioNode];
+            const nextConnections = [...connectionsRef.current, connection];
+            const selection = new Set([audioNode.id]);
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            selectedNodeIdsRef.current = selection;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
+            pageUi.getState().setSelectedNodeIds(selection);
+            pageUi.getState().setSelectedConnectionId(null);
+            await operation.wait(persistMediaNodes([audioNode], [connection], { signal: operation.signal }));
+            operation.run(() => progress.done("已提取独立音频节点"));
+            message.success("已提取纯音频节点，引用声音时不会带入原视频画面");
+        } catch (error) {
+            if (!operation.isCurrent()) return;
+            const details = error instanceof Error ? error.message : "音频提取失败";
+            operation.run(() => progress.fail(details));
+            message.error(details);
+        } finally {
+            operation.dispose();
+            if (operation.isCurrent()) {
+                extractingAudioNodeRef.current = false;
+                setExtractingAudioNodeId(null);
+            }
+        }
+    }, [beginMediaOperation, connectionsRef, message, nodesRef, pageUi, persistMediaNodes, selectedNodeIdsRef, setConnections, setNodes, startUploadStatus]);
+
     const { clearDeletedVideoNodes, ...videoTools } = useCanvasVideoTools({
         pageUi,
         projectId,
@@ -583,12 +641,15 @@ export function useCanvasMediaTools({
         submitVideoSubtitleErase,
         recoverVideoSubtitleErase,
         subtitleEraseNodeId,
+        subtitleEraseInitialType,
         setSubtitleEraseNodeId,
         openPanoramaConfig,
         createPanoramaViewerWithConfig,
         addPanoramaCaptureNode,
         panoramaConfigNodeId,
         setPanoramaConfigNodeId,
+        extractingAudioNodeId,
+        extractPureAudioNodeFromVideo,
         ...imageTools,
         ...videoTools,
     };

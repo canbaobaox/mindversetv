@@ -1,4 +1,5 @@
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
+import { buildImageHistoryItemFromMetadata, snapshotNodeImageHistoryBeforeRegenerate, upsertCanvasImageHistory } from "@/lib/canvas/canvas-image-history";
 import { seedanceOutputWarning } from "@/lib/seedance-output-warning";
 import { fitNodeSize, nodeSizeFromRatio, VIDEO_NODE_MAX_SIZE } from "@/lib/canvas/canvas-node-size";
 import { compositeEmotionImage } from "@/lib/canvas/canvas-emotion";
@@ -15,7 +16,7 @@ import { applyGenerationConsumerEffect, generationEffectApplied } from "@/servic
 import { attachNodeEffectKey } from "@/services/generation-task-materializer";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 import { mediaResultMetadata } from "@/lib/canvas/canvas-node-semantics";
-import { readNodeTaskOutcome } from "@/lib/task-outcome";
+import { readNodeTaskOutcome, readyTaskOutcome } from "@/lib/task-outcome";
 import { canCanvasNodeAcceptGenerationTask, generationTaskInput, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-identity";
 export { canCanvasNodeAcceptGenerationTask, generationTaskInput, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-identity";
 
@@ -135,7 +136,7 @@ const defaultGenerationResultMediaIO: GenerationResultMediaIO = {
 
 export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: GenerationTask, nodes: CanvasNodeData[] = [node], mediaIO: GenerationResultMediaIO = defaultGenerationResultMediaIO): Promise<CanvasNodeData> {
     const mode = generationTaskMode(task, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image");
-    const prompt = node.metadata?.prompt || task.prompt;
+    const prompt = task.prompt?.trim() || node.metadata?.prompt;
     const result = parseBackendGenerationResult(task);
 
     if (mode === "image") {
@@ -167,13 +168,28 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
         const normalizedImage = resultWidth === uploaded.width && resultHeight === uploaded.height ? uploaded : { ...uploaded, width: resultWidth, height: resultHeight };
         const imageSize =
             node.metadata?.generationType === "edit" && !requestedImageSize ? { width: node.width || imageConfig.width, height: node.height || imageConfig.height } : fitNodeSize(resultWidth, resultHeight, imageSizeBounds.width, imageSizeBounds.height);
+        const priorHistory = snapshotNodeImageHistoryBeforeRegenerate(node);
+        const baseMetadata = applyGeneratedMediaResultMetadata(
+            node,
+            imageMetadata(normalizedImage),
+            {
+                prompt,
+                ...(task.model?.trim() ? { model: task.model.trim() } : {}),
+                ...completedTaskMetadata(task),
+                ...(priorHistory?.length ? { imageHistory: priorHistory } : {}),
+            },
+        );
+        const addedHistoryItem = buildImageHistoryItemFromMetadata(baseMetadata);
+        const nextImageHistory = !baseMetadata.isBatchRoot
+            ? upsertCanvasImageHistory(baseMetadata.imageHistory, addedHistoryItem, addedHistoryItem, { overwriteGeneration: true })
+            : undefined;
         return {
             ...node,
             type: CanvasNodeType.Image,
             width: imageSize.width,
             height: imageSize.height,
             position: { x: node.position.x + node.width / 2 - imageSize.width / 2, y: node.position.y + node.height / 2 - imageSize.height / 2 },
-            metadata: applyGeneratedMediaResultMetadata(node, imageMetadata(normalizedImage), { prompt, ...completedTaskMetadata(task) }),
+            metadata: nextImageHistory?.length ? { ...baseMetadata, imageHistory: nextImageHistory } : baseMetadata,
         };
     }
 
@@ -202,6 +218,17 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
               };
         const lastFrameSource = result.video?.lastFrame?.url || result.video?.lastFrame?.dataUrl || "";
         const lastFrameKey = reuseGeneratedMediaStorageKey(result.video?.lastFrame?.storageKey, lastFrameSource) || result.video?.lastFrame?.storageKey;
+        const rawSubtitles = result.metadata?.subtitles;
+        const originText = rawSubtitles?.originText || rawSubtitles?.origin_text || "";
+        const translatedText = rawSubtitles?.translatedText || rawSubtitles?.translated_text || "";
+        const smartEraseSubtitles = originText.trim() || translatedText.trim()
+            ? {
+                  format: (rawSubtitles?.format?.toLowerCase() === "vtt" ? "vtt" : "srt") as "srt" | "vtt",
+                  ...(originText ? { originText } : {}),
+                  ...(translatedText ? { translatedText } : {}),
+                  ...((rawSubtitles?.targetLang || rawSubtitles?.target_lang)?.trim() ? { targetLang: (rawSubtitles?.targetLang || rawSubtitles?.target_lang)!.trim() } : {}),
+              }
+            : undefined;
         return {
             ...node,
             type: CanvasNodeType.Video,
@@ -212,6 +239,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
                     ...videoMetadata(video),
                     ...(lastFrameSource ? { lastFrameUrl: lastFrameSource } : {}),
                     ...(lastFrameKey ? { lastFrameStorageKey: lastFrameKey } : {}),
+                    ...(smartEraseSubtitles ? { smartEraseSubtitles } : { smartEraseSubtitles: undefined }),
                     outputParameterWarning: seedanceOutputWarning(task.inputJson, video.width, video.height, task.model),
                 },
                 { prompt, ...completedTaskMetadata(task) },
@@ -314,9 +342,14 @@ export async function applyMaterializedGenerationTaskResultToNodes(nodes: Canvas
     }
     const indexedNode = { ...node, metadata: { ...node.metadata, taskOutputIndex: output.outputIndex } };
     const updatedNode = await buildGenerationTaskNodeResult(indexedNode, { ...task, resultJson: JSON.stringify(result) }, nodes);
+    const withAssetMetadata: CanvasNodeMetadata = { ...updatedNode.metadata, assetId: asset.id };
+    const itemWithAsset = asset.kind === "image" && !withAssetMetadata.isBatchRoot ? buildImageHistoryItemFromMetadata(withAssetMetadata) : null;
+    if (itemWithAsset) {
+        withAssetMetadata.imageHistory = upsertCanvasImageHistory(withAssetMetadata.imageHistory, itemWithAsset, itemWithAsset);
+    }
     const durableNode = {
         ...updatedNode,
-        metadata: applyGenerationConsumerEffect({ ...updatedNode.metadata, assetId: asset.id }, effectKey, (metadata) => metadata).value,
+        metadata: applyGenerationConsumerEffect(withAssetMetadata, effectKey, (metadata) => metadata).value,
     };
     return {
         nodes: applySuccessfulVersionSelection(nodes, durableNode),
@@ -363,7 +396,7 @@ export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {
                 ...node,
                 metadata: {
                     ...node.metadata,
-                    taskOutcome: { phase: "ready", regenerate: "allowed", reason: "result_ready" },
+                    taskOutcome: readyTaskOutcome(),
                     taskOutcomeSource: undefined,
                     generationFailure: undefined,
                 },
@@ -401,7 +434,7 @@ function completedTaskMetadata(task: GenerationTask): CanvasNodeMetadata {
         taskId: task.id,
         taskOutcome:
             !task.outcome || task.outcome.phase === "running" || task.outcome.phase === "fetching"
-                ? { phase: "ready", regenerate: "allowed", reason: "result_ready" }
+                ? readyTaskOutcome()
                 : task.outcome,
         taskStatus: task.status,
         taskProgress: typeof task.progress === "number" && Number.isFinite(task.progress) ? Math.max(0, Math.min(100, Math.round(task.progress))) : 100,

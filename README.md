@@ -36,6 +36,9 @@
 
 ## 最近更新
 
+- **[v2.3.2](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.2)** — 修复 Windows 桌面端内置创作助手在连续对话中无法读取或操作画布（提示请求被中断、返回失败）的问题。
+- **[v2.3.1](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.1)** — 修复桌面端第三方渠道插件「一键配置」兼容问题，新增单人物替换工作流、分镜素材直连与多选批量关联、视频提取音频、MCP 调用记录与提示词预设偏好设置，补齐存储迁移异常回退、深度组件国内镜像加速以及 macOS 随包原生媒体工具与对应开源源码声明。
+- **[v2.3.0](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.0)** — 四款社区插件改为在插件市场按需安装并更新 ComfyUI 与 AutoDL 工作流支持，新增画布图片抽卡历史叠卡对比与生成信息栏、视频智能擦除与固定参考槽位顺序、生成报错定位与重试确认，提升桌面启动连接韧性与多视频画布缩放流畅度。
 - **[v2.2.5](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.5)** — 修复画布上传完成后偶发回退「上传中」与替换素材被旧任务覆盖，修复桌面端资源缩略图、独立分镜生成与批量下载编号，升级视频原生截帧与音视频分离，放开内置助手选用大型技能的大小与数量限制并支持长文档按行分段读取。
 - **[v2.2.4](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.4)** — 修复桌面端 Eagle 素材库预览与导入下载，支持自定义模型服务无 `/v1` 前缀地址与手动模型改删，修复提示词长按退格、个人资产库分页计数与生成历史本地视频预览。
 - **[v2.2.3](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.3)** — 接入 Seedream 5.5 图片生成与细粒度图层拆分，优化画布视频首尾帧自动识别与参考预检，修复超分与去字幕终态重试及诊断耗时显示，并补充银盛云枢壹算品牌图标与简介。
@@ -46,7 +49,7 @@
 
 ## 特别鸣谢
 
-上游 BeefTV 的合作伙伴与赞助商曾为原项目提供支持（ll2.cn、银盛·云枢壹算、腾讯云、BytePlus、超频三等），在此仅作历史致谢，不附价格与推广链接。MindVerseTV 不接入这些商业渠道，也不提供官方算力；模型渠道请自填 Base URL 与 Key。
+上游 BeefTV 的合作伙伴与赞助商曾为原项目提供支持（ll2.cn、银盛·云枢壹算、腾讯云、BytePlus、超频三、Infistar 无限星河等），在此仅作历史致谢，不附价格与推广链接。MindVerseTV 不接入这些商业渠道，也不提供官方算力；模型渠道请自填 Base URL 与 Key。
 ## 产品演示
 
 <div>
@@ -150,6 +153,18 @@ MindVerseTV 同时提供项目库、个人资产库、异步任务、模型渠�
 3. 新建画布，添加参考素材，向创作助手描述目标；也可从节点开始自由创作。
 
 模型配置与源码构建见 [快速开始](QUICKSTART.md)，打包要求见[桌面发布文档](docs/desktop-release.md)。
+
+## 商用授权和赞助
+
+如需基于BeefTV进行商用或二次开发，请取得BeefTV团队官方授权，想了解具体商用授权方案，请扫描下方二维码添加我的企业微信，并备注 **“BeefTV 授权”**。
+
+同时 BeefTV 目前已经开放了赞助渠道。如果你也想让自己的算力渠道或者产品通过 BeefTV 被更多人看见并用上，可以扫描下方的企业微信二维码，并备注“BeefTV 赞助”。
+
+目前 BeefTV 已经取得了超过 2.5K stars、480 个 Fork，社群人数超过 2000 人，团队也已经与多家赞助企业达成了深度合作。
+
+<p align="center">
+  <img src="assets/readme/commercial-license-wecom.jpg" width="200" alt="BeefTV 商用授权和赞助联系企业微信二维码">
+</p>
 
 ## 贡献与许可
 

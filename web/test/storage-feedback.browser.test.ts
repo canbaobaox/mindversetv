@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import postcss from "postcss";
-import tailwindcss from "@tailwindcss/postcss";
 import { chromium, type Browser } from "playwright";
+import { compileAppStyles } from "./helpers/app-styles";
 for (const width of [1440, 390]) for (const dark of [false, true]) test(`reference transport and storage check ${width} dark=${dark}`, async () => {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     const errors: string[] = [];
@@ -13,6 +12,7 @@ for (const width of [1440, 390]) for (const dark of [false, true]) test(`referen
         await page.getByText("直接传素材", { exact: true }).click();
         await page.getByRole("combobox", { name: "视频传输方式" }).click();
         await page.locator(".ant-select-dropdown:visible").getByText("手动填写 HTTPS 链接", { exact: true }).click();
+        await page.getByRole("button", { name: "配置参考素材对象存储" }).click();
         await page.getByRole("button", { name: "保存并测试上传" }).click();
         await page.getByText("存储测试通过", { exact: true }).waitFor();
         await page.getByText("上传、公开读取和测试文件清理均已通过", { exact: true }).waitFor();
@@ -28,6 +28,7 @@ test("failed storage check keeps an actionable HTTP status", async () => {
     const page = await browser.newPage();
     try {
         await page.goto(server.url + "?transport&auto&test-error");
+        await page.getByRole("button", { name: "配置参考素材对象存储" }).click();
         await page.getByRole("button", { name: "保存并测试上传" }).click();
         await page.getByText("存储测试未通过", { exact: true }).waitFor();
         await page.getByText(/HTTP 403/).waitFor();
@@ -41,6 +42,7 @@ for (const width of [1440, 390]) for (const dark of [false, true]) test(`storage
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     try {
         await page.goto(server.url + (dark ? "?dark" : ""));
+        await page.getByRole("button", { name: "配置参考素材对象存储" }).click();
         const secret = page.locator('input[aria-label="Secret Access Key"]');
         await secret.waitFor({ state: "visible" });
         const geometry = () => secret.evaluate(input => {
@@ -92,10 +94,7 @@ beforeAll(async () => {
     });
     if (!build.success) throw new Error(build.logs.join("\n"));
     const script = await build.outputs.find(output => output.path.endsWith(".js"))!.text();
-    const stylesheet = import.meta.dir + "/../src/styles/globals.css";
-    const css = (await postcss([tailwindcss({ base: import.meta.dir + "/.." })]).process(await Bun.file(stylesheet).text(), { from: stylesheet })).css
-        + (await Promise.all(["beeftv-local-overrides.css", "workspace-product.css"].map(file => Bun.file(import.meta.dir + "/../src/styles/" + file).text()))).join("\n")
-        + (await Promise.all(build.outputs.filter(output => output.path.endsWith(".css")).map(output => output.text()))).join("\n");
+    const css = await compileAppStyles(await Promise.all(build.outputs.filter(output => output.path.endsWith(".css")).map(output => output.text())));
     let fixtureCanvasDocumentMB = 64;
     let rejectNextCanvasLimitPatch = false;
     server = Bun.serve({
@@ -139,6 +138,7 @@ test("migration restart advice stays visible while technical details are collaps
     const page = await browser.newPage();
     try {
         await page.goto(server.url + "?migration-error");
+        await page.getByRole("button", { name: "更改目录" }).click();
         await page.getByRole("button", { name: "选择文件夹", exact: true }).click();
         await page.getByRole("button", { name: "迁移旧数据并使用新目录" }).click();
         await page.getByText("迁移未完成，原数据已保留，但工作区未能重新打开。请重启 BeefTV", { exact: true }).waitFor();
@@ -176,10 +176,11 @@ for (const width of [1440, 390])
             page.on("pageerror", (error) => errors.push(error.message));
             try {
                 await page.goto(server.url + (dark ? "?dark" : ""));
+                await page.getByRole("button", { name: "更改目录" }).click();
                 await page.getByRole("button", { name: "选择文件夹", exact: true }).click();
                 expect(await page.getByRole("textbox", { name: "新存储目录" }).inputValue()).toBe("D:\\BeefTV");
                 await page.getByRole("button", { name: "迁移旧数据并使用新目录" }).click();
-                await page.getByText("当前目录：D:\\BeefTV", { exact: true }).waitFor();
+                await page.getByText("D:\\BeefTV", { exact: true }).waitFor();
                 await page.getByRole("button", { name: "清理原目录，释放磁盘空间" }).click();
                 await page.getByRole("button", { name: "确认并清理", exact: true }).click();
                 await page.getByRole("button", { name: "清理原目录，释放磁盘空间" }).waitFor({ state: "detached" });
@@ -194,6 +195,7 @@ for (const width of [1440, 390])
                 await page.screenshot({ path: import.meta.dir + `/../../output/storage-url-${width}-${dark}.png` });
                 await page.getByRole("button", { name: "添加链接", exact: true }).click();
                 await page.getByText("image:https://cdn.example.com/image.png", { exact: true }).waitFor();
+                await page.getByRole("button", { name: "配置参考素材对象存储" }).click();
                 await page.getByRole("textbox", { name: "S3 端点", exact: true }).fill("https://s3.example.com");
                 await page.getByRole("textbox", { name: "Secret Access Key", exact: true }).fill("fixture-secret");
                 await page.getByRole("button", { name: "保存对象存储配置" }).click();
@@ -228,6 +230,7 @@ test("custom single-canvas capacity limit can be customized or set to unlimited"
     const page = await browser.newPage();
     try {
         await page.goto(String(server.url) + "?reject-canvas-limit");
+        await page.getByRole("button", { name: "编辑单画布容量上限" }).click();
         const input = page.getByRole("textbox", { name: "单画布容量上限（MB）" });
         await input.waitFor({ state: "visible" });
         expect(await input.inputValue()).toBe("64");
@@ -237,8 +240,10 @@ test("custom single-canvas capacity limit can be customized or set to unlimited"
         await page.getByText(/当前生效上限：64 MB/).waitFor();
         await input.fill("256");
         await page.getByRole("button", { name: "保存容量设置", exact: true }).click();
-        await page.getByText(/当前生效上限：256 MB/).waitFor();
+        await page.getByText("256 MB", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "编辑单画布容量上限" }).click();
         await page.getByRole("button", { name: "不限制", exact: true }).click();
+        await page.getByRole("button", { name: "编辑单画布容量上限" }).click();
         await page.getByText(/当前生效上限：不限制/).waitFor();
         expect(await input.inputValue()).toBe("0");
     } finally {

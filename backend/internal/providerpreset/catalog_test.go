@@ -7,7 +7,7 @@ func TestBeefTVPresetIsPinnedWithoutFreezingRemoteModelCatalog(t *testing.T) {
 	if preset.ID != "beeftv" {
 		t.Fatalf("preset id = %q", preset.ID)
 	}
-	if preset.DisplayName != "BeefTV" || preset.BaseURL != "https://beeftv.app" {
+	if preset.DisplayName != "梦由心生AI" || preset.BaseURL != "https://api.lk888.ai" {
 		t.Fatalf("unexpected BeefTV identity: %#v", preset)
 	}
 	if !preset.Pinned || preset.PresetVersion < 1 {

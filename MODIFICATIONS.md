@@ -7,8 +7,8 @@
 ## 上游 / Upstream
 
 - 上游项目：[glanderness/BeefTV](https://github.com/glanderness/BeefTV)
-- 基于版本：v2.2.5，commit `c52a2c43897a10f4179e27e5790ba5e904575012`
-  （`chore(release): v2.2.5 - 版本号与更新说明 (#544)`，2026-11-14 发布）
+- 基于版本：v2.3.2，commit `3e4eb1b8ca44f87d3aa49e3db930d6f4a8f15bcf`
+  （2026-11-19 发布；2026-11-20 自 v2.2.5 `c52a2c4` 合并，见文末“合并上游 v2.3.2”）
 - 上游技术栈：React + Go + Wails 桌面版，无限画布节点工作流，Agent + Skills，
   模型渠道由使用者自配。
 - 本地工作目录：`~/workspace/mvtv/`（目标仓库名 `canbaobaox/mindversetv`，
@@ -181,3 +181,15 @@
 - 渠道名后加“去注册”按钮（`web/src/pages/settings/channel-settings-pane.tsx`，仅内置渠道显示），点开 https://myxsai.com/register（实测返回 200）。
 - 桌面端走新 Wails 绑定 `OpenMyxsaiRegister`（`backend/cmd/desktop/app.go`，`wailsruntime.BrowserOpenURL` 打开系统浏览器）；网页预览无绑定时退回普通 `target="_blank"` 链接。绑定类型（`web/src/services/desktop-runtime.ts`）与绑定方法清单测试（`backend/cmd/desktop/app_test.go` 的 `TestDesktopAppBoundMethodsStayTiny`）同步更新。`OpenSkillMarketURL` 只放行 beeftv.app/skills 与回环地址，不能复用，故新加方法。
 - 验证：`bun run typecheck` 与 `bun run build:desktop` 均已通过，产物含“去注册”与 myxsai.com/register；`node scripts/structure-budget.mjs` 通过；后端 Go 未在本机编译（无 Go 工具链），由 GitHub Actions 构建验证。
+
+## 2026-11-20 合并上游 v2.3.2
+
+分支 `merge/upstream-v2.3.2`：上游 v2.2.5（`c52a2c4`）→ v2.3.2（`3e4eb1b`，54 个提交，1216 个文件）。本地历史与上游无共同祖先，先把本地全部改版压成单提交再合，21 个文件起冲突，逐个解完；VERSION 已改为 v2.3.2。
+
+- 新功能都进来了：画布视频智能擦除（去字幕增强、字幕提取翻译、去水印、隐私打码）、图片抽卡历史与看图工作台（历次结果叠放、双图对比、生成信息栏）、单人物替换工作流（画布工作流库内置，需 Seedance 2.0 Fast 参考视频）、画布流畅度提升与修复、Windows 内置助手命名管道读写修复（读超时归一化）。
+- 四款社区插件（Eagle 素材库、AI 提示词优化器、AI 审美批改、媒体转换节点）按上游改为插件市场按需安装；另有 5 个插件包（character-replacement、comfyui、ecommerce-hero、runninghub、sticky-note）随上游外迁到 `Sunnyender-org/beeftv-plugins`，不再随包。
+- 上游合作伙伴热接入一律不合进来，四道门：`MODEL_SERVICE_PRESETS` 只留通用与直连（第三方模型服务、OpenAI、Gemini、火山方舟）；`partnerServicePresets()` 与 `unnoticedLivePartners()` 恒返回空；`syncPartnerCatalogFromBackend()` 直接返回空列表，不拉目录、不装插件。LL2、银盛、Infistar 不进列表、不展示、不参与新建；已存旧渠道仍走内置预设数据兼容（`createServicePresetChannel` 对未上榜的内置预设仍按预设数据建渠道）。
+- 剔掉的上游内容：合作伙伴分区与新合作方角标、Infistar 鸣谢（应用内更新日志与 `CHANGELOG.md` 的 v2.3.2/v2.3.1 条目已同步去掉 LL2 新模型与合作伙伴热更新、切换账号/退出登录文案）；`OpenPartnerKeysURL` 绑定已删（去注册按钮的 `OpenMyxsaiRegister` 保留）；上游 COS 桥接遗留文档整段删除；`BEEFTV_FFMPEG_RUNTIME` / `BEEFTV_FFMPEG_LICENSE` 编码器直供路径随上游移除（macOS 媒体运行时改为固定源码构建 + 哈希校验）。
+- 保留的我们改版：梦由心生AI 内置渠道（预设与 `provider_state.go` 迁移逻辑）、去注册按钮、投稿已删、LL2/银盛插件已下架（`bundled-plugin-dirs.txt` 与 `BundledBuiltinPluginNames` 仍只含市场插件）、README 赞助商表已删、账户页无登录按钮、侧栏无微信/X 链接；编辑器壳作者按上游测试要求恢复为“开源社区”。
+- 测试同步：`model-service-presets.test.ts`（列表断言改 presence/absence，动态合作方测试改为断言四道门）、`plugin-host-slots.test.ts`（热加载 ll2 只验预设数据、不验列表）、`catalog_test.go` 与 `provider_config_test.go`（预设身份断言改为梦由心生AI / `https://api.lk888.ai`，此前在 main 上即已失效，本次一并修好）、`channel-settings-pane.test.tsx`（删已删组件的死测试，未填 Key 的内置渠道状态期望由“未连接”改为“待配置”）。
+- 验证：`bun install --frozen-lockfile`、`bun run typecheck`、`bun run build:desktop`（23.78 秒）通过；`node scripts/structure-budget.mjs` 通过；`./scripts/audit-public-docs.sh` 通过；`bun run lint` 通过；相关 7 个前端测试文件 89 个测试全过；`node scripts/deadcode-budget.mjs` 本机跑不了（无 Go 工具链），由 CI 验；后端 Go 编译同样靠 CI。

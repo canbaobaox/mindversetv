@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"infinite-canvas/backend/internal/desktopstorage"
 	"infinite-canvas/backend/internal/desktopupdate"
+	"infinite-canvas/backend/internal/webviewlock"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -37,11 +40,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	dataDir, err := defaultDataDir()
+	dataDir, storageRoot, err := resolveDesktopStorage()
 	if err != nil {
 		log.Fatal(err)
 	}
 	app := newDesktopApp(dataDir)
+	app.storageRoot = storageRoot
+	app.usePlatformDownloads = true
 	for _, arg := range os.Args[1:] {
 		if strings.HasPrefix(arg, "beeftv:") {
 			app.queueSkillLink(arg)
@@ -53,16 +58,52 @@ func main() {
 	}
 }
 
+var initialSystemTempDir = os.TempDir()
+
+func systemTempDir() string {
+	if strings.TrimSpace(initialSystemTempDir) != "" {
+		return initialSystemTempDir
+	}
+	return os.TempDir()
+}
+
+var prepareStartupWebViewFn = prepareStartupWebView
+
 func runDesktopApp(app *DesktopApp, run func(*options.App) error) error {
 	if err := configureDesktopTemp(app.dataDir); err != nil {
-		return err
+		log.Printf("配置数据目录临时文件夹失败，继续使用系统默认临时目录: %v", err)
+	}
+	opts := desktopAppOptions(app)
+	releaseWebViewLease, prepErr := prepareStartupWebViewFn(app, opts)
+	defer releaseWebViewLease()
+	if prepErr != nil {
+		if webviewlock.IsBlockingProfileError(prepErr) {
+			return fmt.Errorf("%s: %w", blockingWebViewErrorMessage(prepErr), prepErr)
+		}
+		log.Printf("准备 WebView2 用户目录失败: %v", prepErr)
 	}
 	// Wails must forward a second launch before the primary instance's workspace
 	// lock is acquired. Only OnStartup (or its asset-server fallback) opens it.
-	return run(desktopAppOptions(app))
+	return run(opts)
+}
+
+func blockingWebViewErrorMessage(err error) string {
+	if errors.Is(err, webviewlock.ErrElevatedWebViewResidual) {
+		return "检测到管理员权限残留的 WebView2 进程占用了运行目录，当前普通权限无法自动结束。\r\n\r\n请在任务管理器结束残留的 msedgewebview2.exe 进程，或重新运行安装程序完成修复。"
+	}
+	if errors.Is(err, webviewlock.ErrWebViewProfileBusy) {
+		return "检测到 WebView2 浏览器运行目录正被其他程序占用，暂时无法打开新窗口。\r\n\r\n请先关闭正在占用该目录的程序或稍后重试；若已关闭所有窗口仍无法打开，请重启电脑后再试。"
+	}
+	return ""
 }
 
 func desktopAppOptions(app *DesktopApp) *options.App {
+	var webviewUserDataPath string
+	if runtime.GOOS == "windows" && app != nil {
+		if exe, err := os.Executable(); err == nil {
+			webviewUserDataPath = webviewlock.ProfileDirForWorkspace(exe, app.dataDir)
+		}
+	}
 	opts := &options.App{
 		Title:            "MindVerseTV",
 		Width:            1440,
@@ -75,7 +116,8 @@ func desktopAppOptions(app *DesktopApp) *options.App {
 			Preferences: &mac.Preferences{FullscreenEnabled: mac.Enabled},
 		},
 		Windows: &windows.Options{
-			Theme: windows.Dark,
+			WebviewUserDataPath: webviewUserDataPath,
+			Theme:               windows.Dark,
 			CustomTheme: &windows.ThemeSettings{
 				DarkModeTitleBar:          windows.RGB(13, 15, 18),
 				DarkModeTitleBarInactive:  windows.RGB(13, 15, 18),
@@ -98,6 +140,7 @@ func desktopAppOptions(app *DesktopApp) *options.App {
 						app.queueSkillLink(arg)
 					}
 				}
+				app.revealWindow()
 			},
 		},
 		OnShutdown: app.shutdown,
@@ -108,37 +151,65 @@ func desktopAppOptions(app *DesktopApp) *options.App {
 }
 
 func prepareDesktopApp(app *DesktopApp) error {
-	startupErrorPath := filepath.Join(app.dataDir, "startup-error.log")
-	if err := app.start(context.Background()); err != nil {
-		_ = os.MkdirAll(app.dataDir, 0o755)
-		_ = os.WriteFile(startupErrorPath, []byte(err.Error()+"\n"), 0o600)
-		return err
-	}
-	_ = os.Remove(startupErrorPath)
-	return nil
+	return app.start(context.Background())
 }
 
 func defaultDataDir() (string, error) {
+	dataDir, _, err := resolveDesktopStorage()
+	return dataDir, err
+}
+
+func resolveDesktopStorage() (string, string, error) {
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
 		if arg == "--data-dir" {
 			if i+1 == len(os.Args) {
-				return "", fmt.Errorf("--data-dir 需要明确的绝对目录")
+				return "", "", fmt.Errorf("--data-dir 需要明确的绝对目录")
 			}
-			return explicitDesktopDataDir(os.Args[i+1])
+			dir, err := explicitDesktopDataDir(os.Args[i+1])
+			if err != nil {
+				return "", "", err
+			}
+			return dir, matchingDefaultStorageRoot(dir), nil
 		}
 		if strings.HasPrefix(arg, "--data-dir=") {
-			return explicitDesktopDataDir(strings.TrimPrefix(arg, "--data-dir="))
+			dir, err := explicitDesktopDataDir(strings.TrimPrefix(arg, "--data-dir="))
+			if err != nil {
+				return "", "", err
+			}
+			return dir, matchingDefaultStorageRoot(dir), nil
 		}
 	}
 	if override := strings.TrimSpace(os.Getenv("CANVAS_DESKTOP_DATA_DIR")); override != "" {
-		return override, nil
+		return override, "", nil
 	}
 	root, err := desktopstorage.DefaultRoot()
 	if err != nil {
-		return "", fmt.Errorf("定位用户应用数据目录: %w", err)
+		return "", "", fmt.Errorf("定位用户应用数据目录: %w", err)
 	}
-	return desktopstorage.Resolve(root)
+	dataDir, err := desktopstorage.Resolve(root)
+	if err != nil {
+		return "", "", err
+	}
+	return dataDir, root, nil
+}
+
+func matchingDefaultStorageRoot(explicitDir string) string {
+	if strings.TrimSpace(os.Getenv("CANVAS_DESKTOP_DATA_DIR")) != "" {
+		return ""
+	}
+	root, err := desktopstorage.DefaultRoot()
+	if err != nil {
+		return ""
+	}
+	resolved, err := desktopstorage.Resolve(root)
+	if err != nil {
+		return ""
+	}
+	if desktopstorage.SameLocation(explicitDir, resolved) {
+		return root
+	}
+	return ""
 }
 
 func explicitDesktopDataDir(dir string) (string, error) {

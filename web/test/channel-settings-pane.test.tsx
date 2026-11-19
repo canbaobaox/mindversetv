@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import { BeefTVConnectionActions, mergeManagedBeefTVCatalog, modelConfigChannelPresentation, modelConfigChannelStatusLabel, shouldRefreshBeefTVCatalog, withChannels } from "../src/pages/settings/channel-settings-pane";
-import { renderToStaticMarkup } from "react-dom/server";
+import { mergeManagedBeefTVCatalog, modelConfigChannelPresentation, modelConfigChannelStatusLabel, shouldRefreshBeefTVCatalog, withChannels } from "../src/pages/settings/channel-settings-pane";
 import { createModelChannel, defaultConfig, resolveModelRequestConfig } from "../src/stores/use-config-store";
 import { buildGenerationConfig } from "../src/lib/canvas/canvas-generation-config";
 import { defaultModelCapabilityConfig, modelCapabilityConfigFor } from "../src/lib/model-capabilities";
@@ -15,18 +14,6 @@ test("removing a channel clears its legacy and assistant selections", () => {
     expect(next.assistantModel).toBe("");
 });
 
-test("connection actions render immediate progress and a retry after network failure", () => {
-    const noop = () => {};
-    const props = { busy: false, onConnect: noop, onCancel: noop, onRetry: noop, onDisconnect: noop, onWallet: noop };
-    const connecting = renderToStaticMarkup(<BeefTVConnectionActions {...props} connection={{ state: "connecting", hasCredential: false }} />);
-    expect(connecting).toContain("正在连接");
-    expect(connecting).toContain("disabled");
-    expect(connecting).not.toContain("重新连接");
-    const failed = renderToStaticMarkup(<BeefTVConnectionActions {...props} connection={{ state: "connection_error", hasCredential: false }} />);
-    expect(failed).toContain("重新连接");
-    expect(failed).not.toContain("disabled");
-});
-
 test("pinned BeefTV is visible and cannot be deleted before models are fetched", () => {
     const channel = createModelChannel({
         id: "beeftv",
@@ -38,7 +25,8 @@ test("pinned BeefTV is visible and cannot be deleted before models are fetched",
         presetVersion: 1,
     });
     expect(modelConfigChannelPresentation(channel)).toEqual({ builtin: true, deletable: false, adapterLabel: "应用内置适配" });
-    expect(modelConfigChannelStatusLabel(channel, { status: "idle", revision: 0, dirty: false, error: "" })).toBe("未连接");
+    // 官方连接已移除：未填 Key 的内置渠道按自填渠道规则显示“待配置”，而不是旧版的“未连接”。
+    expect(modelConfigChannelStatusLabel(channel, { status: "idle", revision: 0, dirty: false, error: "" })).toBe("待配置");
 });
 
 test("BeefTV status copy reflects enterprise connection state", () => {

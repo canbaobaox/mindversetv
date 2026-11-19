@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { chromium, type Browser } from "playwright";
 import { createModelChannel, defaultConfig } from "@/stores/use-config-store";
+import { readAppGlobalsSource } from "./helpers/app-styles";
 
 let browser: Browser;
 let server: ReturnType<typeof Bun.serve>;
@@ -24,6 +25,7 @@ function createGate() {
 
 let connectionState = "disconnected";
 let startCalls = 0;
+let disconnectCalls = 0;
 let connectionReads = 0;
 let catalogReads = 0;
 let failCatalogReads = 0;
@@ -47,6 +49,7 @@ let checkoutOpenError = "";
 beforeEach(() => {
     connectionState = "disconnected";
     startCalls = 0;
+    disconnectCalls = 0;
     connectionReads = 0;
     catalogReads = 0;
     failCatalogReads = 0;
@@ -77,6 +80,8 @@ beforeAll(async () => {
         target: "browser",
         define: {
             __APP_VERSION__: JSON.stringify(version),
+            "import.meta.env.VITE_APP_VERSION": JSON.stringify(version),
+            "import.meta.env.VITE_BUILD_COMMIT": '"test"',
             "import.meta.env.DEV": "false",
             "import.meta.env.PROD": "true",
             "import.meta.env.MODE": '"production"',
@@ -87,10 +92,14 @@ beforeAll(async () => {
         plugins: [{
             name: "source",
             setup(builder) {
+                const globalsCssPath = Bun.resolveSync("../src/styles/globals.css", import.meta.dir);
                 builder.onResolve({ filter: /\?url$/ }, (args) => ({ path: args.path, namespace: "test-url" }));
                 builder.onLoad({ filter: /.*/, namespace: "test-url" }, () => ({ contents: 'export default "";', loader: "js" }));
                 builder.onResolve({ filter: /^@\/.*\?raw$/ }, (args) => ({ path: Bun.resolveSync("../src/" + args.path.slice(2, -4), import.meta.dir), namespace: "test-raw" }));
-                builder.onLoad({ filter: /.*/, namespace: "test-raw" }, async (args) => ({ contents: `export default ${JSON.stringify(await Bun.file(args.path).text())};`, loader: "js" }));
+                builder.onLoad({ filter: /.*/, namespace: "test-raw" }, async (args) => ({
+                    contents: `export default ${JSON.stringify(args.path === globalsCssPath ? readAppGlobalsSource() : await Bun.file(args.path).text())};`,
+                    loader: "js",
+                }));
                 builder.onResolve({ filter: /^@\/components\/model-logo$/ }, () => ({ path: "model-logo", namespace: "test-icons" }));
                 builder.onLoad({ filter: /.*/, namespace: "test-icons" }, () => ({ contents: "export function ModelLogo() { return null; }", loader: "js" }));
                 builder.onResolve({ filter: /^@\// }, (args) => ({ path: Bun.resolveSync("../src/" + args.path.slice(2), import.meta.dir) }));
@@ -180,6 +189,11 @@ beforeAll(async () => {
                 connectionState = "cancelled";
                 return ok({ state: connectionState, hasCredential: false });
             }
+            if (path.endsWith("/beeftv/connection/disconnect")) {
+                disconnectCalls += 1;
+                connectionState = "disconnected";
+                return ok({ state: connectionState, hasCredential: false, account: null });
+            }
             if (path.endsWith("/beeftv/connection")) {
                 connectionReads += 1;
                 const snapshotState = connectionState;
@@ -245,6 +259,31 @@ afterAll(async () => {
     topUpInfoGate.release();
     server?.stop(true);
     await browser?.close();
+}, 30000);
+
+test("account settings opens problem diagnostics as its own section without leaving the dialog", async () => {
+    const page = await browser.newPage({ viewport: { width: 960, height: 760 }, reducedMotion: "reduce" });
+    try {
+        await page.route("**/api/diagnostics/preview", (route) => route.fulfill({
+            json: { code: 0, data: { taskCount: 3, apiCallCount: 5 } },
+        }));
+        await page.goto(server.url.toString());
+        await page.getByRole("button", { name: "登录 BeefTV", exact: true }).click();
+        const modal = page.locator(".account-settings-modal");
+        const diagnostics = modal.getByRole("button", { name: "问题诊断", exact: true });
+        const url = page.url();
+        await diagnostics.click();
+        expect(await diagnostics.getAttribute("aria-current")).toBe("page");
+        await modal.getByRole("heading", { name: "问题诊断", exact: true }).waitFor();
+        await modal.getByText("包含 3 个任务、5 次请求与前端日志。", { exact: true }).waitFor({ timeout: 5000 });
+        expect(await modal.getByRole("button", { name: "导出诊断包" }).isVisible()).toBe(true);
+        expect(await modal.getByRole("button", { name: "重新检查" }).isVisible()).toBe(true);
+        expect(page.url()).toBe(url);
+        await modal.getByRole("button", { name: "通用设置", exact: true }).click();
+        expect(await modal.getByText("连接诊断", { exact: true }).count()).toBe(0);
+    } finally {
+        await page.close();
+    }
 }, 30000);
 
 test("opening sidebar account modal never auto-starts OAuth; explicit login, changelog, and manual sync retry work", async () => {
@@ -723,6 +762,57 @@ test("slow topup/info response cannot overwrite a newer reconciled balance from 
         await page.waitForTimeout(200);
         expect(await modal.innerText()).toContain("¥ 128.50");
         expect(await modal.innerText()).not.toContain("¥ 28.50");
+    } finally {
+        await page.close();
+    }
+}, 30000);
+
+test("connected account balance pane supports direct switch-account, logout, and task completion sound toggle", async () => {
+    connectionState = "connected";
+    const page = await browser.newPage({ viewport: { width: 960, height: 760 } });
+    try {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.goto(server.url.toString());
+        await page.getByRole("button", { name: "BeefTV 账户：测试账号", exact: true }).click();
+        const modal = page.locator(".account-settings-modal");
+        await modal.waitFor();
+        await modal.getByText("¥ 28.50").waitFor();
+
+        // Switch account disconnects first and immediately starts a new connection flow.
+        await modal.getByRole("button", { name: "切换账号", exact: true }).click();
+        const pollDeadline = Date.now() + 5000;
+        while ((disconnectCalls < 1 || startCalls < 1) && Date.now() < pollDeadline) {
+            await page.waitForTimeout(25);
+        }
+        expect(disconnectCalls).toBe(1);
+        expect(startCalls).toBe(1);
+        await modal.getByRole("button", { name: "退出登录", exact: true }).waitFor();
+
+        // Logout requires explicit confirmation; cancelling keeps the account connected.
+        await modal.getByRole("button", { name: "退出登录", exact: true }).click();
+        const confirmDialog = page.locator(".ant-modal-confirm");
+        await confirmDialog.waitFor();
+        await confirmDialog.getByRole("button", { name: /^取\s*消$/ }).click();
+        await confirmDialog.waitFor({ state: "hidden" });
+        expect(disconnectCalls).toBe(1);
+        expect(await modal.getByRole("button", { name: "退出登录", exact: true }).count()).toBe(1);
+
+        // Confirming logout disconnects and returns to the unauthenticated login state.
+        await modal.getByRole("button", { name: "退出登录", exact: true }).click();
+        await confirmDialog.waitFor();
+        await confirmDialog.getByRole("button", { name: /^退\s*出\s*登\s*录$/ }).click();
+        await modal.getByRole("button", { name: /^登\s*录$/ }).waitFor();
+        expect(disconnectCalls).toBe(2);
+        expect(await modal.getByRole("button", { name: "切换账号", exact: true }).count()).toBe(0);
+        expect(await modal.getByRole("button", { name: "退出登录", exact: true }).count()).toBe(0);
+
+        // General settings exposes the task completion sound switch (default off).
+        await modal.getByRole("button", { name: "通用设置", exact: true }).click();
+        const soundSwitch = modal.getByRole("switch", { name: "任务完成提示音" });
+        await soundSwitch.waitFor();
+        expect(await soundSwitch.getAttribute("aria-checked")).toBe("false");
+        await soundSwitch.click();
+        expect(await soundSwitch.getAttribute("aria-checked")).toBe("true");
     } finally {
         await page.close();
     }

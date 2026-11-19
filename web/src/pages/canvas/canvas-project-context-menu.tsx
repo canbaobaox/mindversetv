@@ -2,9 +2,11 @@ import { App } from "antd";
 import { useMemo } from "react";
 
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
+import { collectCanvasStoryboardTargets } from "@/components/canvas/canvas-context-menu-storyboard";
 import { batchDownloadCanvasMediaNodes, collectDownloadableMediaNodes } from "@/lib/canvas/canvas-batch-download";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
-import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@/types/canvas";
+import { applyAssetsToStoryboardRows, collectSelectedBindableAssetNodes } from "@/lib/canvas/canvas-storyboard-assets";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type CanvasWorkspaceMode, type ContextMenuState, type Position, type StoryboardRow } from "@/types/canvas";
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
@@ -40,13 +42,14 @@ type CanvasProjectContextMenuProps = {
     onDeleteConnection: (connectionId: string) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
     onViewMedia: (node: CanvasNodeData) => void;
+    onInfoNode?: (node: CanvasNodeData) => void;
     onEditText: (node: CanvasNodeData) => void;
     onOpenDrawing: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
     onCopyContent: (node: CanvasNodeData | null) => void;
     onCopyMediaUrl: (node: CanvasNodeData | null) => void;
     onUploadToArkPrivateAsset: (node: CanvasNodeData) => void;
-    onSetAssetCategory: (nodeId: string, category: CanvasAssetCategory) => void;
+    onSetAssetCategory?: (nodeId: string, category: CanvasAssetCategory) => void;
     onToggleFrame: (node: CanvasNodeData) => void;
     onUnpackFolder?: (nodeId: string) => void;
     onSpreadSelection: () => void;
@@ -54,6 +57,12 @@ type CanvasProjectContextMenuProps = {
     onCopySelection: () => void;
     onDeleteSelection: () => void;
     onBatchDownloadSelection?: () => void;
+    onBindStoryboardRows?: (scriptNodeId: string, updater: (rows: StoryboardRow[]) => StoryboardRow[]) => void;
+    extractingAudio?: boolean;
+    extractingAudioNode?: boolean;
+    trimmingVideo?: boolean;
+    onExtractAudioFromVideo?: (node: CanvasNodeData) => void;
+    onExtractAudioNodeFromVideo?: (node: CanvasNodeData) => void;
 };
 
 export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props }: CanvasProjectContextMenuProps) {
@@ -61,6 +70,16 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
     const downloadableNodes = useMemo(
         () => (props.nodes && props.selectedNodeIds ? collectDownloadableMediaNodes(props.nodes, props.selectedNodeIds) : []),
         [props.nodes, props.selectedNodeIds],
+    );
+    const bindableNodes = useMemo(() => {
+        if (!props.nodes) return [];
+        const selected = props.selectedNodeIds ? Array.from(props.selectedNodeIds) : [];
+        const targetIds = selected.length > 0 ? selected : node ? [node.id] : [];
+        return collectSelectedBindableAssetNodes(props.nodes, targetIds);
+    }, [node, props.nodes, props.selectedNodeIds]);
+    const storyboardTargets = useMemo(
+        () => (props.nodes ? collectCanvasStoryboardTargets(props.nodes) : []),
+        [props.nodes],
     );
     if (!menu) return null;
     const downloadableSelectionCount = props.downloadableSelectionCount ?? downloadableNodes.length;
@@ -126,6 +145,11 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             onViewMedia={() => {
                 if (node) props.onViewMedia(node);
             }}
+            onNodeInfo={
+                props.onInfoNode && node
+                    ? () => props.onInfoNode?.(node)
+                    : undefined
+            }
             onEditText={() => {
                 if (node) props.onEditText(node);
             }}
@@ -140,9 +164,11 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             onUploadToArkPrivateAsset={() => {
                 if (node?.type === CanvasNodeType.Image) props.onUploadToArkPrivateAsset(node);
             }}
-            onSetAssetCategory={(category) => {
-                if (menu.type === "node") props.onSetAssetCategory(menu.nodeId, category);
-            }}
+            onSetAssetCategory={
+                props.onSetAssetCategory && menu.type === "node"
+                    ? (category) => props.onSetAssetCategory?.(menu.nodeId, category)
+                    : undefined
+            }
             onToggleFrame={() => {
                 if (node && isFrameNode(node)) props.onToggleFrame(node);
             }}
@@ -156,6 +182,41 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             onCopySelection={props.onCopySelection}
             onDeleteSelection={props.onDeleteSelection}
             onBatchDownloadSelection={handleBatchDownloadSelection}
+            bindableAssetCount={bindableNodes.length}
+            storyboardTargets={storyboardTargets}
+            onBindAssetsToStoryboardShots={
+                props.onBindStoryboardRows
+                    ? (scriptNodeId, rowIds) => {
+                          if (!bindableNodes.length || !rowIds.length) return;
+                          const targetScript = storyboardTargets.find((item) => item.scriptNodeId === scriptNodeId);
+                          const rowSet = new Set(rowIds);
+                          const matchedShots = (targetScript?.shots || []).filter((shot) => rowSet.has(shot.rowId));
+                          props.onBindStoryboardRows?.(scriptNodeId, (rows) => applyAssetsToStoryboardRows(rows, rowIds, bindableNodes).rows);
+                          if (matchedShots.length === 1) {
+                              message.success(`已将 ${bindableNodes.length} 个素材关联到第 ${matchedShots[0].shotNumber} 镜`);
+                          } else {
+                              message.success(`已将 ${bindableNodes.length} 个素材关联到 ${matchedShots.length || rowIds.length} 个镜头`);
+                          }
+                      }
+                    : undefined
+            }
+            extractingAudio={props.extractingAudio}
+            extractingAudioNode={props.extractingAudioNode}
+            trimmingVideo={props.trimmingVideo}
+            onExtractAudio={
+                props.onExtractAudioFromVideo
+                    ? () => {
+                          if (node?.type === CanvasNodeType.Video) props.onExtractAudioFromVideo?.(node);
+                      }
+                    : undefined
+            }
+            onExtractAudioNode={
+                props.onExtractAudioNodeFromVideo
+                    ? () => {
+                          if (node?.type === CanvasNodeType.Video) props.onExtractAudioNodeFromVideo?.(node);
+                      }
+                    : undefined
+            }
         />
     );
 }

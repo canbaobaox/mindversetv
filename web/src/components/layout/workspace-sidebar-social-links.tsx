@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import Github from "@lobehub/icons/es/Github";
 import { aceternityMotion } from "@/lib/aceternity-motion";
 import { cn } from "@/lib/utils";
-import { resolveEmbeddedAssetUrl } from "@/lib/embedded-runtime";
 import { getDesktopAppBinding } from "@/services/desktop-runtime";
 
 
@@ -95,6 +94,7 @@ export function WorkspaceSidebarSocialLinks({ collapsed, onExpand }: { collapsed
                         <Github aria-hidden="true" />
                     </a>
                 </Tooltip>
+
             </motion.div>
         </div>
     );

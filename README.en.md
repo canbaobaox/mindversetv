@@ -36,6 +36,9 @@
 
 ## Recent updates
 
+- **[v2.3.2](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.2)** — Fix the Windows desktop issue where the built-in assistant could not read or modify the canvas across keep-alive turns on local named pipes.
+- **[v2.3.1](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.1)** — Restore one-click channel setup compatibility for third-party desktop plugins, add the single-character replacement workflow, direct and batch storyboard asset binding, video-to-audio extraction, MCP call history, and prompt preset preferences, and ship storage migration rollback, domestic depth-runtime mirrors, and bundled macOS FFmpeg/ffprobe tools with corresponding open-source notices.
+- **[v2.3.0](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.0)** — Move four community plugins to on-demand marketplace installation and update ComfyUI and AutoDL workflow support, add stacked image generation history with side-by-side comparison and details, add video smart erase and fixed reference slot ordering, refine failure source navigation and retry confirmation, and improve desktop startup resilience and multi-video canvas zoom smoothness.
 - **[v2.2.5](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.5)** — Fix canvas uploads reverting to uploading overlays and replaced nodes being overwritten by stale tasks, fix desktop resource thumbnails, standalone storyboard generation, and batch download numbering, upgrade native video frame extraction and audio separation, and lift assistant skill size and count limits with paged line-by-line long-document reading.
 - **[v2.2.4](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.4)** — Fix Eagle library previews and downloads on desktop, support prefixless custom model URLs and editing/deleting manual models, and fix prompt backspace editing, asset library pagination counts, and local video previews in generation history.
 - **[v2.2.3](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.3)** — Add Seedream 5.5 image generation and fine-grained layer splitting, improve automatic first/last frame assignment and reference checks, fix upscale and subtitle-removal retry states and diagnostics, and add Yinsheng Yunshu Yisuan branding.
@@ -46,7 +49,7 @@
 
 ## Special thanks
 
-BeefTV's former partners and sponsors (including ll2.cn, Yinsheng Yunshu Yisuan, Tencent Cloud, BytePlus, and PCCOOLER) supported the upstream project; they are thanked here for the record only, without prices or promotional links. MindVerseTV does not integrate these commercial channels and provides no official compute; configure model channels with your own Base URL and Key.
+BeefTV's former partners and sponsors (including ll2.cn, Yinsheng Yunshu Yisuan, Tencent Cloud, BytePlus, PCCOOLER, and Infistar) supported the upstream project; they are thanked here for the record only, without prices or promotional links. MindVerseTV does not integrate these commercial channels and provides no official compute; configure model channels with your own Base URL and Key.
 ## Product demo
 
 <div>
@@ -150,6 +153,18 @@ MindVerseTV also includes project and personal asset libraries, asynchronous tas
 3. Create a canvas, add reference media, and describe your goal to the creative assistant. You can also start creating directly with nodes.
 
 See [Quick Start](QUICKSTART.md) for model setup and building from source, and the [desktop release guide](docs/desktop-release.md) for packaging requirements.
+
+## Commercial licensing and sponsorship
+
+For commercial use or derivative development based on BeefTV, please obtain official authorization from the BeefTV team. To learn about commercial licensing options, scan the QR code below to add me on WeCom and include **“BeefTV 授权”** in your contact request.
+
+BeefTV is also open to sponsorship. If you would like more people to discover and use your compute service or product through BeefTV, scan the WeCom QR code below and include “BeefTV 赞助” in your contact request.
+
+BeefTV has grown to over 2.5K stars, 480 forks, and a community of more than 2,000 members. The team has also established close partnerships with several sponsors.
+
+<p align="center">
+  <img src="assets/readme/commercial-license-wecom.jpg" width="200" alt="WeCom QR code for BeefTV commercial licensing and sponsorship inquiries">
+</p>
 
 ## Contributing and license
 

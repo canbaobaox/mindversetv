@@ -1,21 +1,79 @@
 import type { AiConfig, ModelChannel, ModelCapability } from "@/stores/use-config-store";
 import { createModelChannel } from "@/stores/use-config-store";
-import { defaultModelCapabilityConfig, hasUserModelCapability } from "@/lib/model-capabilities";
+import { defaultModelCapabilityConfig, hasUserModelCapability, hasVersionedModelCapability } from "@/lib/model-capabilities";
 import { inferProtocolCapabilityFromModel, modelProtocolDefinition, modelProtocolDefinitionFor, type ModelProtocolDefinition } from "@/lib/model-protocols";
 import { cleanChannelBaseUrl, isRawChannelBaseUrl } from "@/lib/channel-url";
 import { catalogEndpointCapability, type ChannelModelCatalogItem } from "@/lib/channel-model-catalog";
 import { serviceCredentialGuide } from "@/lib/service-credentials";
-import { BUILTIN_PRESETS, COMPATIBLE_CANDIDATES, builtinPreset, builtinProtocolsAvailable, upgradeBuiltinModelProfile } from "@/lib/builtin-service-presets";
-import { DEFAULT_BASE_URL as LL2_DEFAULT_BASE_URL, LL2_CHANNEL_ID, LL2_CHANNEL_NAME } from "../../../plugin-packages/beeftv-plugin-ll2/client/index.js";
-import { DEFAULT_BASE_URL as YSDUI_DEFAULT_BASE_URL, YSDUI_CHANNEL_ICON, YSDUI_CHANNEL_ID, YSDUI_CHANNEL_NAME } from "../../../plugin-packages/beeftv-plugin-ysdui/client/index.js";
+import {
+    COMPATIBLE_CANDIDATES,
+    LL2_CHANNEL_ID,
+    YSDUI_CHANNEL_ID,
+    allKnownBuiltinPresets,
+    builtinPreset,
+    builtinProtocolsAvailable,
+    upgradeBuiltinModelProfile,
+} from "@/lib/builtin-service-presets";
 
-export const MODEL_SERVICE_PRESETS = [
-    { id: "compatible", name: "第三方模型服务", subtitle: "OpenAI 兼容 API · 中转服务", icon: "OpenAI", baseUrl: "", apiFormat: "openai" },
+export type ModelServicePresetId = "compatible" | "openai" | "gemini" | "ark" | typeof LL2_CHANNEL_ID | typeof YSDUI_CHANNEL_ID | (string & {});
+
+export type ModelServicePresetItem = {
+    id: ModelServicePresetId;
+    readonly name: string;
+    readonly subtitle: string;
+    readonly icon: string;
+    readonly baseUrl: string;
+    readonly website?: string;
+    apiFormat: "openai" | "gemini";
+};
+
+const COMPATIBLE_PRESET: ModelServicePresetItem = {
+    id: "compatible",
+    name: "第三方模型服务",
+    subtitle: "OpenAI 兼容 API · 中转服务",
+    icon: "OpenAI",
+    baseUrl: "",
+    apiFormat: "openai",
+};
+
+const DIRECT_SERVICE_PRESETS: readonly ModelServicePresetItem[] = [
     { id: "openai", name: "OpenAI", subtitle: "文本 · 图片（Sora 已停用）", icon: "OpenAI", baseUrl: "https://api.openai.com/v1", apiFormat: "openai" },
     { id: "gemini", name: "Google Gemini", subtitle: "文本 · 图片（Veo 已停用）", icon: "Gemini", baseUrl: "https://generativelanguage.googleapis.com", apiFormat: "gemini" },
     { id: "ark", name: "火山方舟", subtitle: "文本 · 即梦图片 · Seedance 视频", icon: "Volcengine", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", apiFormat: "openai" },
-] as const;
-export type ModelServicePresetId = typeof MODEL_SERVICE_PRESETS[number]["id"];
+];
+
+/**
+ * MindVerseTV 服务商列表：只展示通用与直连入口（第三方模型服务、OpenAI、
+ * Google Gemini、火山方舟）。上游的内置商业合作伙伴预设（ll2、银盛·云枢壹算、
+ * Infistar 等）不进入列表、不展示、不参与新建；已存旧渠道仍走已安装插件协议，
+ * 由 builtinPreset 侧的兼容逻辑兜底。
+ */
+export const MODEL_SERVICE_PRESETS: ModelServicePresetItem[] = [
+    COMPATIBLE_PRESET,
+    ...DIRECT_SERVICE_PRESETS,
+];
+
+/** MindVerseTV 不设「合作伙伴」分区，始终返回空列表（上游热接入的合作商不展示）。 */
+export function partnerServicePresets(_includePresetId?: ModelServicePresetId, _nowMs = Date.now()): ModelServicePresetItem[] {
+    return [];
+}
+
+export function standardServicePresets(): ModelServicePresetItem[] {
+    return [COMPATIBLE_PRESET, ...DIRECT_SERVICE_PRESETS];
+}
+
+export function presetKeysUrl(id: ModelServicePresetId): string | undefined {
+    return builtinPreset(id)?.keysUrl;
+}
+
+export function presetPluginId(id: ModelServicePresetId): string | undefined {
+    return builtinPreset(id)?.pluginId;
+}
+
+export function presetPromoText(id: ModelServicePresetId): string | undefined {
+    return builtinPreset(id)?.promoText;
+}
+
 export const CAPABILITY_LABELS: Record<ModelCapability, string> = { text: "文本", image: "图片", video: "视频", audio: "音频" };
 
 /** 预设自带的模型数量；用于设置页说明文案，不再从渠道对象上读。 */
@@ -43,7 +101,7 @@ export function servicePresetFor(channel: ModelChannel): ModelServicePresetId {
     if (builtinPreset(channel.id)) return channel.id as ModelServicePresetId;
     try {
         const host = new URL(channel.baseUrl).hostname;
-        for (const [id, plugin] of Object.entries(BUILTIN_PRESETS)) {
+        for (const [id, plugin] of allKnownBuiltinPresets()) {
             if (plugin.hosts.includes(host) || plugin.hostSuffixes.some((suffix) => host.endsWith(suffix))) return id as ModelServicePresetId;
         }
         if (host === "api.openai.com") return "openai";
@@ -104,8 +162,37 @@ export function ysduiProtocolsAvailable(protocols: ModelProtocolDefinition[]): b
     return builtinProtocolsAvailable(YSDUI_CHANNEL_ID, protocols);
 }
 
+/** 未列入服务列表的内置预设条目：名字、地址、图标一律取内置预设数据（与旧版列表行为一致）。 */
+function makeBuiltinPresetEntry(id: string): ModelServicePresetItem {
+    return {
+        id: id as ModelServicePresetId,
+        get name() {
+            return builtinPreset(id)?.name ?? id;
+        },
+        get subtitle() {
+            return builtinPreset(id)?.subtitle ?? "多模态算力服务";
+        },
+        get icon() {
+            const raw = builtinPreset(id)?.icon;
+            if (id === LL2_CHANNEL_ID && (!raw || raw === "OpenAI")) return "LL2";
+            return raw ?? "OpenAI";
+        },
+        get baseUrl() {
+            return builtinPreset(id)?.baseUrl ?? "";
+        },
+        get website() {
+            const entry = builtinPreset(id);
+            return entry?.keysUrl ?? entry?.websiteUrl;
+        },
+        apiFormat: "openai",
+    };
+}
+
 export function createServicePresetChannel(id: ModelServicePresetId, channelId: string, protocols?: ModelProtocolDefinition[]): ModelChannel {
-    const preset = MODEL_SERVICE_PRESETS.find((item) => item.id === id)!;
+    // 未列入服务列表的内置预设（ll2、银盛、动态合作方）仍按内置预设数据建渠道，
+    // 只为已存渠道的修复/迁移服务；新建入口只提供列表里的预设，UI 上选不到它们。
+    const preset = MODEL_SERVICE_PRESETS.find((item) => item.id === id)
+        ?? (builtinPreset(id) ? makeBuiltinPresetEntry(id) : COMPATIBLE_PRESET);
     const plugin = builtinPreset(id);
     if (plugin) {
         // 新建预设渠道时还没有旧渠道；已有渠道的自定义模型由插件自己的同步流程合并。
@@ -139,14 +226,40 @@ export function serviceModelProfile(channel: ModelChannel, item: ChannelModelCat
     const preset = channel.apiFormat === "gemini" ? "gemini" : servicePresetFor(channel);
     const plugin = builtinPreset(preset);
     const rawExisting = channel.modelProfiles?.find((profile) => profile.model === item.id);
-    const existing = rawExisting ? upgradeBuiltinModelProfile(rawExisting) : rawExisting;
+    const existing = rawExisting ? upgradeBuiltinModelProfile(rawExisting, channel) : rawExisting;
     if (existing?.protocol && !explicitCapability) {
+        const matching = protocols.filter((p) => p.value === existing.protocol && p.enabled !== false);
+        if (matching.some((p) => p.module)) {
+            const nextCapability = item.modelType || existing.capability;
+            const usable = (nextCapability ? matching.find((p) => p.capability === nextCapability) : undefined) ?? matching[0];
+            const capabilityChanged = Boolean(nextCapability && existing.capability && nextCapability !== existing.capability);
+            const keepUser = hasUserModelCapability(existing) && !capabilityChanged;
+            const keepVersioned = !capabilityChanged && hasVersionedModelCapability(existing, nextCapability);
+            const nextConfig = keepUser || keepVersioned
+                ? existing.capabilityConfig
+                : (nextCapability === "image" || nextCapability === "video") && usable
+                  ? defaultModelCapabilityConfig(usable.value, item.id, protocols)
+                  : undefined;
+            return {
+                ...existing,
+                displayName: item.displayName || existing.displayName,
+                capability: nextCapability,
+                protocol: usable?.value ?? existing.protocol,
+                authType: usable ? usable.authType : existing.authType,
+                capabilitySource: keepUser ? "user" : undefined,
+                capabilityConfig: nextConfig,
+            };
+        }
         const definition = modelProtocolDefinition(existing.protocol, protocols);
         const usable = definition && definition.enabled !== false ? definition : undefined;
         const workflow = usable?.workflows?.find((w) => w.id === item.id && w.capability === "video");
-        const repairedCapabilityConfig =
-            workflow && !hasUserModelCapability(existing) && existing.capabilityConfig?.video?.ratios?.length
+        const projectedWorkflowConfig =
+            workflow && !hasUserModelCapability(existing) && !hasVersionedModelCapability(existing, "video")
                 ? defaultModelCapabilityConfig(usable!.value, item.id, protocols)
+                : undefined;
+        const repairedCapabilityConfig =
+            projectedWorkflowConfig && JSON.stringify(projectedWorkflowConfig) !== JSON.stringify(existing.capabilityConfig)
+                ? projectedWorkflowConfig
                 : existing.capabilityConfig;
         // 旧 ID 落盘时换成现在的 ID，下次打开就是新 ID。
         if (usable && (usable.value !== existing.protocol || usable.authType !== existing.authType || repairedCapabilityConfig !== existing.capabilityConfig)) {

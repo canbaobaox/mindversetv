@@ -9,7 +9,6 @@ import (
 	_ "image/png"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -57,6 +56,37 @@ func ProcessCanvasMedia(
 	if json.Unmarshal([]byte(task.InputJSON), &input) != nil || !cw.IsMediaOperation(input.Node.OperationID) {
 		return FailTimelineTask(repo, logInfo, task, "处理失败", "媒体处理参数无效")
 	}
+	if cw.IsReplacementLocalOperation(input.Node.OperationID) {
+		worker := replacementMedia{resources: resources, openResource: openResource}
+		var result map[string]any
+		var err error
+		if input.Node.OperationID == cw.ReplacementPrepareOperation {
+			result, err = worker.prepareReplacement(task, ctx, input)
+		} else {
+			result, err = worker.finishReplacement(task, ctx, input)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			return FailTimelineTask(repo, logInfo, task, "人物替换处理失败", err.Error())
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		task.ResultJSON = string(raw)
+		task.Status, task.Progress, task.Stage = model.TaskStatusSucceeded, 100, "处理完成"
+		now := time.Now()
+		task.CompletedAt = &now
+		if err := repo.SaveTaskCompletion(task, model.TaskStatusRunning, nil); err != nil {
+			return err
+		}
+		if err := deliver(*task); err != nil {
+			_ = logFn(task.UserID, task.ID, "error", "人物替换结果交付待恢复", err.Error())
+		}
+		return nil
+	}
 	var clean func()
 	var artifact *os.File
 	defer func() {
@@ -77,11 +107,11 @@ func ProcessCanvasMedia(
 		if format == "" {
 			return localasset.RecoveredArtifact{}, fmt.Errorf("此素材格式暂不支持自动处理")
 		}
-		params, ext, mime, err := cw.MediaCommand(input.Node, source.Width, source.Height)
+		bin, err := mediatools.ResolveFFmpeg()
 		if err != nil {
 			return localasset.RecoveredArtifact{}, err
 		}
-		bin, err := mediatools.ResolveFFmpeg()
+		candidates, err := cw.MediaCommandCandidates(bin, input.Node, source.Width, source.Height)
 		if err != nil {
 			return localasset.RecoveredArtifact{}, err
 		}
@@ -103,18 +133,15 @@ func ProcessCanvasMedia(
 		if closeErr != nil {
 			return localasset.RecoveredArtifact{}, closeErr
 		}
-		output := filepath.Join(dir, "result"+ext)
-		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-f", format, "-i", sourcePath}
-		args = append(args, params...)
-		args = append(args, output)
+		baseArgs := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-f", format, "-i", sourcePath}
 		if err = UpdateTimelineTaskProgress(repo, task, "本地媒体处理中", 20); err != nil {
 			return localasset.RecoveredArtifact{}, err
 		}
-		cmd := exec.CommandContext(ctx, bin, args...)
-		mediatools.HideConsole(cmd)
-		if err = cmd.Run(); err != nil {
+		output, chosen, err := cw.ExecuteMediaCommands(ctx, bin, baseArgs, dir, candidates)
+		if err != nil {
 			return localasset.RecoveredArtifact{}, fmt.Errorf("媒体处理失败，请检查源文件、裁切范围或音轨：%w", err)
 		}
+		ext, mime := chosen.Ext, chosen.Mime
 		artifact, err = os.Open(output)
 		if err != nil {
 			return localasset.RecoveredArtifact{}, err

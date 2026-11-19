@@ -366,10 +366,9 @@ export function AccountBalancePane() {
     const activeMethodKey = showingWaitingOrder ? pendingOrder.paymentMethod : method;
     const currentMethodLabel = ALL_PAYMENT_OPTIONS.find((item) => item.key === activeMethodKey)?.label || "在线支付";
     const displayedBalanceCny = connection?.balanceCny;
-
     return <>
         <div className="account-balance-identity">
-            <div><h3>{connected ? name : "MindVerseTV 账户"}</h3>
+            <div className="account-balance-identity-meta"><h3>{connected ? name : "MindVerseTV 账户"}</h3>
                 {connected && connection?.account?.email && name !== connection.account.email ? <p>{connection.account.email}</p> : null}
                 {connection?.state !== "connected" ? <p role="status" aria-live="polite">{beefTVConnectionLabel(connection)}</p> : null}
             </div>
