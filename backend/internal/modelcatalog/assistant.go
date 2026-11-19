@@ -132,12 +132,35 @@ func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, look
 	if !assistantChannelHasModel(channel, modelID) {
 		return assistant.Provider{}, AssistantReasonModelNotConfigured
 	}
+	// 托管凭证只查一次：同一组参数的重复查询走缓存，避免一次模型解析
+	// 触发两次底层凭证读取（白名单判定一次、凭证填充一次）。
+	type managedLookupResult struct {
+		apiKey, baseURL string
+		ok              bool
+	}
+	var managedCache map[string]managedLookupResult
+	lookupManaged := func(channelID, credentialRef, baseURL string) managedLookupResult {
+		if lookup == nil {
+			return managedLookupResult{}
+		}
+		key := channelID + "\x00" + credentialRef + "\x00" + baseURL
+		if cached, ok := managedCache[key]; ok {
+			return cached
+		}
+		apiKey, resolvedBaseURL, ok := lookup(channelID, credentialRef, baseURL)
+		result := managedLookupResult{apiKey: apiKey, baseURL: resolvedBaseURL, ok: ok}
+		if managedCache == nil {
+			managedCache = make(map[string]managedLookupResult)
+		}
+		managedCache[key] = result
+		return result
+	}
 	if channel.ID == "beeftv" && (channel.Pinned || channel.CredentialRef == "beeftv") {
 		// 官方模型目录白名单只在托管凭证真实存在时生效；内置渠道改走自填 Key
 		// 后，模型由渠道自己的目录决定，不再受官方目录约束。
 		managed := false
 		if lookup != nil {
-			if _, _, ok := lookup(channel.ID, channel.CredentialRef, strings.TrimSpace(channel.BaseURL)); ok {
+			if result := lookupManaged(channel.ID, channel.CredentialRef, strings.TrimSpace(channel.BaseURL)); result.ok {
 				managed = true
 			}
 		}
@@ -175,12 +198,12 @@ func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, look
 		provider.BaseURL = strings.TrimSpace(snapshot.BaseURL)
 	}
 	if lookup != nil {
-		if apiKey, baseURL, ok := lookup(channel.ID, channel.CredentialRef, provider.BaseURL); ok {
-			if strings.TrimSpace(apiKey) != "" {
-				provider.APIKey = apiKey
+		if result := lookupManaged(channel.ID, channel.CredentialRef, provider.BaseURL); result.ok {
+			if strings.TrimSpace(result.apiKey) != "" {
+				provider.APIKey = result.apiKey
 			}
-			if strings.TrimSpace(baseURL) != "" {
-				provider.BaseURL = strings.TrimSpace(baseURL)
+			if strings.TrimSpace(result.baseURL) != "" {
+				provider.BaseURL = strings.TrimSpace(result.baseURL)
 			}
 		}
 	}

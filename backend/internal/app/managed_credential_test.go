@@ -11,7 +11,7 @@ import (
 
 func TestManagedGeminiCatalogCredentialProviderChain(t *testing.T) {
 	s, _, _, _ := creationTestService(t)
-	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://beeftv.app","apiKey":"test-only-key"}]}`)); err != nil {
+	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://api.lk888.ai","apiKey":"test-only-key"}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := os.ReadFile("../../../plugin-packages/google-gemini-generate-content/manifest.json")
@@ -32,7 +32,7 @@ func TestManagedGeminiCatalogCredentialProviderChain(t *testing.T) {
 			t.Fatal(err)
 		}
 		config := resolved["config"].(map[string]any)
-		if config["apiKey"] != "test-only-key" || config["baseUrl"] != "https://beeftv.app" {
+		if config["apiKey"] != "test-only-key" || config["baseUrl"] != "https://api.lk888.ai" {
 			t.Fatal("managed credential did not resolve")
 		}
 		adapter, ok := registry.Resolve(config["interfaceType"].(string))
@@ -55,18 +55,20 @@ func TestManagedGeminiCatalogCredentialProviderChain(t *testing.T) {
 
 func TestCustomRelayOnlyInjectsBeefTVKeyForExactConfiguredOrigin(t *testing.T) {
 	s, _, _, _ := creationTestService(t)
-	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://beeftv.app","apiKey":"disk-secret"}]}`)); err != nil {
+	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://api.lk888.ai","apiKey":"disk-secret"}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range []string{
-		"http://beeftv.app/v1/chat/completions",
-		"https://beeftv.app:8443/v1/chat/completions",
+		"http://api.lk888.ai/v1/chat/completions",
+		"https://api.lk888.ai:8443/v1/chat/completions",
 		"https://127.0.0.1.attacker.example/v1/chat/completions",
 		"http://127.0.0.1:9999/v1/chat/completions",
 		"http://localhost:9999/v1/chat/completions",
-		"https://beeftv.app.attacker.example/v1/chat/completions",
-		"https://user@beeftv.app/v1/chat/completions",
+		"https://api.lk888.ai.attacker.example/v1/chat/completions",
+		"https://user@api.lk888.ai/v1/chat/completions",
 		"https://legacy-enterprise.example.com/v1/chat/completions",
+		// 迁移前的旧域名已不再是当前配置的 origin，不得再注入托管密钥。
+		"https://beeftv.app/v1/chat/completions",
 	} {
 		t.Run(target, func(t *testing.T) {
 			got, err := s.ResolveCustomRelayAPIKey(target, "other-channel-key")
@@ -75,11 +77,11 @@ func TestCustomRelayOnlyInjectsBeefTVKeyForExactConfiguredOrigin(t *testing.T) {
 			}
 		})
 	}
-	got, err := s.ResolveCustomRelayAPIKey("https://beeftv.app/v1/chat/completions", "")
+	got, err := s.ResolveCustomRelayAPIKey("https://api.lk888.ai/v1/chat/completions", "")
 	if err != nil || got != "disk-secret" {
 		t.Fatalf("configured origin did not resolve its credential: error=%v", err)
 	}
-	byokGot, err := s.ResolveCustomRelayAPIKey("https://beeftv.app/v1/chat/completions", "custom-byok")
+	byokGot, err := s.ResolveCustomRelayAPIKey("https://api.lk888.ai/v1/chat/completions", "custom-byok")
 	if err != nil || byokGot != "custom-byok" {
 		t.Fatalf("same-origin BYOK key was replaced by managed credential: got=%q error=%v", byokGot, err)
 	}
@@ -118,7 +120,7 @@ func TestResolveManagedBeefTVSecretsUsesStoredKeyAndDropsClientSentinel(t *testi
 
 func TestChannelCatalogManagedCredentialPinsOrigin(t *testing.T) {
 	s, _, _, _ := creationTestService(t)
-	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://beeftv.app","apiKey":"test-only-key"}]}`)); err != nil {
+	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://api.lk888.ai","apiKey":"test-only-key"}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	for _, input := range []ChannelModelsRequest{
@@ -128,7 +130,7 @@ func TestChannelCatalogManagedCredentialPinsOrigin(t *testing.T) {
 		if err := s.resolveChannelModelsRequest(&input); err != nil {
 			t.Fatal(err)
 		}
-		if input.BaseURL != "https://beeftv.app" || input.APIKey != "test-only-key" {
+		if input.BaseURL != "https://api.lk888.ai" || input.APIKey != "test-only-key" {
 			t.Fatal("stored credential not bound to configured origin")
 		}
 	}

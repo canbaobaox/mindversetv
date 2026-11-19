@@ -24,6 +24,7 @@ func (s stubReferenceSource) ReferencedProviders() (map[string]ReferenceUsage, e
 }
 
 func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSymlinks(t *testing.T) {
+	useShippedLL2YsduiForTest(t)
 	v1Bytes, v1SHA := buildTarballBytesForTest(t, map[string]string{
 		"package.json": `{
 			"name": "beeftv-plugin-ll2",

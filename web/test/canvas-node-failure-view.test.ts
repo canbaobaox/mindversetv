@@ -1346,14 +1346,14 @@ const EXPECTED: Array<{ name: string } & CanvasNodeFailureView> = [
         },
         "copy": {
             "badge": "正在核对",
-            "reason": "BeefTV 正在核对上次提交，预计 06:15 前有结论",
+            "reason": "MindVerseTV 正在核对上次提交，预计 06:15 前有结论",
             "action": "核对完成前请勿重新生成",
-            "message": "BeefTV 正在核对上次提交，预计 06:15 前有结论。核对完成前请勿重新生成。"
+            "message": "MindVerseTV 正在核对上次提交，预计 06:15 前有结论。核对完成前请勿重新生成。"
         },
         "explanation": {
             "category": "download_failed",
             "summary": "opaque",
-            "reason": "BeefTV 正在核对上次提交，预计 06:15 前有结论",
+            "reason": "MindVerseTV 正在核对上次提交，预计 06:15 前有结论",
             "action": "核对完成前请勿重新生成",
             "message": "opaque",
             "errorCode": "download_failed",

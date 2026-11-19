@@ -23,6 +23,7 @@ func decodeSpecBody(t *testing.T, spec protocol.RequestSpec) map[string]any {
 
 func loadYsduiRegistry(t *testing.T) *protocol.Registry {
 	t.Helper()
+	useShippedLL2YsduiForTest(t)
 	rt, err := NewRuntime(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRuntime: %v", err)

@@ -14,7 +14,7 @@ import (
 
 func TestUpscaleAdmissionPinsOfficialCredentialAndPayload(t *testing.T) {
 	s, _, _, _ := creationTestService(t)
-	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://beeftv.app","apiKey":"synthetic-disk-key","enabled":true}]}`)); err != nil {
+	if err := s.SaveLocalModelConfig([]byte(`{"channels":[{"id":"beeftv","baseUrl":"https://api.lk888.ai","apiKey":"synthetic-disk-key","enabled":true}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	input := map[string]any{"mode": "image", "prompt": "AI 超分", "config": map[string]any{"credentialRef": "beeftv", "apiKey": "forged-client-key", "baseUrl": "https://untrusted.invalid", "model": "topaz-standard-v2", "interfaceType": "newapi"}, "upscale": map[string]any{"factor": 2}, "referenceImages": []any{map[string]any{"storageKey": "resource:owned-source"}}}
@@ -23,7 +23,7 @@ func TestUpscaleAdmissionPinsOfficialCredentialAndPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := resolved["config"].(map[string]any)
-	if config["apiKey"] != "synthetic-disk-key" || config["baseUrl"] != "https://beeftv.app" {
+	if config["apiKey"] != "synthetic-disk-key" || config["baseUrl"] != "https://api.lk888.ai" {
 		t.Fatal("client overrode managed credential origin")
 	}
 	if err := (taskCatalogAdapter{s}).ValidateCapability(resolved); err != nil {

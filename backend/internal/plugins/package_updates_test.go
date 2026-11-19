@@ -209,6 +209,7 @@ func TestVersionedInstallUpdatesToLatestByHandOnly(t *testing.T) {
 }
 
 func TestLL2Wan3VideoProviderContract(t *testing.T) {
+	useShippedLL2YsduiForTest(t)
 	rt, err := NewRuntime(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRuntime failed: %v", err)
@@ -370,6 +371,7 @@ func TestLL2Wan3VideoProviderContract(t *testing.T) {
 }
 
 func TestLL2SuperVegaResolutionContract(t *testing.T) {
+	useShippedLL2YsduiForTest(t)
 	t.Cleanup(func() { capability.BuiltinRegistry().ResetPluginDescriptors() })
 	rt, err := NewRuntime(t.TempDir())
 	if err != nil {
@@ -558,6 +560,7 @@ func buildTarballBytesForTest(t *testing.T, files map[string]string) ([]byte, st
 }
 
 func TestCuratedBuiltinPluginHotUpdatesAndPersistsAcrossRestart(t *testing.T) {
+	useShippedLL2YsduiForTest(t)
 	tgzBytes, tgzSHA := buildTarballBytesForTest(t, map[string]string{
 		"package.json": `{
 			"name": "beeftv-plugin-ll2",
@@ -702,6 +705,7 @@ func TestCuratedBuiltinPluginHotUpdatesAndPersistsAcrossRestart(t *testing.T) {
 }
 
 func TestHotUpdatedBuiltinRollsBackOnLoadErrorAndRejectsSpoofedOrigin(t *testing.T) {
+	useShippedLL2YsduiForTest(t)
 	tgzBytes, tgzSHA := buildTarballBytesForTest(t, map[string]string{
 		"package.json": `{
 			"name": "beeftv-plugin-ll2",

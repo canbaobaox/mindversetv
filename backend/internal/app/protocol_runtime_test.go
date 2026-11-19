@@ -50,8 +50,9 @@ func TestPluginViewIncludesDocumentationForEveryOfficialProtocol(t *testing.T) {
 		packageIDs[pkg.Manifest.Metadata.ID] = true
 	}
 	expectedCount := localPackages
-	// The plugin market and built-in channel plugins ship next to the protocol packages as preinstalled npm-format packages.
-	for _, builtinDir := range []string{"beeftv-plugin-market", "beeftv-plugin-ll2", "beeftv-plugin-ysdui"} {
+	// The plugin market ships next to the protocol packages as a preinstalled
+	// npm-format package. ll2/ysdui are installable online and are not bundled.
+	for _, builtinDir := range []string{"beeftv-plugin-market"} {
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "plugin-packages", builtinDir, "package.json")); err == nil {
 			expectedCount++
 		}

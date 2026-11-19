@@ -49,7 +49,17 @@ var videoContracts = func() []VideoContract {
 
 func IsBeefTVEndpoint(baseURL string) bool {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
-	return err == nil && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "beeftv.app") && u.User == nil && (u.Port() == "" || u.Port() == "443")
+	if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	// 内置渠道已迁移到梦由心生AI聚合网关：两个域名同属托管渠道，
+	// 均可应用托管视频/图片合约覆盖。beeftv.app 仍保留为旧域名兼容。
+	switch strings.ToLower(u.Hostname()) {
+	case "beeftv.app", "api.lk888.ai":
+		return true
+	default:
+		return false
+	}
 }
 
 func BeefTVVideoContract(model string) (VideoContract, bool) {

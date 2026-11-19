@@ -85,29 +85,38 @@ func TestManagedGeminiAssistantUsesCatalogAndPreservesExplicitSelection(t *testi
 func TestManagedAssistantSelectionDoesNotBypassCuratedModels(t *testing.T) {
 	c := AssistantChannel{ID: "beeftv", Pinned: true, Enabled: true, APIKey: "synthetic", BaseURL: "https://example.test", Models: []string{"qwen", "claude-opus-5-5"}, ModelProfiles: []AssistantModelProfile{{Model: "qwen", Capability: "text"}, {Model: "claude-opus-5-5", Capability: "text"}}}
 	s := AssistantConfigSnapshot{TextModel: "beeftv::qwen", Channels: []AssistantChannel{c}}
-	if _, err := ResolveAssistantProvider(s, nil); err == nil {
+	// 官方模型目录白名单只在托管凭证真实存在时生效：须提供托管凭证查询，
+	// 否则内置渠道按自填 Key 走渠道自己的目录。
+	managedLookup := func(channelID, credentialRef, baseURL string) (string, string, bool) {
+		return "managed-key", "https://managed.example", true
+	}
+	if _, err := ResolveAssistantProvider(s, managedLookup); err == nil {
 		t.Fatal("text fallback bypassed curated models")
 	}
 	s.TextModel = "beeftv::claude-opus-5-5"
 	s.AssistantModel = "beeftv::missing"
-	if _, err := ResolveAssistantProvider(s, nil); err == nil {
+	if _, err := ResolveAssistantProvider(s, managedLookup); err == nil {
 		t.Fatal("explicit unavailable model silently fell back")
 	}
 	s.AssistantModel = "beeftv::claude-opus-5-5"
-	got, err := ResolveAssistantProvider(s, nil)
+	got, err := ResolveAssistantProvider(s, managedLookup)
 	if err != nil || got.Model != "claude-opus-5-5" {
 		t.Fatalf("selection not effective: %v %#v", err, got)
 	}
 	s.Channels[0].Models = append(s.Channels[0].Models, "gpt-6.1-sol")
 	s.Channels[0].ModelProfiles = append(s.Channels[0].ModelProfiles, AssistantModelProfile{Model: "gpt-6.1-sol", Capability: "text"})
 	s.AssistantModel = "beeftv::gpt-6.1-sol"
-	if _, err := ResolveAssistantProvider(s, nil); err == nil {
+	if _, err := ResolveAssistantProvider(s, managedLookup); err == nil {
 		t.Fatal("deferred model became available merely through catalog membership")
 	}
 	s.Channels[0].ID = "custom"
 	s.AssistantModel = "custom::qwen"
-	if _, err := ResolveAssistantProvider(s, nil); err != nil {
+	if _, err := ResolveAssistantProvider(s, managedLookup); err != nil {
 		t.Fatal("custom channel was restricted", err)
+	}
+	// 自填 Key 的渠道没有托管凭证时，模型由渠道自己的目录决定。
+	if _, err := ResolveAssistantProvider(s, nil); err != nil {
+		t.Fatal("self-filled channel was restricted", err)
 	}
 }
 

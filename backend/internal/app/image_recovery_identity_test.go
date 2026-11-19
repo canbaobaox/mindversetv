@@ -319,7 +319,9 @@ func TestAutomaticImageRecoveryDirectChannelIdentity(t *testing.T) {
 					t.Fatal(err)
 				}
 				available, err := s.imageRecoveryChannelAvailable(&model.RouteAttempt{ID: row.AttemptID, TaskID: task.ID}, wire)
-				if err != nil || available != (mode == "unchanged") {
+				// 内置渠道已迁移到 api.lk888.ai：当初按 beef tv.app 冻结的请求不再与
+				// 当前内置渠道身份一致，只有自填渠道（custom）的冻结请求仍可复用。
+				if err != nil || available != (mode == "unchanged" && id == "custom") {
 					t.Fatalf("available=%v err=%v", available, err)
 				}
 			})

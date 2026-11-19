@@ -137,12 +137,15 @@ describe("public channel model catalog", () => {
             requests.push(request);
             return { status: 200, data: { code: 0, data: { models: [{ id: "seedance-2.0-portrait" }] }, msg: "" } };
         }) as typeof apiClient.request;
-        await fetchChannelModels(createModelChannel({ id: "beeftv", credentialRef: "beeftv", apiKey: "synthetic-ignored", baseUrl: "https://ignored.example" }), true);
+        await fetchChannelModels(createModelChannel({ id: "beeftv", credentialRef: "beeftv" }), true);
         expect(requests[0]?.url).toBe("/beeftv/connection/models");
         expect(requests[0]?.data).toEqual({});
-        await fetchChannelModels(createModelChannel({ id: "manual", apiKey: "synthetic-local", baseUrl: "https://manual.example" }), true);
+        await fetchChannelModels(createModelChannel({ id: "beeftv", apiKey: "synthetic-own-key", baseUrl: "https://api.lk888.ai" }), true);
         expect(requests[1]?.url).toBe("/ai/models");
-        expect(requests[1]?.data).toMatchObject({ baseUrl: "https://manual.example", apiKey: "synthetic-local" });
+        expect(requests[1]?.data).toMatchObject({ baseUrl: "https://api.lk888.ai", apiKey: "synthetic-own-key" });
+        await fetchChannelModels(createModelChannel({ id: "manual", apiKey: "synthetic-local", baseUrl: "https://manual.example" }), true);
+        expect(requests[2]?.url).toBe("/ai/models");
+        expect(requests[2]?.data).toMatchObject({ baseUrl: "https://manual.example", apiKey: "synthetic-local" });
     });
     test("backend catalogue authentication failure keeps its actionable message", async () => {
         apiClient.request = (async () => ({ status: 502, data: { code: 502, data: null, msg: "模型服务鉴权失败，请检查 API Key", reason: "bad_gateway" } })) as typeof apiClient.request;

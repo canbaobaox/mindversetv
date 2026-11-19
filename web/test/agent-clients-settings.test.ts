@@ -158,14 +158,14 @@ describe("一键接入的按钮状态", () => {
     test("检测到但未接入时说明会发生什么", () => {
         expect(agentIntegrationStatusLabel(base)).toBe("未接入");
         expect(agentIntegrationAction(base)).toBe("connect");
-        expect(agentIntegrationHint(base)).toBe("接入后会在 Claude Code 里添加 BeefTV，并装好一份画布使用说明。");
+        expect(agentIntegrationHint(base)).toBe("接入后会在 Claude Code 里添加 MindVerseTV，并装好一份画布使用说明。");
     });
 
     test("已接入时显示断开，并说明打开就能用", () => {
         const integration = { ...base, connected: true, skillInstalled: true };
         expect(agentIntegrationStatusLabel(integration)).toBe("已接入");
         expect(agentIntegrationAction(integration)).toBe("disconnect");
-        expect(agentIntegrationHint(integration)).toBe("已接入。打开 Claude Code 就能使用 BeefTV 画布。");
+        expect(agentIntegrationHint(integration)).toBe("已接入。打开 Claude Code 就能使用 MindVerseTV 画布。");
     });
 
     test("配置写入了但使用说明缺失时如实提示，不假装完成", () => {

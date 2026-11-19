@@ -103,7 +103,7 @@ func TestAgentModelCatalogDesktopUsesActualSnapshotWithoutCredentials(t *testing
 		t.Fatalf("catalog=%#v", catalog)
 	}
 	ch := catalog.Channels[0]
-	if ch.ID != "beeftv" || ch.Name != "BeefTV" || len(ch.Models) != 2 || ch.Models[0].ModelKey != "gemini-native" || !ch.Models[0].Available || ch.Models[1].Capability != "image" {
+	if ch.ID != "beeftv" || ch.Name != "梦由心生AI" || len(ch.Models) != 2 || ch.Models[0].ModelKey != "gemini-native" || !ch.Models[0].Available || ch.Models[1].Capability != "image" {
 		t.Fatalf("channel=%#v", ch)
 	}
 	registry := operations.NewRegistry(svc, operations.NewStore(svc.repo.DB()))

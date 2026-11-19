@@ -38,13 +38,16 @@ func TestVideoContractBoundaries(t *testing.T) {
 			t.Fatalf("unverified model matched: %s", name)
 		}
 	}
-	for _, base := range []string{"https://beeftv.app.evil.test", "https://evil.test/beeftv.app", "http://beeftv.app", "https://user@beeftv.app", "https://beeftv.app:444", "https://legacy-enterprise.example.com", "https://legacy.example.com"} {
+	for _, base := range []string{"https://beeftv.app.evil.test", "https://evil.test/beeftv.app", "http://beeftv.app", "https://user@beeftv.app", "https://beeftv.app:444", "https://legacy-enterprise.example.com", "https://legacy.example.com", "https://api.lk888.ai.evil.test", "http://api.lk888.ai", "https://user@api.lk888.ai", "https://api.lk888.ai:444"} {
 		if IsBeefTVEndpoint(base) {
 			t.Fatalf("untrusted endpoint: %s", base)
 		}
 	}
 	if !IsBeefTVEndpoint("https://beeftv.app/v1") {
 		t.Fatal("canonical endpoint rejected")
+	}
+	if !IsBeefTVEndpoint("https://api.lk888.ai/v1") {
+		t.Fatal("managed gateway endpoint rejected")
 	}
 
 	capability, protocol, ok := HostedBeefTVVideoProfile("https://beeftv.app", "seedance-2.0-fast")
