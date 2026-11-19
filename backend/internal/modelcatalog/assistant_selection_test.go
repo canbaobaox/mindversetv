@@ -85,8 +85,8 @@ func TestManagedGeminiAssistantUsesCatalogAndPreservesExplicitSelection(t *testi
 func TestManagedAssistantSelectionDoesNotBypassCuratedModels(t *testing.T) {
 	c := AssistantChannel{ID: "beeftv", Pinned: true, Enabled: true, APIKey: "synthetic", BaseURL: "https://example.test", Models: []string{"qwen", "claude-opus-5-5"}, ModelProfiles: []AssistantModelProfile{{Model: "qwen", Capability: "text"}, {Model: "claude-opus-5-5", Capability: "text"}}}
 	s := AssistantConfigSnapshot{TextModel: "beeftv::qwen", Channels: []AssistantChannel{c}}
-	// 官方模型目录白名单只在托管凭证真实存在时生效：须提供托管凭证查询，
-	// 否则内置渠道按自填 Key 走渠道自己的目录。
+	// 官方模型目录白名单对内置渠道始终生效：白名单是纯列表检查，被拒的
+	// 选择不查凭证；托管凭证查询只在白名单通过后用来填充凭证。
 	managedLookup := func(channelID, credentialRef, baseURL string) (string, string, bool) {
 		return "managed-key", "https://managed.example", true
 	}
@@ -114,7 +114,7 @@ func TestManagedAssistantSelectionDoesNotBypassCuratedModels(t *testing.T) {
 	if _, err := ResolveAssistantProvider(s, managedLookup); err != nil {
 		t.Fatal("custom channel was restricted", err)
 	}
-	// 自填 Key 的渠道没有托管凭证时，模型由渠道自己的目录决定。
+	// 非内置渠道不受白名单约束：模型由渠道自己的目录决定。
 	if _, err := ResolveAssistantProvider(s, nil); err != nil {
 		t.Fatal("self-filled channel was restricted", err)
 	}
