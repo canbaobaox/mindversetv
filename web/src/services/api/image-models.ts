@@ -76,6 +76,9 @@ export async function fetchChannelModels(channel: ModelChannel, viaBackend = fal
     // 内置渠道改走自填 Key 后，不再经官方连接拉取目录，改按普通 OpenAI 兼容渠道走后端中转。
     const hasOwnKey = Boolean(channel.apiKey?.trim()) || channel.hasApiKey === true;
     const managed = channel.id === "beeftv" && (channel.pinned || Boolean(channel.credentialRef)) && !hasOwnKey;
+    // 重启后内存 Key 已清空、只有 hasApiKey 为真：不带空 Key 去撞 401，带上
+    // channelId/credentialRef 让后端用存的 Key 查目录。
+    const resolveStoredKey = channel.id === "beeftv" && (channel.pinned || Boolean(channel.credentialRef)) && !channel.apiKey?.trim() && channel.hasApiKey === true;
     const connectionEpoch = getBeefTVConnectionEpoch();
     if (managed) {
         viaBackend = true;
@@ -92,11 +95,11 @@ export async function fetchChannelModels(channel: ModelChannel, viaBackend = fal
         // 登录态由同源后端代取模型目录，避免每个 OpenAI 兼容服务分别维护浏览器 CORS 白名单。
         const result = await http.post<{ models?: Array<string | ChannelModelCatalogItem> }>(managed ? "/beeftv/connection/models" : "/ai/models", managed ? {} : {
             baseUrl: channel.baseUrl,
-            apiKey: managed ? "" : channel.apiKey,
+            apiKey: channel.apiKey,
             apiFormat: channel.apiFormat,
             headers: channel.headers,
-            channelId: managed ? channel.id : undefined,
-            credentialRef: managed ? "beeftv" : undefined,
+            channelId: resolveStoredKey ? channel.id : undefined,
+            credentialRef: resolveStoredKey ? "beeftv" : undefined,
             // 渠道用插件 JS 接口时，后端改由插件列出模型。
             protocol: channel.interfaceType || undefined,
         }, { timeout: 30_000, signal });

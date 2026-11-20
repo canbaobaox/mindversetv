@@ -336,14 +336,16 @@ export function isBuiltinBeefTVChannel(channel: Pick<ModelChannel, "id" | "pinne
     return channel.id === "beeftv" && channel.pinned === true;
 }
 
-export function channelHasManagedBeefTVCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey">) {
+export function channelHasBeefTVCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey">) {
     if (!isBuiltinBeefTVChannel(channel)) return false;
-    return channel.credentialRef === MANAGED_BEEFTV_CREDENTIAL_REF || channel.hasApiKey === true;
+    // 托管凭证、已存密钥、刚填进内存的 Key 都算有凭证：刚填完那一刻 hasApiKey
+    // 还没回读到，不能只认服务端标记，否则拉取按钮一直是灰的。
+    return channel.credentialRef === MANAGED_BEEFTV_CREDENTIAL_REF || channel.hasApiKey === true || Boolean(channel.apiKey?.trim());
 }
 
 export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey" | "modelProfiles">, model = "") {
     if (model && channel.modelProfiles?.some((item) => item.model === modelOptionName(model) && item.authType === "none")) return true;
-    return channelHasManagedBeefTVCredential(channel) || Boolean(channel.apiKey?.trim());
+    return channelHasBeefTVCredential(channel);
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {

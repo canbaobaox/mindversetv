@@ -10,7 +10,7 @@ import { applyFetchedChannelModelCatalog } from "@/lib/channel-model-catalog";
 import { cleanChannelBaseUrl, isRawChannelBaseUrl, normalizeChannelBaseUrl } from "@/lib/channel-url";
 import { ensureModelProfilesWithUiDefaults } from "@/lib/model-protocols";
 import { fetchChannelModels } from "@/services/api/image";
-import { channelHasGenerationCredential, channelHasManagedBeefTVCredential, createModelChannel, defaultBaseUrlForApiFormat, isBuiltinBeefTVChannel, normalizeConfigSnapshot, useConfigStore, type ModelChannel } from "@/stores/use-config-store";
+import { channelHasBeefTVCredential, channelHasGenerationCredential, createModelChannel, defaultBaseUrlForApiFormat, isBuiltinBeefTVChannel, normalizeConfigSnapshot, useConfigStore, type ModelChannel } from "@/stores/use-config-store";
 import { ChannelModelSettings } from "./channel-model-settings";
 import { ModelServiceEditor } from "./model-service-editor";
 import { ChannelRequestAddressLines } from "./channel-request-addresses";
@@ -355,7 +355,7 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                                             size="small"
                                             icon={<RefreshCw className="size-3.5" />}
                                             loading={loadingChannelIds.includes(channel.id)}
-                                            disabled={loadingChannelIds.includes("all") || (builtinBeefTV && beefConnection?.state !== "connected" && !channelHasManagedBeefTVCredential(channel))}
+                                            disabled={loadingChannelIds.includes("all") || (builtinBeefTV && beefConnection?.state !== "connected" && !channelHasBeefTVCredential(channel))}
                                             onClick={() => void refreshChannelModels(channel)}
                                         >
                                             拉取模型
@@ -604,7 +604,7 @@ function channelConnectionError(channel: ModelChannel, connection?: BeefTVConnec
         return "Base URL 格式不正确";
     }
     if (isBuiltinBeefTVChannel(channel)) {
-        if (connection?.state === "connected" || channelHasManagedBeefTVCredential(channel)) return "";
+        if (connection?.state === "connected" || channelHasBeefTVCredential(channel)) return "";
         return "请先配置模型渠道（自填 Base URL 与 API Key）";
     }
     if (!channelHasGenerationCredential(channel) && !channelAllowsEmptyAPIKey(channel)) return "请填写 API Key / Access Key";

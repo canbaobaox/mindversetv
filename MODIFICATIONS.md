@@ -174,6 +174,24 @@
 - 内部标识不动：渠道 id 仍为 `beeftv`、credentialRef 仍为 `beeftv`、协议 `beeftv://`、环境变量 `BEEFTV_*`、macOS bundle ID 等均保留，以保旧画布与旧配置兼容。
 - 验证：`bun run typecheck` 与 `bun run build:desktop` 均已通过；后端 Go 未在本机编译（无 Go 工具链），GitHub Actions 构建验证通过（Windows 任务成功，安装包 2026-11-19 00:55 已上架 Release v2.2.5）。
 
+## 2026-11-20 内置渠道自填 Key 拉取模型无反应
+
+用户报：内置渠道“梦由心生AI”填完 API Key 后没有任何反应、不报错，拉取模型按钮点不动，画布用不了模型。根因是三处旧“官方托管凭证”逻辑互相咬合：
+
+- 保存时 `web/src/services/model-config-repository.ts` 的 `omitManagedBeefTVSecrets` 把内置渠道的 apiKey/secretKey 一律清成 "" 再写后端，Key 永远存不到后端；后端快照因此 hasApiKey 恒 false，生成时 `LookupBeefTVCredential` 也读不到 Key。
+- 拉取门禁 `web/src/stores/use-config-store.ts` 的 `channelHasManagedBeefTVCredential` 只认 credentialRef 或 hasApiKey，不看刚填进内存的 Key，所以填完 Key 按钮还是灰的。
+- 重启后内存 Key 已清空、只有 hasApiKey 为真时，`fetchChannelModels` 会带空 Key 去撞 401（没带 channelId/credentialRef，后端无从查存的 Key）。
+
+改了三处（只改前端，后端保存/回读/解析本来就是通的，不用动）：
+
+- `model-config-repository.ts`：只有真正走官方托管凭证（credentialRef === "beeftv"）才清密钥；用户自填的 Key 原样保存。
+- `use-config-store.ts`：`channelHasManagedBeefTVCredential` 改名 `channelHasBeefTVCredential`，托管凭证、已存密钥、刚填进内存的 Key 都算有凭证；`channelHasGenerationCredential` 改调它（原来就另认内存 Key，行为不变）。
+- `web/src/services/api/image-models.ts`：重启后只有 hasApiKey 为真时，拉取改带 channelId/credentialRef 走 `/ai/models`，让后端 `ResolveChannelModelsRequest` 用存的 Key 查目录；刚填完有内存 Key 时仍直接带 Key。
+
+验收链：填 Key → 按钮立刻能点（门禁认内存 Key）→ 点拉取带 Key 去 GET `https://api.lk888.ai/v1/models`（后端直通，不走托管连接）→ 保存后重启，后端仍有 Key、快照 hasApiKey 为真 → 重启后拉取带 channelId/credentialRef、后端用存的 Key 查目录 → 生成时后端 `LookupBeefTVCredential` 从存的配置里解析到 Key。
+
+- 验证：`bun run typecheck`、`bun run build:desktop`、`bun run lint`、`node scripts/structure-budget.mjs` 均通过；新增 `web/test/builtin-channel-self-filled-key.test.ts`（门禁 + 持久化）与 `web/test/channel-model-catalog.test.ts` 的重启后存 Key 拉取测试，相关 8 个测试文件 89 个测试全过；后端 Go 本机编不了，由 CI 验。
+
 ## 2026-11-20 注册按钮
 
 用户要求在“本地模型渠道”页梦由心生AI 渠道名旁加一键注册按钮：

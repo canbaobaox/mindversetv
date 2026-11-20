@@ -1,5 +1,5 @@
 import { getLocalModelConfig, saveLocalModelConfig, type LocalModelConfigPayload } from "@/services/api/workspace";
-import type { AiConfig } from "@/stores/use-config-store";
+import { MANAGED_BEEFTV_CREDENTIAL_REF, type AiConfig } from "@/stores/use-config-store";
 
 export type ModelConfigPersistenceState = {
     status: "idle" | "hydrating" | "saving" | "saved" | "error";
@@ -287,6 +287,9 @@ function omitManagedBeefTVSecrets(config: AiConfig): AiConfig {
         ...config,
         channels: config.channels.map((channel) => {
             if (channel.id !== "beeftv" || !channel.pinned) return channel;
+            // 只有真正走官方托管凭证的内置渠道才不把密钥写进本地配置；用户自填的
+            // Key 必须存下来，后端靠它算 hasApiKey，生成时靠它解析 Key。
+            if (channel.credentialRef !== MANAGED_BEEFTV_CREDENTIAL_REF) return channel;
             return { ...channel, apiKey: "", secretKey: "" };
         }),
     };

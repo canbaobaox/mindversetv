@@ -147,6 +147,19 @@ describe("public channel model catalog", () => {
         expect(requests[2]?.url).toBe("/ai/models");
         expect(requests[2]?.data).toMatchObject({ baseUrl: "https://manual.example", apiKey: "synthetic-local" });
     });
+    test("stored-key catalog refresh after restart resolves the saved key instead of sending an empty one", async () => {
+        const requests: Array<{ url?: string; data?: unknown }> = [];
+        apiClient.request = (async (request) => {
+            requests.push(request);
+            return { status: 200, data: { code: 0, data: { models: [{ id: "doubao-seed-2-1-pro-260628" }] }, msg: "" } };
+        }) as typeof apiClient.request;
+        // 重启后内存 Key 已清空、只有 hasApiKey 为真：不能带空 Key 去撞 401，
+        // 要带 channelId/credentialRef 让后端用存的 Key 查目录。
+        const result = await fetchChannelModels(createModelChannel({ id: "beeftv", pinned: true, hasApiKey: true, baseUrl: "https://api.lk888.ai" }), true);
+        expect(result.models).toEqual(["doubao-seed-2-1-pro-260628"]);
+        expect(requests[0]?.url).toBe("/ai/models");
+        expect(requests[0]?.data).toMatchObject({ baseUrl: "https://api.lk888.ai", apiKey: "", channelId: "beeftv", credentialRef: "beeftv" });
+    });
     test("backend catalogue authentication failure keeps its actionable message", async () => {
         apiClient.request = (async () => ({ status: 502, data: { code: 502, data: null, msg: "模型服务鉴权失败，请检查 API Key", reason: "bad_gateway" } })) as typeof apiClient.request;
         await expect(fetchChannelModels(createModelChannel({ apiKey: "synthetic-invalid" }), true)).rejects.toThrow("模型服务鉴权失败，请检查 API Key");
