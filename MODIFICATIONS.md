@@ -179,6 +179,7 @@
 用户要求在“本地模型渠道”页梦由心生AI 渠道名旁加一键注册按钮：
 
 - 渠道名后加“去注册”按钮（`web/src/pages/settings/channel-settings-pane.tsx`，仅内置渠道显示），点开 https://myxsai.com/register（实测返回 200）。
+- 2026-11-20 用户反馈 /register 打不开（站上注册走首页弹窗，无独立 /register 路由）：链接改为只打开 https://myxsai.com，桌面绑定 `OpenMyxsaiRegister` 与前端 href 两处同步改；本地验证 `bun run typecheck`、`bun run build:desktop`、`node scripts/structure-budget.mjs` 均通过。
 - 桌面端走新 Wails 绑定 `OpenMyxsaiRegister`（`backend/cmd/desktop/app.go`，`wailsruntime.BrowserOpenURL` 打开系统浏览器）；网页预览无绑定时退回普通 `target="_blank"` 链接。绑定类型（`web/src/services/desktop-runtime.ts`）与绑定方法清单测试（`backend/cmd/desktop/app_test.go` 的 `TestDesktopAppBoundMethodsStayTiny`）同步更新。`OpenSkillMarketURL` 只放行 beeftv.app/skills 与回环地址，不能复用，故新加方法。
 - 验证：`bun run typecheck` 与 `bun run build:desktop` 均已通过，产物含“去注册”与 myxsai.com/register；`node scripts/structure-budget.mjs` 通过；后端 Go 未在本机编译（无 Go 工具链），由 GitHub Actions 构建验证。
 

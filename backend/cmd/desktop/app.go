@@ -178,7 +178,7 @@ func (a *DesktopApp) OpenMyxsaiRegister() error {
 	if err != nil {
 		return err
 	}
-	wailsruntime.BrowserOpenURL(ctx, "https://myxsai.com/register")
+	wailsruntime.BrowserOpenURL(ctx, "https://myxsai.com")
 	return nil
 }
 

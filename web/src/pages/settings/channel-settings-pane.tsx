@@ -324,7 +324,7 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels }: Channel
                                                     type="link"
                                                     className="h-6 px-1 text-xs font-normal"
                                                     icon={<ExternalLink className="size-3.5" />}
-                                                    href="https://myxsai.com/register"
+                                                    href="https://myxsai.com"
                                                     target="_blank"
                                                     rel="noreferrer"
                                                     onClick={(event) => void openMyxsaiRegister(event)}
