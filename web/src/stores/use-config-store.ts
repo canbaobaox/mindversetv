@@ -345,7 +345,10 @@ export function channelHasBeefTVCredential(channel: Pick<ModelChannel, "id" | "p
 
 export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey" | "modelProfiles">, model = "") {
     if (model && channel.modelProfiles?.some((item) => item.model === modelOptionName(model) && item.authType === "none")) return true;
-    return channelHasBeefTVCredential(channel);
+    // 非内置渠道没有托管凭证一说，内存里的自填 Key 就是生成凭证；07ef85f 只
+    // 把 channelHasBeefTVCredential 的判断抽出来时丢了这一支，导致所有带 Key
+    // 的普通渠道都被当成无凭证。内置渠道的内存 Key 已由 channelHasBeefTVCredential 覆盖。
+    return channelHasBeefTVCredential(channel) || Boolean(channel.apiKey?.trim());
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {

@@ -192,6 +192,8 @@
 
 - 验证：`bun run typecheck`、`bun run build:desktop`、`bun run lint`、`node scripts/structure-budget.mjs` 均通过；新增 `web/test/builtin-channel-self-filled-key.test.ts`（门禁 + 持久化）与 `web/test/channel-model-catalog.test.ts` 的重启后存 Key 拉取测试，相关 8 个测试文件 89 个测试全过；后端 Go 本机编不了，由 CI 验。
 
+- quality 修复记录（同日稍后）：上面这版推上 main 后 quality 运行 44702461201 挂了 Web checks (1/4)(2/4)(3/4)，12 个测试失败，症状是模型连接测试抛“请先填写 API Key”、模型列表为空、`beeftv-generation-readiness` 期望 true 实际 false。根因是本节改动里的一处重构失误：`channelHasGenerationCredential` 改调新 `channelHasBeefTVCredential` 时，丢了原来另认内存 Key 的 `|| Boolean(channel.apiKey?.trim())` 这一支；而 `channelHasBeefTVCredential` 对非内置渠道直接返回 false，于是所有带 Key 的普通渠道都被当成无凭证——`isAiConfigReady`、`testChannelModelConnection`、渠道状态文案/校验、`listVideoReferenceModels` 全跟着错。修法只补回这一支（`web/src/stores/use-config-store.ts` 一行，`channelHasBeefTVCredential(channel) || Boolean(channel.apiKey?.trim())`），没动门禁与拉取逻辑，07ef85f 的修复原样保留；本地复现的 5 个失败文件 60 个测试全过，4 个 shard 的共享测试全过（877/768/903/943），typecheck/build/lint/structure-budget 全过。
+
 ## 2026-11-20 注册按钮
 
 用户要求在“本地模型渠道”页梦由心生AI 渠道名旁加一键注册按钮：
