@@ -38,3 +38,9 @@ MindVerseTV 的开发基于并参考了以下开源项目：
 - **[Pi（Pi Agent）](https://github.com/earendil-works/pi)**：内置 Agent 的基础框架。
 
 上游与第三方代码、版权声明及许可仍按各自条款保留，具体归属见 [`NOTICE`](NOTICE)、[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 和 [`LICENSE`](LICENSE)。
+
+## 联系作者
+
+<p align="center">
+  <img src="assets/readme/wechat-qrcode.jpg" width="200" alt="扫码加作者微信">
+</p>
