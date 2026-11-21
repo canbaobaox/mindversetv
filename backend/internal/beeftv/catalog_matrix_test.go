@@ -71,8 +71,8 @@ func TestFetchedBeefTVCatalogInitializesDeepSeekAssistantDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Config["assistantModel"] != "beeftv::"+DefaultManagedAssistantModel {
-		t.Fatalf("assistant default = %v, want beeftv::%s", current.Config["assistantModel"], DefaultManagedAssistantModel)
+	if current.Config["assistantModel"] != "myxsai::"+DefaultManagedAssistantModel {
+		t.Fatalf("assistant default = %v, want myxsai::%s", current.Config["assistantModel"], DefaultManagedAssistantModel)
 	}
 	if DefaultManagedAssistantModel != "deepseek-v4.1-flash" {
 		t.Fatalf("assistant default moved to %q", DefaultManagedAssistantModel)

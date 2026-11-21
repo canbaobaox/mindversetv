@@ -1,0 +1,287 @@
+{
+  "beeftv": {
+    "client": "./client/index.js",
+    "configuration": {
+      "fields": [
+        {
+          "description": "填写梦由心生 (https://myxsai.com) 控制台 API 密钥管理里新建的 Key",
+          "label": "梦由心生 API Key",
+          "name": "apiKey",
+          "required": true,
+          "type": "secret"
+        },
+        {
+          "default": "https://api.lk888.ai",
+          "description": "梦由心生接口根地址，默认 https://api.lk888.ai",
+          "label": "Base URL",
+          "name": "baseUrl",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    "contributes": {
+      "providers": [
+        {
+          "auth": {
+            "field": "apiKey",
+            "type": "bearer"
+          },
+          "baseUrl": "https://api.lk888.ai",
+          "capabilities": [
+            "image",
+            "video"
+          ],
+          "create": {
+            "body": {
+              "aspect_ratio": {
+                "$omitEmpty": {
+                  "$ref": "request.aspectRatio"
+                }
+              },
+              "duration": {
+                "$omitEmpty": {
+                  "$ref": "request.duration"
+                }
+              },
+              "images": {
+                "$omitEmpty": {
+                  "$map": {
+                    "as": "media",
+                    "from": {
+                      "$sortByOrder": {
+                        "$ref": "request.images"
+                      }
+                    },
+                    "in": {
+                      "$ref": "media.value"
+                    }
+                  }
+                }
+              },
+              "model": {
+                "$ref": "request.model"
+              },
+              "prompt": {
+                "$ref": "request.prompt"
+              },
+              "resolution": {
+                "$omitEmpty": {
+                  "$ref": "request.resolution"
+                }
+              }
+            },
+            "contentType": "application/json",
+            "method": "POST",
+            "originPath": true,
+            "path": "/v1/media/generate"
+          },
+          "id": "myxsai-media",
+          "label": "梦由心生AI媒体协议（图片 / 视频）",
+          "mediaTransport": {
+            "audio": "url",
+            "image": "inline",
+            "video": "url"
+          },
+          "parameters": [
+            {
+              "description": "梦由心生媒体模型 ID（如 doubao-seedream-5-5-261028、doubao-seedance-2-5-260628）。",
+              "mapping": "model",
+              "name": "model",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "图片 / 视频提示词。",
+              "mapping": "prompt",
+              "name": "prompt",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "参考图（首帧 / 参考图）。站方是否接受参考图未验证，见 docs/interface.md。",
+              "mapping": "images",
+              "name": "images",
+              "required": false,
+              "type": "media[]"
+            },
+            {
+              "description": "输出画幅比例（如 16:9、9:16、1:1）。",
+              "mapping": "aspect_ratio",
+              "name": "aspectRatio",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "输出分辨率档位（如 720p、1080p）。",
+              "mapping": "resolution",
+              "name": "resolution",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "视频输出时长秒数。",
+              "mapping": "duration",
+              "name": "duration",
+              "required": false,
+              "type": "integer"
+            }
+          ],
+          "poll": {
+            "method": "GET",
+            "originPath": true,
+            "path": "/v1/media/status?task_id={{taskId}}"
+          },
+          "requiresPublicMediaUrls": false,
+          "response": {
+            "errorPaths": [
+              "error_code",
+              "error.code",
+              "code",
+              "data.error_code"
+            ],
+            "images": {
+              "$coalesce": [
+                {
+                  "$ref": "response.data.image_url"
+                },
+                {
+                  "$ref": "response.image_url"
+                },
+                {
+                  "$ref": "response.data.content.image_url"
+                },
+                {
+                  "$ref": "response.data.url"
+                },
+                {
+                  "$ref": "response.url"
+                },
+                {
+                  "$ref": "response.data.images"
+                },
+                {
+                  "$ref": "response.images"
+                }
+              ]
+            },
+            "message": {
+              "$coalesce": [
+                {
+                  "$ref": "response.error"
+                },
+                {
+                  "$ref": "response.error.message"
+                },
+                {
+                  "$ref": "response.error_code"
+                },
+                {
+                  "$ref": "response.message"
+                },
+                {
+                  "$ref": "response.data.fail_reason"
+                }
+              ]
+            },
+            "resultEphemeral": true,
+            "status": {
+              "$coalesce": [
+                {
+                  "$ref": "response.state"
+                },
+                {
+                  "$ref": "response.status"
+                },
+                "pending"
+              ]
+            },
+            "taskId": {
+              "$coalesce": [
+                {
+                  "$ref": "response.data.task_id"
+                },
+                {
+                  "$ref": "response.task_id"
+                },
+                {
+                  "$ref": "response.id"
+                },
+                {
+                  "$ref": "response.data.id"
+                },
+                {
+                  "$ref": "taskId"
+                }
+              ]
+            },
+            "usage": {
+              "$coalesce": [
+                {
+                  "$ref": "response.data.usage"
+                },
+                {
+                  "$ref": "response.usage"
+                }
+              ]
+            },
+            "videos": {
+              "$coalesce": [
+                {
+                  "$ref": "response.data.video_url"
+                },
+                {
+                  "$ref": "response.video_url"
+                },
+                {
+                  "$ref": "response.data.content.video_url"
+                },
+                {
+                  "$ref": "response.data.url"
+                },
+                {
+                  "$ref": "response.url"
+                },
+                {
+                  "$ref": "response.data.videos"
+                },
+                {
+                  "$ref": "response.videos"
+                }
+              ]
+            }
+          },
+          "scopes": [
+            "admin.system-channel",
+            "user.custom-channel",
+            "canvas",
+            "creation",
+            "agent"
+          ]
+        }
+      ]
+    },
+    "name": "梦由心生AI",
+    "permissions": [
+      "generation.run",
+      "media.read",
+      "ui.slot",
+      "settings.write"
+    ]
+  },
+  "description": "内置梦由心生AI (myxsai.com) 算力与多模态渠道插件，支持填写 API Key 一键同步聊天、图片、视频代表模型；图片与视频走站内媒体协议 POST /v1/media/generate + GET /v1/media/status 轮询。",
+  "keywords": [
+    "beeftv-plugin",
+    "myxsai",
+    "梦由心生",
+    "image",
+    "video",
+    "seedance",
+    "seedream"
+  ],
+  "license": "Apache-2.0",
+  "main": "./client/index.js",
+  "name": "beeftv-plugin-myxsai",
+  "type": "module",
+  "version": "1.0.0"
+}

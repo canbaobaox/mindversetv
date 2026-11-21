@@ -450,7 +450,11 @@ func ResolveManagedBeefTVSecrets(input map[string]any, beef *beeftv.Service, rea
 			next[key] = value
 		}
 	}
-	if channelID == beeftv.ChannelID {
+	// The official channel id is stripped from the task input once the
+	// managed credential is resolved, so the executor does not see a system
+	// channel id. "myxsai" is the current official id; "beeftv" is the
+	// pre-migration one.
+	if channelID == beeftv.ChannelID || channelID == beeftv.MyxsaiChannelID {
 		delete(next, "channelId")
 	}
 	next["apiKey"] = apiKey
@@ -499,13 +503,22 @@ func LookupBeefTVCredential(beef *beeftv.Service, readLocalConfig func() ([]byte
 	if json.Unmarshal(body, &config) != nil {
 		return "", "", "", "", nil
 	}
-	for _, channel := range config.Channels {
-		if channel.ID == beeftv.ChannelID && strings.TrimSpace(channel.APIKey) != "" {
-			base := strings.TrimSpace(channel.BaseURL)
-			if base == "" {
-				base = beeftv.ProductionOrigin
+	// The stored channel was renamed beeftv -> myxsai by the plugin
+	// replacement; prefer the new id and keep the old one as a fallback for
+	// documents not yet migrated (e.g. a task created by a stale client).
+	for _, want := range []string{beeftv.MyxsaiChannelID, beeftv.ChannelID} {
+		for _, channel := range config.Channels {
+			if channel.ID == want && strings.TrimSpace(channel.APIKey) != "" {
+				base := strings.TrimSpace(channel.BaseURL)
+				if base == "" {
+					if want == beeftv.MyxsaiChannelID {
+						base = "https://api.lk888.ai"
+					} else {
+						base = beeftv.ProductionOrigin
+					}
+				}
+				return channel.APIKey, base, "", "", nil
 			}
-			return channel.APIKey, base, "", "", nil
 		}
 	}
 	return "", "", "", "", nil
@@ -645,11 +658,11 @@ func ValidatePortraitTaskQuote(dataDir string, input map[string]any, lookupCred 
 	}
 	matches, quoted := 0, false
 	for _, channel := range snapshot.Channels {
-		if !channel.Enabled || (managed && channel.ID != beeftv.ChannelID) {
+		if !channel.Enabled || (managed && channel.ID != beeftv.ChannelID && channel.ID != beeftv.MyxsaiChannelID) {
 			continue
 		}
 		base, key := channel.BaseURL, channel.APIKey
-		if channel.ID == beeftv.ChannelID && lookupCred != nil {
+		if (channel.ID == beeftv.ChannelID || channel.ID == beeftv.MyxsaiChannelID) && lookupCred != nil {
 			resolvedKey, resolvedBase, _, _, lookupErr := lookupCred()
 			if lookupErr != nil {
 				continue

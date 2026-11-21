@@ -51,8 +51,9 @@ func TestPluginViewIncludesDocumentationForEveryOfficialProtocol(t *testing.T) {
 	}
 	expectedCount := localPackages
 	// The plugin market ships next to the protocol packages as a preinstalled
-	// npm-format package. ll2/ysdui are installable online and are not bundled.
-	for _, builtinDir := range []string{"beeftv-plugin-market"} {
+	// npm-format package. The retired partner plugins are no longer bundled
+	// or installable.
+	for _, builtinDir := range []string{"beeftv-plugin-market", "beeftv-plugin-myxsai"} {
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "plugin-packages", builtinDir, "package.json")); err == nil {
 			expectedCount++
 		}

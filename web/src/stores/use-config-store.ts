@@ -336,6 +336,15 @@ export function isBuiltinBeefTVChannel(channel: Pick<ModelChannel, "id" | "pinne
     return channel.id === "beeftv" && channel.pinned === true;
 }
 
+// isMyxsaiChannel reports whether the channel is the 梦由心生AI plugin
+// channel: the successor of the builtin beefTV channel after the 2026-11-21
+// plugin replacement. Upscale, subtitle erase and the first-run guide treat
+// it as the primary channel (the old builtin predicate above no longer
+// matches anything once the backend migration has run).
+export function isMyxsaiChannel(channel: Pick<ModelChannel, "id">) {
+    return channel.id === "myxsai";
+}
+
 export function channelHasBeefTVCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey">) {
     if (!isBuiltinBeefTVChannel(channel)) return false;
     // 托管凭证、已存密钥、刚填进内存的 Key 都算有凭证：刚填完那一刻 hasApiKey

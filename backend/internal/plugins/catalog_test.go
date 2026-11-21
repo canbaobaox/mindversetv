@@ -167,10 +167,10 @@ func TestOnlyShippedArchiveInterfacesAreMarkedBuiltIn(t *testing.T) {
 	if uploaded.BuiltInInterface {
 		t.Fatal("an interface the user uploaded is their plugin, not a built-in one")
 	}
-	bundledApp := ManagementFromView(View{Manifest: ManifestView{ID: "beeftv-plugin-ll2", Client: "./client/index.js",
+	bundledApp := ManagementFromView(View{Manifest: ManifestView{ID: "beeftv-plugin-acme", Client: "./client/index.js",
 		Configuration: protocol.ManifestConfiguration{Fields: []protocol.ManifestField{{Name: "apiKey"}}},
-		Contributes:   protocol.ManifestContributions{Providers: []protocol.ManifestProvider{{ID: "ll2-video"}}}},
-		Source: OriginOfficial, PackageDir: "/app/plugin-packages/beeftv-plugin-ll2"})
+		Contributes:   protocol.ManifestContributions{Providers: []protocol.ManifestProvider{{ID: "acme-video"}}}},
+		Source: OriginOfficial, PackageDir: "/app/plugin-packages/beeftv-plugin-acme"})
 	if bundledApp.BuiltInInterface {
 		t.Fatal("a bundled app plugin with its own settings stays in the plugin center")
 	}

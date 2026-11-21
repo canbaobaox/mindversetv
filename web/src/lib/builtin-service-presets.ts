@@ -15,25 +15,16 @@ import {
 } from "@/lib/partner-catalog-store";
 import type { PartnerCatalogItem } from "@/services/api/plugins";
 import {
-    DEFAULT_BASE_URL as LL2_DEFAULT_BASE_URL,
-    LL2_CHANNEL_ID,
-    LL2_CHANNEL_NAME,
-    LL2_PRESET_MODELS,
-    buildLL2ModelChannel,
-    upgradeLL2ModelProfile,
-} from "../../../plugin-packages/beeftv-plugin-ll2/client/index.js";
-import {
-    DEFAULT_BASE_URL as YSDUI_DEFAULT_BASE_URL,
-    YSDUI_CHANNEL_ICON,
-    YSDUI_CHANNEL_ID,
-    YSDUI_CHANNEL_NAME,
-    YSDUI_PRESET_MODELS,
-    YSDUI_PROVIDER_INTRO,
-    buildYsduiModelChannel,
-    upgradeYsduiModelProfile,
-} from "../../../plugin-packages/beeftv-plugin-ysdui/client/index.js";
+    BUILTIN_SERVICE_PRESET as MYXSAI_SERVICE_PRESET,
+    DEFAULT_BASE_URL as MYXSAI_DEFAULT_BASE_URL,
+    MYXSAI_CHANNEL_ID,
+    MYXSAI_CHANNEL_NAME,
+    MYXSAI_PRESET_MODELS,
+    buildMyxsaiModelChannel,
+    upgradeMyxsaiModelProfile,
+} from "../../../plugin-packages/beeftv-plugin-myxsai/client/index.js";
 
-export { LL2_CHANNEL_ID, YSDUI_CHANNEL_ID, livePartnerSyncIssues, type PartnerSyncIssue };
+export { MYXSAI_CHANNEL_ID, livePartnerSyncIssues, type PartnerSyncIssue };
 
 export type BuiltinPresetModel = {
     model: string;
@@ -90,67 +81,100 @@ export type BuiltinPresetPlugin = {
     upgradeProfile: <T>(profile: T, channel?: BuiltinPresetChannelLike) => T;
 };
 
-/** 没有显式声明接口时按能力补的默认协议；ll2 和 compatible 共用同一组。 */
+/** 没有显式声明接口时按能力补的默认协议。 */
 export const TEXT_AUDIO_CANDIDATES: Partial<Record<ModelCapability, string>> = { text: "chat-completion", audio: "openai-audio" };
 export const COMPATIBLE_CANDIDATES: Partial<Record<ModelCapability, string>> = { ...TEXT_AUDIO_CANDIDATES, image: "openai-image" };
 
 const RESERVED_CORE_PRESET_IDS = new Set(["compatible", "openai", "gemini", "ark", "beeftv"]);
+/** 随包静态内置的合作伙伴预设：目前只有梦由心生（自家渠道，非上游合作商）。 */
 const STATIC_SHIPPED_PLUGIN_PRESET: Readonly<Record<string, string>> = {
-    "beeftv-plugin-ll2": LL2_CHANNEL_ID,
-    "beeftv-plugin-ysdui": YSDUI_CHANNEL_ID,
+    "beeftv-plugin-myxsai": MYXSAI_CHANNEL_ID,
 };
-const STATIC_PRESET_IDS = new Set([LL2_CHANNEL_ID, YSDUI_CHANNEL_ID]);
+const STATIC_PRESET_IDS = new Set([MYXSAI_CHANNEL_ID]);
 const VALID_PARTNER_PLUGIN_ID = /^beeftv-plugin-[a-z0-9][a-z0-9-]{0,49}$/;
 const VALID_PRESET_ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
 
 /** 宿主已知的官方内置与动态合作伙伴预设表；新增合作方经权威注册表同步后在此生效。 */
 export const BUILTIN_PRESETS: Record<string, BuiltinPresetPlugin> = {
-    [LL2_CHANNEL_ID]: {
+    [MYXSAI_CHANNEL_ID]: {
+        pluginId: "beeftv-plugin-myxsai",
+        name: MYXSAI_CHANNEL_NAME,
+        subtitle: MYXSAI_SERVICE_PRESET.subtitle,
+        icon: MYXSAI_SERVICE_PRESET.icon,
+        baseUrl: MYXSAI_DEFAULT_BASE_URL,
+        partner: true,
+        live: true,
+        keysUrl: MYXSAI_SERVICE_PRESET.keysUrl,
+        websiteUrl: MYXSAI_SERVICE_PRESET.websiteUrl,
+        order: 0,
+        protocolPrefixes: ["myxsai-"],
+        hosts: [new URL(MYXSAI_DEFAULT_BASE_URL).hostname],
+        hostSuffixes: [],
+        candidates: { text: "chat-completion", image: "myxsai-media", video: "myxsai-media" },
+        models: MYXSAI_PRESET_MODELS,
+        presetDescription: MYXSAI_SERVICE_PRESET.presetDescription,
+        declaresReferenceMediaTransport: true,
+        buildChannel: (args) => buildMyxsaiModelChannel({ apiKey: args.apiKey, baseUrl: args.baseUrl, selectedModels: args.selectedModels, existingChannel: args.existingChannel }),
+        upgradeProfile: (profile, channel) => upgradeMyxsaiModelProfile(profile, channel),
+    },
+};
+
+/**
+ * 已下线合作伙伴（ll2、银盛）的静态退役预设：只进退役表，不进新建列表。
+ * 源码包已删除，这里只保留旧渠道编辑与迁移所需的最小身份数据（名称、地址、
+ * 协议前缀、域名匹配），不保留预置模型目录、品牌介绍与取 Key 链接；
+ * upgradeProfile 原样返回已存档案，不再按已删的预置规格改写；
+ * buildChannel 只保留调用方带来的既有模型，不再补预置模型。
+ * Infistar 从未在本机留下预置数据，故无退役条目。
+ */
+const STATIC_RETIRED_PRESETS: Readonly<Record<string, BuiltinPresetPlugin>> = {
+    ll2: {
         pluginId: "beeftv-plugin-ll2",
-        name: LL2_CHANNEL_NAME,
+        name: "LL2 (DMC)",
         subtitle: "文本 · 多款主流视频 · 视频超分",
         icon: "OpenAI",
-        baseUrl: LL2_DEFAULT_BASE_URL,
+        baseUrl: "https://api.ll2.cn",
         partner: true,
-        live: true,
-        from: "2026-11-03T00:00:00+08:00",
-        until: "2026-12-04T00:00:00+08:00",
-        keysUrl: "https://hub.ll2.cn?p=rw6t",
-        websiteUrl: "https://hub.ll2.cn",
-        order: 0,
+        live: false,
         protocolPrefixes: ["ll2-"],
-        hosts: [new URL(LL2_DEFAULT_BASE_URL).hostname],
+        hosts: ["api.ll2.cn"],
         hostSuffixes: [".ll2.cn"],
         candidates: COMPATIBLE_CANDIDATES,
-        models: LL2_PRESET_MODELS,
+        models: [],
         presetDescription: "文本、视频与超分",
         declaresReferenceMediaTransport: false,
-        buildChannel: (args) => buildLL2ModelChannel({ apiKey: args.apiKey, baseUrl: args.baseUrl, selectedModels: args.selectedModels, existingChannel: args.existingChannel }),
-        upgradeProfile: (profile, channel) => upgradeLL2ModelProfile(profile, channel),
+        buildChannel: (args) => {
+            const existing = (args.existingChannel ?? {}) as { models?: unknown; modelProfiles?: BuiltinModelProfile[] };
+            return {
+                models: Array.isArray(existing.models) ? existing.models.filter((model): model is string => typeof model === "string") : [],
+                modelProfiles: Array.isArray(existing.modelProfiles) ? existing.modelProfiles : [],
+            };
+        },
+        upgradeProfile: (profile) => profile,
     },
-    [YSDUI_CHANNEL_ID]: {
+    ysdui: {
         pluginId: "beeftv-plugin-ysdui",
-        name: YSDUI_CHANNEL_NAME,
+        name: "银盛云枢壹算",
         subtitle: "文本 · 多款主流图片 · 多款主流视频",
-        icon: YSDUI_CHANNEL_ICON,
-        baseUrl: YSDUI_DEFAULT_BASE_URL,
+        icon: "Ysdui",
+        baseUrl: "https://tokenhub.ysdui.cn",
         partner: true,
-        live: true,
-        from: "2026-11-14T00:00:00+08:00",
-        until: "2027-01-14T00:00:00+08:00",
-        keysUrl: "https://www.ysdui.cn/",
-        websiteUrl: "https://www.ysdui.cn/",
-        order: 1,
+        live: false,
         protocolPrefixes: ["ysdui-"],
-        hosts: [new URL(YSDUI_DEFAULT_BASE_URL).hostname, "ysdui.cn"],
+        hosts: ["tokenhub.ysdui.cn", "ysdui.cn"],
         hostSuffixes: [".ysdui.cn"],
         candidates: TEXT_AUDIO_CANDIDATES,
-        models: YSDUI_PRESET_MODELS,
+        models: [],
         presetDescription: "文本、图像与视频",
-        providerIntro: YSDUI_PROVIDER_INTRO,
         declaresReferenceMediaTransport: true,
-        buildChannel: (args) => buildYsduiModelChannel({ apiKey: args.apiKey, baseUrl: args.baseUrl, selectedModels: args.selectedModels, existingChannel: args.existingChannel }),
-        upgradeProfile: (profile) => upgradeYsduiModelProfile(profile),
+        buildChannel: (args) => {
+            const existing = (args.existingChannel ?? {}) as { models?: unknown; modelProfiles?: BuiltinModelProfile[] };
+            return {
+                models: Array.isArray(existing.models) ? existing.models.filter((model): model is string => typeof model === "string") : [],
+                modelProfiles: Array.isArray(existing.modelProfiles) ? existing.modelProfiles : [],
+            };
+        },
+        upgradeProfile: (profile) => profile,
     },
 };
 
@@ -465,8 +489,7 @@ export function markPartnersNoticed(ids: readonly string[]): void {
 }
 
 /**
- * MindVerseTV 不展示「新合作伙伴」角标：上游合作商（ll2、银盛、Infistar 等）
- * 不进入本产品，始终返回空列表。
+ * MindVerseTV 不展示「新合作伙伴」角标：上游合作商不进入本产品，始终返回空列表。
  */
 export function unnoticedLivePartners(
     _channels: readonly BuiltinPresetChannelLike[] | undefined,
@@ -476,11 +499,11 @@ export function unnoticedLivePartners(
 }
 
 export function builtinPreset(id: string): BuiltinPresetPlugin | undefined {
-    return BUILTIN_PRESETS[id] ?? RETIRED_DYNAMIC_PRESETS[id];
+    return BUILTIN_PRESETS[id] ?? RETIRED_DYNAMIC_PRESETS[id] ?? STATIC_RETIRED_PRESETS[id];
 }
 
 export function allKnownBuiltinPresets(): Array<[string, BuiltinPresetPlugin]> {
-    return [...Object.entries(BUILTIN_PRESETS), ...Object.entries(RETIRED_DYNAMIC_PRESETS)];
+    return [...Object.entries(BUILTIN_PRESETS), ...Object.entries(RETIRED_DYNAMIC_PRESETS), ...Object.entries(STATIC_RETIRED_PRESETS)];
 }
 
 /** 按协议反查它属于哪个内置插件（含已从目录退役但本机仍保留的合作伙伴协议）。 */

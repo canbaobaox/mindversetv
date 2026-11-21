@@ -7,15 +7,12 @@ import { catalogEndpointCapability, type ChannelModelCatalogItem } from "@/lib/c
 import { serviceCredentialGuide } from "@/lib/service-credentials";
 import {
     COMPATIBLE_CANDIDATES,
-    LL2_CHANNEL_ID,
-    YSDUI_CHANNEL_ID,
     allKnownBuiltinPresets,
     builtinPreset,
-    builtinProtocolsAvailable,
     upgradeBuiltinModelProfile,
 } from "@/lib/builtin-service-presets";
 
-export type ModelServicePresetId = "compatible" | "openai" | "gemini" | "ark" | typeof LL2_CHANNEL_ID | typeof YSDUI_CHANNEL_ID | (string & {});
+export type ModelServicePresetId = "compatible" | "openai" | "gemini" | "ark" | (string & {});
 
 export type ModelServicePresetItem = {
     id: ModelServicePresetId;
@@ -43,12 +40,14 @@ const DIRECT_SERVICE_PRESETS: readonly ModelServicePresetItem[] = [
 ];
 
 /**
- * MindVerseTV 服务商列表：只展示通用与直连入口（第三方模型服务、OpenAI、
- * Google Gemini、火山方舟）。上游的内置商业合作伙伴预设（ll2、银盛·云枢壹算、
- * Infistar 等）不进入列表、不展示、不参与新建；已存旧渠道仍走已安装插件协议，
- * 由 builtinPreset 侧的兼容逻辑兜底。
+ * MindVerseTV 服务商列表：梦由心生（自家渠道，置顶）+ 通用与直连入口
+ * （第三方模型服务、OpenAI、Google Gemini、火山方舟）。上游的内置商业
+ * 合作伙伴预设不进入列表、不展示、不参与新建；已存旧渠道仍走退役预设
+ * 兼容逻辑，由 builtinPreset 侧兜底。梦由心生条目取内置预设数据（名字、
+ * 地址、图标、取 Key 链接与插件预设同源，避免两处写死走样）。
  */
 export const MODEL_SERVICE_PRESETS: ModelServicePresetItem[] = [
+    makeBuiltinPresetEntry("myxsai"),
     COMPATIBLE_PRESET,
     ...DIRECT_SERVICE_PRESETS,
 ];
@@ -59,7 +58,7 @@ export function partnerServicePresets(_includePresetId?: ModelServicePresetId, _
 }
 
 export function standardServicePresets(): ModelServicePresetItem[] {
-    return [COMPATIBLE_PRESET, ...DIRECT_SERVICE_PRESETS];
+    return [makeBuiltinPresetEntry("myxsai"), COMPATIBLE_PRESET, ...DIRECT_SERVICE_PRESETS];
 }
 
 export function presetKeysUrl(id: ModelServicePresetId): string | undefined {
@@ -154,14 +153,6 @@ export function createPluginServiceChannel(service: ModelProtocolDefinition, cha
     };
 }
 
-export function ll2ProtocolsAvailable(protocols: ModelProtocolDefinition[]): boolean {
-    return builtinProtocolsAvailable(LL2_CHANNEL_ID, protocols);
-}
-
-export function ysduiProtocolsAvailable(protocols: ModelProtocolDefinition[]): boolean {
-    return builtinProtocolsAvailable(YSDUI_CHANNEL_ID, protocols);
-}
-
 /** 未列入服务列表的内置预设条目：名字、地址、图标一律取内置预设数据（与旧版列表行为一致）。 */
 function makeBuiltinPresetEntry(id: string): ModelServicePresetItem {
     return {
@@ -173,9 +164,7 @@ function makeBuiltinPresetEntry(id: string): ModelServicePresetItem {
             return builtinPreset(id)?.subtitle ?? "多模态算力服务";
         },
         get icon() {
-            const raw = builtinPreset(id)?.icon;
-            if (id === LL2_CHANNEL_ID && (!raw || raw === "OpenAI")) return "LL2";
-            return raw ?? "OpenAI";
+            return builtinPreset(id)?.icon ?? "OpenAI";
         },
         get baseUrl() {
             return builtinPreset(id)?.baseUrl ?? "";
@@ -189,7 +178,7 @@ function makeBuiltinPresetEntry(id: string): ModelServicePresetItem {
 }
 
 export function createServicePresetChannel(id: ModelServicePresetId, channelId: string, protocols?: ModelProtocolDefinition[]): ModelChannel {
-    // 未列入服务列表的内置预设（ll2、银盛、动态合作方）仍按内置预设数据建渠道，
+    // 未列入服务列表的内置预设（已退役预设、动态合作方）仍按内置预设数据建渠道，
     // 只为已存渠道的修复/迁移服务；新建入口只提供列表里的预设，UI 上选不到它们。
     const preset = MODEL_SERVICE_PRESETS.find((item) => item.id === id)
         ?? (builtinPreset(id) ? makeBuiltinPresetEntry(id) : COMPATIBLE_PRESET);

@@ -17,7 +17,7 @@ func TestEffectiveConfigRepairsHostedHyImageWithoutRewritingCustomContract(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := requireEffectiveProfile(t, requireEffectiveChannel(t, config, "beeftv"), "hy-image-v3")
+	profile := requireEffectiveProfile(t, requireEffectiveChannel(t, config, "myxsai"), "hy-image-v3")
 	if profile["protocol"] != "openai-image" || profile["capability"] != "image" {
 		t.Fatalf("hosted profile: %#v", profile)
 	}

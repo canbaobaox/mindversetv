@@ -376,6 +376,13 @@ func (c *Runtime) stageUninstallLocked(id string) (stagedMutation, error) {
 	if IsBuiltInSource(record.Source) {
 		return stagedMutation{}, fmt.Errorf("内置插件 %q 不能卸载，可停用该插件", id)
 	}
+	return c.stageUninstallRecordLocked(record)
+}
+
+// stageUninstallRecordLocked 是 stageUninstallLocked 去掉内置来源检查后的
+// 记录移除 staging：调用方须自行保证该记录可删（见 Uninstall 与
+// uninstallRemovedPartnerPlugin）。
+func (c *Runtime) stageUninstallRecordLocked(record Record) (stagedMutation, error) {
 	stored, err := c.currentRecords()
 	if err != nil {
 		return stagedMutation{}, err
@@ -402,6 +409,46 @@ func (c *Runtime) stageUninstallLocked(id string) (stagedMutation, error) {
 func (c *Runtime) commitUninstall(stage stagedMutation) {
 	c.discardBlobIfUnreferenced(stage.oldBlob)
 	c.cleanupUninstalledPackageDir(stage.previousLive.plugins, stage.nextPlugins)
+}
+
+// uninstallRemovedPartnerPlugin 强制移除已下线合作伙伴插件的已安装记录。
+// 与 Uninstall 不同：已下线插件以官方（official）来源安装，Uninstall 会以
+// “内置插件不能卸载”拒绝；未安装时返回 nil（幂等 no-op）。只允许屏蔽名单
+// removedPartnerPluginIDs 内的 ID，调用前由 Service 层再核对一次已安装状态。
+func (c *Runtime) uninstallRemovedPartnerPlugin(id string) error {
+	if c == nil {
+		return fmt.Errorf("插件运行时未初始化")
+	}
+	trimmed := strings.TrimSpace(id)
+	if !removedPartnerPluginIDs[trimmed] {
+		return fmt.Errorf("插件 %q 不在已下线合作伙伴名单内", trimmed)
+	}
+	c.beginMutation()
+	defer c.endMutation()
+	c.mu.RLock()
+	record, ok := c.plugins[trimmed]
+	c.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	stage, err := c.stageUninstallRecordLocked(record)
+	if err != nil {
+		return err
+	}
+	extras := persistExtras{}
+	if c.store != nil {
+		extras.deleteID = trimmed
+	}
+	if err := c.commitAndPublish(&stage, extras); err != nil {
+		c.abortUncommitted(&stage)
+		if extras.deleteID != "" && !errors.Is(err, errPublishInterrupted) {
+			return fmt.Errorf("清理插件状态：%w", err)
+		}
+		return err
+	}
+	c.commitUninstall(stage)
+	c.cleanupBuiltinBlobsOnBoot(trimmed, "", false)
+	return nil
 }
 
 func viewFromPlugins(plugins map[string]Record, id string) (View, error) {

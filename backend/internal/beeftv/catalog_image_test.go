@@ -32,7 +32,7 @@ func TestUnknownImageCatalogRefreshChangesCapabilitiesWithoutModelTable(t *testi
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile := refreshTestProfile(findChannel(current.Config["channels"].([]any), ChannelID), id)
+		profile := refreshTestProfile(findChannel(current.Config["channels"].([]any), MyxsaiChannelID), id)
 		if profile == nil || profile["protocol"] != "openai-image" || profile["imageCapabilitiesVersion"] != version {
 			t.Fatalf("missing server profile: %#v", profile)
 		}
@@ -79,7 +79,7 @@ func TestVerifiedConnectionRefreshesStaleImageLimitAndKeepsValidCatalogOnError(t
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile := refreshTestProfile(findChannel(current.Config["channels"].([]any), ChannelID), id)
+		profile := refreshTestProfile(findChannel(current.Config["channels"].([]any), MyxsaiChannelID), id)
 		if profile == nil {
 			t.Fatal("valid model was removed")
 		}

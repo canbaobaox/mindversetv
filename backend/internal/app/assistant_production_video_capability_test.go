@@ -73,11 +73,11 @@ func TestAssistantManagedVideoRestoresCapabilitiesBeforeEnvelope(t *testing.T) {
 				capability.Video.Resolutions = []string{"480p"}
 				capability.Video.DefaultResolution = "480p"
 				capability.Video.GenerateAudio = modelcatalog.VideoBooleanConfig{Supported: supported, Default: true}
-				body, _ := json.Marshal(map[string]any{"channels": []any{map[string]any{"id": beefapi.ChannelID, "baseUrl": server.URL, "apiKey": "synthetic-test-key", "credentialRef": beefapi.CredentialRef, "models": []string{modelName}, "modelProfiles": []any{map[string]any{"model": modelName, "capability": "video", "protocol": "openai-videos", "videoCapabilitiesVersion": "server-fixture-v1", "capabilityConfig": capability}}}}})
+				body, _ := json.Marshal(map[string]any{"channels": []any{map[string]any{"id": beefapi.MyxsaiChannelID, "baseUrl": server.URL, "apiKey": "synthetic-test-key", "credentialRef": beefapi.CredentialRef, "models": []string{modelName}, "modelProfiles": []any{map[string]any{"model": modelName, "capability": "video", "protocol": "openai-videos", "videoCapabilitiesVersion": "server-fixture-v1", "capabilityConfig": capability}}}}})
 				if err := svc.SaveLocalModelConfig(body); err != nil {
 					t.Fatal(err)
 				}
-				config, err := svc.assistantGenerationConfig(operations.GenerationTarget{Kind: "video", ModelKey: beefapi.ChannelID + "::" + modelName, Parameters: map[string]string{"size": "16:9", "vquality": "480p", "seconds": "5", "generateAudio": "false"}})
+				config, err := svc.assistantGenerationConfig(operations.GenerationTarget{Kind: "video", ModelKey: beefapi.MyxsaiChannelID + "::" + modelName, Parameters: map[string]string{"size": "16:9", "vquality": "480p", "seconds": "5", "generateAudio": "false"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -103,7 +103,7 @@ func TestAssistantManagedVideoRestoresCapabilitiesBeforeEnvelope(t *testing.T) {
 				if err := db.Save(stored).Error; err != nil {
 					t.Fatal(err)
 				}
-				attempt := &model.RouteAttempt{ID: "video-capability-attempt", TaskID: stored.ID, ChannelID: beefapi.ChannelID, DispatchState: "submission_unknown", StartedAt: time.Now()}
+				attempt := &model.RouteAttempt{ID: "video-capability-attempt", TaskID: stored.ID, ChannelID: beefapi.MyxsaiChannelID, DispatchState: "submission_unknown", StartedAt: time.Now()}
 				if err := db.Create(attempt).Error; err != nil {
 					t.Fatal(err)
 				}

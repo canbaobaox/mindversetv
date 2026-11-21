@@ -63,7 +63,7 @@ func TestResolveAssistantGenerationModelUsesEffectiveHostedVideoOverlay(t *testi
 	snapshot.Revision = effective.Revision
 
 	fastVideo := ResolveAssistantGenerationModel(snapshot, "video", "beeftv::seedance-2.0-fast")
-	if fastVideo.KindMismatch || !fastVideo.FromNode || fastVideo.ModelKey != "beeftv::seedance-2.0-fast" {
+	if fastVideo.KindMismatch || !fastVideo.FromNode || fastVideo.ModelKey != "myxsai::seedance-2.0-fast" {
 		t.Fatalf("hosted Fast must propose video: %#v", fastVideo)
 	}
 
@@ -88,7 +88,7 @@ func TestResolveAssistantGenerationModelUsesEffectiveHostedVideoOverlay(t *testi
 		t.Fatalf("unknown explicit selection must not fall back: %#v", unknown)
 	}
 	fallback := ResolveAssistantGenerationModel(snapshot, "video", "")
-	if fallback.FromNode || fallback.KindMismatch || fallback.ModelKey != "beeftv::wan3.0-video" {
+	if fallback.FromNode || fallback.KindMismatch || fallback.ModelKey != "myxsai::wan3.0-video" {
 		t.Fatalf("empty selection should keep the user video default: %#v", fallback)
 	}
 }

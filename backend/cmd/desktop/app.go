@@ -182,6 +182,19 @@ func (a *DesktopApp) OpenMyxsaiRegister() error {
 	return nil
 }
 
+// OpenMyxsaiRecharge opens the 梦由心生 website in the system browser so the
+// user can top up there. The app itself never takes payments; the exact
+// console/recharge page path is unverified, so this opens the homepage until
+// the real path is confirmed.
+func (a *DesktopApp) OpenMyxsaiRecharge() error {
+	ctx, err := a.dialogContext()
+	if err != nil {
+		return err
+	}
+	wailsruntime.BrowserOpenURL(ctx, "https://myxsai.com")
+	return nil
+}
+
 func (a *DesktopApp) SaveOwnedMedia(fileName string, resourceID string) (bool, error) {
 	return a.saveToChosenPath(fileName, func(path string) error {
 		return a.copyMedia(resourceID, path)

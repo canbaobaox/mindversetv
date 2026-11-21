@@ -29,6 +29,21 @@ var (
 		"ark":        true,
 		"beeftv":     true,
 	}
+	// removedPartnerPluginIDs 是已下线、不再提供也不再回装的合作伙伴插件
+	// （远端注册表仍可能列出它们）。InstallMissingLiveBuiltins 跳过这些 ID，
+	// PartnerCatalogSnapshot 不再把它们当作在期伙伴展示，CheckUpdates 不再
+	// 为它们发官方更新；已装到本机的副本由 uninstallRemovedPartnerPlugins
+	// 强制移除。beefTV-plugin-market（插件市场本身）不在此名单内。
+	removedPartnerPluginIDs = map[string]bool{
+		"beeftv-plugin-ll2":      true,
+		"beeftv-plugin-ysdui":    true,
+		"beeftv-plugin-infistar": true,
+	}
+	removedPartnerPluginIDsList = []string{
+		"beeftv-plugin-infistar",
+		"beeftv-plugin-ll2",
+		"beeftv-plugin-ysdui",
+	}
 	partnerInstallFlight = struct {
 		sync.Mutex
 		inFlight map[string]bool
@@ -80,14 +95,7 @@ func derivePartnerPresetID(entry curatedRegistryEntry) string {
 	if explicit := strings.TrimSpace(entry.PresetID); explicit != "" {
 		return explicit
 	}
-	switch strings.TrimSpace(entry.ID) {
-	case "beeftv-plugin-ll2":
-		return "ll2"
-	case "beeftv-plugin-ysdui":
-		return "ysdui"
-	default:
-		return strings.TrimPrefix(strings.TrimSpace(entry.ID), "beeftv-plugin-")
-	}
+	return strings.TrimPrefix(strings.TrimSpace(entry.ID), "beeftv-plugin-")
 }
 
 func sanitizeHTTPSURL(raw string) string {
@@ -267,6 +275,11 @@ func (s *Service) partnerCatalogSnapshotAt(ctx context.Context, registry string,
 			continue
 		}
 		id := strings.TrimSpace(entry.ID)
+		// 已下线合作伙伴不进入在期目录；本机已安装的副本改由下方的
+		// Retired 合成项表示（remoteVerified 时），不再当作可安装伙伴展示。
+		if removedPartnerPluginIDs[id] {
+			continue
+		}
 		presetID := derivePartnerPresetID(entry)
 		if !validPartnerPresetID(presetID) || seenPresets[presetID] {
 			continue
@@ -358,7 +371,36 @@ func tryAcquirePartnerInstall(key string) (func(), bool) {
 	}, true
 }
 
+// uninstallRemovedPartnerPlugins 幂等清理已装到本机的已下线合作伙伴插件。
+// 只在检测到已安装时调用强制移除；未安装的 ID 直接跳过，不报错、不重试。
+// 失败只记日志，不阻塞后续的合作伙伴同步与精选更新。
+// 注意：不能复用 Service.Uninstall——已下线插件以官方（official）来源安装，
+// Runtime.Uninstall 会以“内置插件不能卸载”拒绝，未安装的 ID 也会报
+// “插件不存在”；因此这里走仅限屏蔽名单的 uninstallRemovedPartnerPlugin。
+func (s *Service) uninstallRemovedPartnerPlugins() {
+	if s == nil || s.runtime == nil {
+		return
+	}
+	installed := map[string]bool{}
+	for _, item := range s.List() {
+		installed[item.Manifest.ID] = true
+	}
+	for _, id := range removedPartnerPluginIDsList {
+		if !installed[id] {
+			continue
+		}
+		if err := s.runtime.uninstallRemovedPartnerPlugin(id); err != nil {
+			log.Printf("卸载已下线合作伙伴插件 %s 失败：%v", id, err)
+			continue
+		}
+		log.Printf("已卸载下线合作伙伴插件 %s", id)
+	}
+}
+
 // InstallMissingLiveBuiltins 按可取消 ctx 与按 ID 单飞锁预装或修复在期合作伙伴插件、刷新远端缓存图标，并记录和返回安装错误。
+// 启动同步（RunOfficialUpdates 启动 5 秒后、每 6 小时轮询）与手动同步都会先
+// 幂等卸载本机已装的已下线合作伙伴插件，再处理在期伙伴；屏蔽名单内的 ID
+// 即使远端注册表仍在列出也不会被重新安装。
 func (s *Service) InstallMissingLiveBuiltins(ctx context.Context, registry string) map[string]string {
 	errs := map[string]string{}
 	if s == nil || s.runtime == nil {
@@ -367,6 +409,7 @@ func (s *Service) InstallMissingLiveBuiltins(ctx context.Context, registry strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.uninstallRemovedPartnerPlugins()
 	reg := marketRegistry(registry)
 	raw := readCuratedRegistryWithCache(ctx, reg, s.marketCachePath())
 	if len(raw) == 0 {
@@ -386,6 +429,10 @@ func (s *Service) InstallMissingLiveBuiltins(ctx context.Context, registry strin
 			return errs
 		}
 		id := strings.TrimSpace(entry.ID)
+		// 已下线合作伙伴即使远端注册表仍在列出也不预装、不修复、不刷新图标。
+		if removedPartnerPluginIDs[id] {
+			continue
+		}
 		if !validCuratedBuiltinID(id) {
 			continue
 		}

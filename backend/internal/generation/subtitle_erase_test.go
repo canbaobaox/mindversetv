@@ -1047,3 +1047,29 @@ func TestSmartEraseModesMovAndSubtitlesMetadata(t *testing.T) {
 		t.Fatalf("expected fallback /subtitles fetch for managed result, got %#v", managedFallback["metadata"])
 	}
 }
+
+// The video subtitle-erase dialog now sends the myxsai channel id; the
+// backend must accept it exactly like the old beeftv id and reject others.
+func TestSubtitleEraseAcceptsMyxsaiChannel(t *testing.T) {
+	ensure := func(_ context.Context, _, id string) (*model.Resource, error) {
+		return &model.Resource{ID: id, Kind: "video", MimeType: "video/mp4", Width: 1280, Height: 720, DurationMs: 6000, Status: model.ResourceStatusReady}, nil
+	}
+	lookup := func() (string, string, string, string, error) {
+		return "test-key", "https://api.lk888.ai", "myxsai", "", nil
+	}
+	input, resource, err := SubtitleEraseTaskInput(context.Background(), "u1", SubtitleEraseRequest{
+		ResourceID: "r1", ChannelID: "myxsai", EraseMethod: "auto", SubtitleModel: "standard",
+	}, ensure, lookup)
+	if err != nil {
+		t.Fatalf("myxsai channel rejected: %v", err)
+	}
+	if input.Mode != "video" || resource == nil || resource.ID != "r1" {
+		t.Fatalf("unexpected input=%+v resource=%+v", input, resource)
+	}
+	_, _, err = SubtitleEraseTaskInput(context.Background(), "u1", SubtitleEraseRequest{
+		ResourceID: "r1", ChannelID: "other", EraseMethod: "auto", SubtitleModel: "standard",
+	}, ensure, lookup)
+	if err == nil {
+		t.Fatal("expected an unknown channel id to be rejected")
+	}
+}

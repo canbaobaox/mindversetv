@@ -283,7 +283,6 @@ internal/depthcapture.WorkerEnv
 internal/depthruntime.extractRuntimeArchive
 internal/depthruntime.fileMatches
 internal/depthruntime.verifyFile
-internal/desktopstorage.Save
 internal/desktopupdate.Engine.fetchRange
 internal/desktopupdate.SignEnvelope
 internal/desktopupdate.SignEnvelopeBytes
@@ -437,7 +436,6 @@ internal/modelcatalog.ValidateProductSpecWithinRoutes
 internal/modelcatalog.ValidateReferenceDuration
 internal/modelcatalog.ValidateTextCapabilityConfig
 internal/modelcatalog.ValidateVideoReferenceMedia
-internal/modelcatalog.VideoDurationSupported
 internal/modelcatalog.channelModelDefaultOptions
 internal/modelcatalog.localSnapshotChannelModel
 internal/operations.ExternalCaller
@@ -500,7 +498,6 @@ internal/provider.ListProviders
 internal/provider.Manifest.Validate
 internal/provider.Registry.RegisterManifest
 internal/provider.Registry.ResolveManifest
-internal/providerpreset.BeefTV
 internal/repository.IsAssetFolderNotFound
 internal/repository.guardActiveTaskResourceReferences
 internal/resource.IntValue

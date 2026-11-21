@@ -296,7 +296,7 @@ func TestConnectionHappyPathSavesBeforeAckAndHidesKey(t *testing.T) {
 	if strings.Contains(mustJSON(t, redacted), "ent-secret-key") {
 		t.Fatal("model config presentation leaked key")
 	}
-	channel := findChannel(effective.Config["channels"].([]any), "beeftv")
+	channel := findChannel(effective.Config["channels"].([]any), MyxsaiChannelID)
 	if channel["apiKey"] != "" {
 		t.Fatalf("managed key stored in model config: %#v", channel["apiKey"])
 	}
@@ -657,7 +657,7 @@ func TestAcceptTokenReplacesCatalogAndRevokesPriorKeyOnAccountSwitch(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel := findChannel(effective.Config["channels"].([]any), ChannelID)
+	channel := findChannel(effective.Config["channels"].([]any), MyxsaiChannelID)
 	ids := map[string]bool{}
 	for _, item := range mergeModelIDs(channel["models"], nil) {
 		ids[item.(string)] = true

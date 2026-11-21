@@ -1,1 +1,2 @@
 beeftv-plugin-market
+beeftv-plugin-myxsai

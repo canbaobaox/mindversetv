@@ -29,6 +29,7 @@ type CanvasAPIService interface {
 	featureGates
 	creationRouteService
 	channelModelCatalogs
+	myxsaiBalanceService
 	customRelays
 	taskRouteService
 	agentOpsService
@@ -115,6 +116,7 @@ func registerDesktopCanvasAPI(api *gin.RouterGroup, svc CanvasAPIService, depend
 	RegisterCreationRoutes(api, svc)
 	RegisterCreationConversationRoutes(api, svc, dependencies.Conversations)
 	RegisterChannelModelRoutes(api, svc)
+	RegisterMyxsaiAccountRoutes(api, svc)
 	RegisterCustomRelayRoutes(api, svc)
 	RegisterTaskRoutes(api, svc, false)
 	var (

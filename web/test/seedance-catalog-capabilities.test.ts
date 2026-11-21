@@ -217,20 +217,20 @@ test("custom channels adopt only server-declared versioned video capabilities", 
 });
 
 test("mergeManagedBeefTVCatalog copies sourced capabilities from the backend snapshot", () => {
-    const current = { ...defaultConfig, channels: [createModelChannel({ id: "beeftv", pinned: true, models: ["stale"] })] };
+    const current = { ...defaultConfig, channels: [createModelChannel({ id: "myxsai", pinned: false, models: ["stale"] })] };
     const server = {
         ...defaultConfig,
         channels: [
             createModelChannel({
-                id: "beeftv",
-                pinned: true,
+                id: "myxsai",
+                pinned: false,
                 models: ["seedance-2.0"],
                 modelProfiles: [{ model: "seedance-2.0", capability: "video", protocol: "newapi", capabilityConfig: { version: 1, video: sampleVideo(0, 0) }, videoCapabilitiesVersion: "from-server" }],
             }),
         ],
     };
     const merged = mergeManagedBeefTVCatalog(current, server);
-    const profile = merged.channels.find((channel) => channel.id === "beeftv")?.modelProfiles?.[0];
+    const profile = merged.channels.find((channel) => channel.id === "myxsai")?.modelProfiles?.[0];
     expect(profile?.videoCapabilitiesVersion).toBe("from-server");
     expect(profile?.capabilityConfig?.video?.references.maxVideos).toBe(0);
 });

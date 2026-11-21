@@ -1,17 +1,12 @@
-import { createElement, memo, useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
 import { Button, Input, Modal } from "antd";
 import { Cpu, Search, X } from "lucide-react";
 
 import { toc } from "@lobehub/icons/es/toc";
 
 import { cn } from "@/lib/utils";
-import ll2Logo from "../../../assets/readme/partner-ll2.png";
-import { YSDUI_CHANNEL_ICON, YSDUI_CHANNEL_NAME, renderYsduiLogoSvg } from "../../../plugin-packages/beeftv-plugin-ysdui/client/index.js";
 
 type LobeIconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>;
-
-const YsduiLogo: LobeIconComponent = memo((props) => renderYsduiLogoSvg(createElement, props));
-YsduiLogo.displayName = "YsduiLogo";
 
 // 只允许按需加载 Mono 组件。这里不能使用 eager glob：模型 Logo 目录有数百个 provider 模块，
 // eager 会让每次进入工作区都发起数百个开发模块请求，即使用户从未打开 Logo 选择器。
@@ -21,10 +16,9 @@ const iconLoaders = Object.fromEntries(
         .map(([path, loader]) => [path.match(/\/([^/]+)\/components\/Mono\.js$/)?.[1], loader])
         .filter((entry): entry is [string, () => Promise<LobeIconComponent>] => Boolean(entry[0] && entry[1])),
 ) as Record<string, () => Promise<LobeIconComponent>>;
-const iconRegistry = new Map<string, LobeIconComponent>([[YSDUI_CHANNEL_ICON, YsduiLogo]]);
+const iconRegistry = new Map<string, LobeIconComponent>();
 const iconLoadPromises = new Map<string, Promise<LobeIconComponent | undefined>>();
 const iconOptions = [
-    { id: YSDUI_CHANNEL_ICON, title: YSDUI_CHANNEL_NAME },
     ...toc
         .filter((item) => item.group === "model" || item.group === "provider" || item.group === "application")
         .map((item) => ({ id: item.id, title: item.fullTitle || item.title }))
@@ -72,7 +66,6 @@ export function ModelLogo({ icon, size = 18, className }: { icon?: string; size?
             cancelled = true;
         };
     }, [icon]);
-    if (icon === "LL2") return <img src={ll2Logo} alt="" width={size} height={size} className={cn("shrink-0 object-contain", className)} draggable={false} />;
     if (icon && isImageUrlIcon(icon) && !imgFailed) {
         return (
             <img

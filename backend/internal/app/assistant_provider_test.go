@@ -166,11 +166,11 @@ func TestAssistantGenerationModelStripsChannelPrefix(t *testing.T) {
 	service := writeAssistantConfig(t, `{"schemaVersion":1,"revision":1,"config":{"imageModel":"beeftv::gpt-image-2","videoModel":"beeftv::wan3.0-video"}}`)
 
 	display, modelKey := service.AssistantGenerationModel("image")
-	if display != "gpt-image-2" || modelKey != "beeftv::gpt-image-2" {
+	if display != "gpt-image-2" || modelKey != "myxsai::gpt-image-2" {
 		t.Fatalf("图片模型解析错误: display=%q modelKey=%q", display, modelKey)
 	}
 	display, modelKey = service.AssistantGenerationModel("video")
-	if display != "wan3.0-video" || modelKey != "beeftv::wan3.0-video" {
+	if display != "wan3.0-video" || modelKey != "myxsai::wan3.0-video" {
 		t.Fatalf("视频模型解析错误: display=%q modelKey=%q", display, modelKey)
 	}
 	if display, _ := service.AssistantGenerationModel("audio"); display != "" {

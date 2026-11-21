@@ -6,7 +6,13 @@ import (
 )
 
 func isSeedanceConstraintPluginID(id string) bool {
-	return id == "volcengine-ark-seedance" || id == "volcengine-ark-video" || id == "volcengine-ark-agent-plan-video" || id == "seedance-videos-compatible" || id == "ll2-seedance-video"
+	// myxsai-media replaced the deleted ll2-seedance-video provider: it
+	// serves the same Seedance 2.5 models, so the same task-options
+	// normalization applies (first/last-frame locks aspect_ratio to
+	// "adaptive"). ApplySeedanceBodyFields reads the normalized
+	// AspectRatio, so without this the body would carry a non-adaptive
+	// ratio for reference-media Seedance 2.5 videos.
+	return id == "volcengine-ark-seedance" || id == "volcengine-ark-video" || id == "volcengine-ark-agent-plan-video" || id == "seedance-videos-compatible" || id == "myxsai-media"
 }
 
 func hasExplicitTaskTypeConstraints(r GenerationRequest) bool {

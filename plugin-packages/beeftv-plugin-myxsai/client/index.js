@@ -1,30 +1,37 @@
-// BeefTV 内置插件：银盛云枢壹算 (OneAxis) 算力与多模态渠道（beeftv-plugin-ysdui）
-// 通过 app.settings 插槽提供一键 BYOK 配置面板，将银盛云枢壹算 API Key 与预置协议模型一键同步至宿主「设置 -> 模型服务」。
+// BeefTV 内置插件：梦由心生AI 算力与多模态渠道（beeftv-plugin-myxsai）
+// 通过 app.settings 插槽提供一键 BYOK 配置面板，将梦由心生 API Key 与预置协议模型
+// 一键同步至宿主「设置 -> 模型服务」。文本走 chat-completion，图片 / 视频走媒体协议
+// myxsai-media；首次加载且有 Key 时按类型拉取在线模型并合并进清单，拉取失败静默
+// 回退到静态代表模型，不阻塞面板。
 
 import {
+  BUILTIN_SERVICE_PRESET,
   DEFAULT_BASE_URL,
-  YSDUI_CHANNEL_ICON,
-  YSDUI_CHANNEL_ID,
-  YSDUI_CHANNEL_NAME,
-  YSDUI_LOGO_SVG_SPEC,
-  YSDUI_PRESET_MODELS,
-  YSDUI_PROVIDER_INTRO,
-  buildYsduiModelChannel,
-  renderYsduiLogoSvg,
-  upgradeYsduiModelProfile,
+  MYXSAI_CHANNEL_ID,
+  MYXSAI_CHANNEL_NAME,
+  MYXSAI_PRESET_MODELS,
+  buildMyxsaiModelChannel,
+  fetchMyxsaiModelsByType,
+  upgradeMyxsaiModelProfile,
 } from "./presets.js";
 
 export {
+  BUILTIN_SERVICE_PRESET,
   DEFAULT_BASE_URL,
-  YSDUI_CHANNEL_ICON,
-  YSDUI_CHANNEL_ID,
-  YSDUI_CHANNEL_NAME,
-  YSDUI_LOGO_SVG_SPEC,
-  YSDUI_PRESET_MODELS,
-  YSDUI_PROVIDER_INTRO,
-  buildYsduiModelChannel,
-  renderYsduiLogoSvg,
-  upgradeYsduiModelProfile,
+  MYXSAI_CHANNEL_ID,
+  MYXSAI_CHANNEL_NAME,
+  MYXSAI_PRESET_MODELS,
+  buildMyxsaiModelChannel,
+  fetchMyxsaiModelsByType,
+  upgradeMyxsaiModelProfile,
+};
+
+const CAPABILITY_LABEL = { text: "文本", image: "图片", video: "视频", audio: "音频" };
+const CAPABILITY_STYLE = {
+  text: { background: "rgba(59, 130, 246, 0.12)", color: "#2563eb" },
+  image: { background: "rgba(16, 185, 129, 0.12)", color: "#047857" },
+  video: { background: "rgba(139, 92, 246, 0.12)", color: "#7c3aed" },
+  audio: { background: "rgba(245, 158, 11, 0.14)", color: "#b45309" },
 };
 
 function getReact(host) {
@@ -36,41 +43,19 @@ function getReact(host) {
   return null;
 }
 
-function capabilityBadgeStyle(capability) {
-  if (capability === "text") {
-    return {
-      background: "rgba(59, 130, 246, 0.12)",
-      color: "#2563eb",
-      label: "文本",
-    };
-  }
-  if (capability === "image") {
-    return {
-      background: "rgba(16, 185, 129, 0.12)",
-      color: "#059669",
-      label: "图片",
-    };
-  }
-  return {
-    background: "rgba(139, 92, 246, 0.12)",
-    color: "#7c3aed",
-    label: "视频",
-  };
-}
-
-function createYsduiSettingsPanel(host) {
+function createMyxsaiSettingsPanel(host) {
   const React = getReact(host);
   if (!React) return () => null;
   const h = React.createElement;
 
-  return function YsduiSettingsPanel(props) {
+  return function MyxsaiSettingsPanel(props) {
     const existingChannel = React.useMemo(() => {
       try {
         const channels = host?.channels?.list?.() || [];
         return channels.find(
           (item) =>
-            item.id === YSDUI_CHANNEL_ID ||
-            String(item.baseUrl || "").includes("ysdui.cn"),
+            item.id === MYXSAI_CHANNEL_ID ||
+            String(item.baseUrl || "").includes("api.lk888.ai"),
         );
       } catch {
         return undefined;
@@ -94,11 +79,14 @@ function createYsduiSettingsPanel(host) {
     const [selectedModels, setSelectedModels] = React.useState(() =>
       existingChannel?.models?.length
         ? existingChannel.models
-        : YSDUI_PRESET_MODELS.map((item) => item.model),
+        : MYXSAI_PRESET_MODELS.map((item) => item.model),
     );
     const [catalogChecking, setCatalogChecking] = React.useState(false);
     const [saving, setSaving] = React.useState(false);
     const [onlineModels, setOnlineModels] = React.useState([]);
+    const [fetchedProfiles, setFetchedProfiles] = React.useState([]);
+    const [fetchedSummary, setFetchedSummary] = React.useState("");
+    const [filter, setFilter] = React.useState("all");
     const [synced, setSynced] = React.useState(
       Boolean(existingChannel?.hasApiKey || existingChannel?.apiKey),
     );
@@ -108,6 +96,59 @@ function createYsduiSettingsPanel(host) {
         : "",
     );
     const [errorMessage, setErrorMessage] = React.useState("");
+    const typedFetchKeyRef = React.useRef("");
+
+    // 首次加载且有 Key 时按类型拉取在线模型并合并进清单；任何失败都静默回退，
+    // 不报错、不阻塞面板。音频模型不自动勾选（音频协议未验证，留给用户自选）。
+    React.useEffect(() => {
+      const trimmedKey = String(apiKey || "").trim();
+      const trimmedUrl = String(baseUrl || "").trim().replace(/\/+$/, "") || DEFAULT_BASE_URL;
+      const fetchKey = `${trimmedUrl}\n${trimmedKey}`;
+      if (!trimmedKey || typedFetchKeyRef.current === fetchKey) return;
+      typedFetchKeyRef.current = fetchKey;
+      let cancelled = false;
+      (async () => {
+        const results = await Promise.all([
+          fetchMyxsaiModelsByType(trimmedUrl, trimmedKey, "chat"),
+          fetchMyxsaiModelsByType(trimmedUrl, trimmedKey, "image"),
+          fetchMyxsaiModelsByType(trimmedUrl, trimmedKey, "video"),
+          fetchMyxsaiModelsByType(trimmedUrl, trimmedKey, "audio"),
+        ]);
+        if (cancelled) return;
+        const [chat, image, video, audio] = results;
+        const staticIds = new Set(MYXSAI_PRESET_MODELS.map((item) => item.model));
+        const fresh = [...chat, ...image, ...video, ...audio].filter(
+          (item) => item && !staticIds.has(item.model),
+        );
+        if (!fresh.length) return;
+        setFetchedProfiles(fresh);
+        const autoCheck = fresh
+          .filter((item) => item.capability !== "audio")
+          .map((item) => item.model);
+        if (autoCheck.length) {
+          setSelectedModels((prev) => [...prev, ...autoCheck.filter((id) => !prev.includes(id))]);
+        }
+        const counts = { text: chat.length, image: image.length, video: video.length, audio: audio.length };
+        setFetchedSummary(
+          `已按类型拉取在线模型：文本 ${counts.text} / 图片 ${counts.image} / 视频 ${counts.video} / 音频 ${counts.audio} 个` +
+            (audio.length ? "（音频模型已列出但未自动勾选，协议需确认后自选）" : ""),
+        );
+      })();
+      return () => {
+        cancelled = true;
+      };
+      // 只在首次加载（同一 Key 只拉一次）时执行，apiKey/baseUrl 变化由 fetchKey 守卫。
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const allModels = React.useMemo(() => {
+      const staticIds = new Set(MYXSAI_PRESET_MODELS.map((item) => item.model));
+      return [...MYXSAI_PRESET_MODELS, ...fetchedProfiles.filter((item) => !staticIds.has(item.model))];
+    }, [fetchedProfiles]);
+
+    const visibleModels = filter === "all"
+      ? allModels
+      : allModels.filter((item) => item.capability === filter);
 
     const toggleModel = (modelId) => {
       setSelectedModels((prev) =>
@@ -121,7 +162,7 @@ function createYsduiSettingsPanel(host) {
       const trimmedKey = apiKey.trim();
       const trimmedUrl = baseUrl.trim().replace(/\/+$/, "") || DEFAULT_BASE_URL;
       if (!trimmedKey) {
-        setErrorMessage("请先填写银盛云枢壹算 API Key");
+        setErrorMessage("请先填写梦由心生 API Key");
         return;
       }
       setCatalogChecking(true);
@@ -172,9 +213,8 @@ function createYsduiSettingsPanel(host) {
     const handleSaveAndSync = async () => {
       const trimmedKey = apiKey.trim();
       const trimmedUrl = baseUrl.trim().replace(/\/+$/, "") || DEFAULT_BASE_URL;
-      const hasSavedKey = Boolean(existingChannel?.hasApiKey || existingChannel?.apiKey);
-      if (!trimmedKey && !hasSavedKey) {
-        setErrorMessage("请填写有效的银盛云枢壹算 API Key（sk-...）");
+      if (!trimmedKey) {
+        setErrorMessage("请填写有效的梦由心生 API Key");
         return;
       }
       if (!selectedModels.length) {
@@ -184,17 +224,18 @@ function createYsduiSettingsPanel(host) {
       setSaving(true);
       setErrorMessage("");
       try {
-        const patch = trimmedKey ? { apiKey: trimmedKey, baseUrl: trimmedUrl } : { baseUrl: trimmedUrl };
+        const patch = { apiKey: trimmedKey, baseUrl: trimmedUrl };
         if (typeof props?.updateConfig === "function") {
           await props.updateConfig(patch);
         } else if (host?.config?.set) {
           await host.config.set(patch);
         }
-        const channel = buildYsduiModelChannel({
+        const channel = buildMyxsaiModelChannel({
           apiKey: trimmedKey,
           baseUrl: trimmedUrl,
           selectedModels,
           existingChannel,
+          extraProfiles: fetchedProfiles,
         });
         if (!host?.channels?.upsert) {
           throw new Error("当前宿主版本不支持同步模型渠道");
@@ -202,9 +243,9 @@ function createYsduiSettingsPanel(host) {
         await host.channels.upsert(channel);
         setSynced(true);
         setStatusMessage(
-          `已将「${YSDUI_CHANNEL_NAME}」与 ${channel.models.length} 个模型同步至「设置 -> 模型服务」！`,
+          `已将「${MYXSAI_CHANNEL_NAME}」与 ${channel.models.length} 个模型同步至「设置 -> 模型服务」！`,
         );
-        host?.ui?.notify?.("银盛云枢壹算渠道与模型已同步至模型服务", "success");
+        host?.ui?.notify?.("梦由心生渠道与模型已同步至模型服务", "success");
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : "保存并同步渠道失败");
       } finally {
@@ -222,7 +263,6 @@ function createYsduiSettingsPanel(host) {
           padding: "4px 0",
         },
       },
-      // 顶部品牌介绍卡片
       h(
         "div",
         {
@@ -247,21 +287,8 @@ function createYsduiSettingsPanel(host) {
           },
           h(
             "div",
-            {
-              style: {
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                fontWeight: 600,
-                fontSize: "14px",
-              },
-            },
-            renderYsduiLogoSvg(h, {
-              size: 20,
-              "aria-hidden": true,
-              style: { flexShrink: 0 },
-            }),
-            "银盛云枢壹算 (OneAxis) · BYOK 一键接入",
+            { style: { fontWeight: 600, fontSize: "14px" } },
+            "梦由心生AI · BYOK 一键接入",
           ),
           h(
             "span",
@@ -282,29 +309,16 @@ function createYsduiSettingsPanel(host) {
           "p",
           {
             style: {
-              margin: "0 0 4px",
-              fontSize: "12px",
-              color: "var(--user-ink-muted, var(--muted-foreground))",
-              lineHeight: 1.6,
-            },
-          },
-          YSDUI_PROVIDER_INTRO,
-        ),
-        h(
-          "p",
-          {
-            style: {
               margin: 0,
               fontSize: "12px",
-              color: "var(--user-ink-muted, var(--muted-foreground))",
+              opacity: 0.75,
               lineHeight: 1.6,
             },
           },
-          `只需填写一个银盛云枢壹算 API Key，即可一键配置 DeepSeek、Qwen、GLM、Kimi、混元、豆包 Seedream 5.0 / Seedance 2.0 & 2.5、Wan 3.0、MiniMax H3 与 WAND-Vega 共 ${YSDUI_PRESET_MODELS.length} 款文本、图像与视频模型协议。`,
+          "只需填写一个梦由心生 API Key，即可一键配置聊天、图片与视频模型：文本走通用 chat-completion，图片与视频走站内媒体协议（POST /v1/media/generate 提交，GET /v1/media/status 轮询）。有 Key 时首次打开会自动按类型拉取在线模型并合并进清单，拉取失败时静默使用下方静态代表模型，不改动 BeefTV 原有默认模型配置。",
         ),
       ),
 
-      // 表单区
       h(
         "div",
         {
@@ -320,13 +334,13 @@ function createYsduiSettingsPanel(host) {
           h(
             "label",
             {
-              htmlFor: "ysdui-plugin-base-url",
+              htmlFor: "myxsai-plugin-base-url",
               style: { fontSize: "12px", fontWeight: 600 },
             },
             "接口地址 (Base URL)",
           ),
           h("input", {
-            id: "ysdui-plugin-base-url",
+            id: "myxsai-plugin-base-url",
             type: "text",
             value: baseUrl,
             onChange: (e) => setBaseUrl(e.target.value),
@@ -348,17 +362,17 @@ function createYsduiSettingsPanel(host) {
           h(
             "label",
             {
-              htmlFor: "ysdui-plugin-api-key",
+              htmlFor: "myxsai-plugin-api-key",
               style: { fontSize: "12px", fontWeight: 600 },
             },
-            "银盛云枢壹算 API Key",
+            "梦由心生 API Key",
           ),
           h(
             "div",
             { style: { display: "flex", gap: "8px" } },
             h("input", {
-              id: "ysdui-plugin-api-key",
-              "aria-label": "银盛云枢壹算 API Key",
+              id: "myxsai-plugin-api-key",
+              "aria-label": "梦由心生 API Key",
               type: showKey ? "text" : "password",
               value: apiKey,
               onChange: (e) => setApiKey(e.target.value),
@@ -412,7 +426,23 @@ function createYsduiSettingsPanel(host) {
         ),
       ),
 
-      // 预置模型与协议映射清单
+      fetchedSummary
+        ? h(
+            "div",
+            {
+              style: {
+                padding: "10px 12px",
+                borderRadius: "8px",
+                background: "rgba(16, 185, 129, 0.08)",
+                border: "1px solid rgba(16, 185, 129, 0.25)",
+                color: "#047857",
+                fontSize: "12px",
+              },
+            },
+            fetchedSummary,
+          )
+        : null,
+
       h(
         "div",
         {
@@ -429,12 +459,41 @@ function createYsduiSettingsPanel(host) {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "8px",
             },
           },
           h(
             "span",
             { style: { fontSize: "12px", fontWeight: 600 } },
-            `预置协议模型（已选 ${selectedModels.length} / ${YSDUI_PRESET_MODELS.length}）`,
+            `预置协议模型（已选 ${selectedModels.length} / ${allModels.length}）`,
+          ),
+          h(
+            "div",
+            { style: { display: "flex", gap: "4px", flexWrap: "wrap" } },
+            ["all", "text", "image", "video", "audio"].map((key) =>
+              h(
+                "button",
+                {
+                  key,
+                  type: "button",
+                  onClick: () => setFilter(key),
+                  style: {
+                    padding: "3px 10px",
+                    borderRadius: "999px",
+                    border: "1px solid rgba(128, 128, 128, 0.3)",
+                    background: filter === key ? "rgba(59, 130, 246, 0.12)" : "transparent",
+                    color: filter === key ? "#2563eb" : "inherit",
+                    fontSize: "12px",
+                    fontWeight: filter === key ? 600 : 400,
+                    cursor: "pointer",
+                  },
+                },
+                key === "all"
+                  ? "全部"
+                  : `${CAPABILITY_LABEL[key]} ${allModels.filter((item) => item.capability === key).length}`,
+              ),
+            ),
           ),
           h(
             "button",
@@ -442,9 +501,9 @@ function createYsduiSettingsPanel(host) {
               type: "button",
               onClick: () =>
                 setSelectedModels(
-                  selectedModels.length === YSDUI_PRESET_MODELS.length
+                  selectedModels.length === allModels.length
                     ? []
-                    : YSDUI_PRESET_MODELS.map((item) => item.model),
+                    : allModels.map((item) => item.model),
                 ),
               style: {
                 border: "none",
@@ -454,7 +513,7 @@ function createYsduiSettingsPanel(host) {
                 cursor: "pointer",
               },
             },
-            selectedModels.length === YSDUI_PRESET_MODELS.length ? "取消全选" : "全选模型",
+            selectedModels.length === allModels.length ? "取消全选" : "全选模型",
           ),
         ),
         h(
@@ -466,14 +525,15 @@ function createYsduiSettingsPanel(host) {
               gap: "8px",
             },
           },
-          YSDUI_PRESET_MODELS.map((item) => {
+          visibleModels.map((item) => {
             const checked = selectedModels.includes(item.model);
             const isOnline =
               onlineModels.includes(item.model) ||
               onlineModels.some((m) =>
                 String(m).toLowerCase().endsWith(item.model.toLowerCase()),
               );
-            const badge = capabilityBadgeStyle(item.capability);
+            const isFetched = fetchedProfiles.some((entry) => entry.model === item.model);
+            const badge = CAPABILITY_STYLE[item.capability] || CAPABILITY_STYLE.text;
             return h(
               "label",
               {
@@ -524,7 +584,7 @@ function createYsduiSettingsPanel(host) {
                         color: badge.color,
                       },
                     },
-                    badge.label,
+                    CAPABILITY_LABEL[item.capability] || item.capability,
                   ),
                 ),
                 h(
@@ -539,8 +599,15 @@ function createYsduiSettingsPanel(host) {
                       whiteSpace: "nowrap",
                     },
                   },
-                  `${item.model} · ${item.endpoint}`,
+                  `${item.model} · ${item.endpoint || item.protocol || ""}`,
                 ),
+                isFetched
+                  ? h(
+                      "div",
+                      { style: { fontSize: "10px", color: "#059669", marginTop: "2px" } },
+                      "● 在线按类型拉取",
+                    )
+                  : null,
                 isOnline
                   ? h(
                       "div",
@@ -548,13 +615,26 @@ function createYsduiSettingsPanel(host) {
                       "● 上游目录已确认在线",
                     )
                   : null,
+                item.capability === "audio" && !item.protocol
+                  ? h(
+                      "div",
+                      { style: { fontSize: "10px", color: "#b45309", marginTop: "2px" } },
+                      "音频协议待确认，同步后请在模型服务里自选协议",
+                    )
+                  : null,
               ),
             );
           }),
         ),
+        visibleModels.length === 0
+          ? h(
+              "div",
+              { style: { fontSize: "12px", opacity: 0.6 } },
+              "该分类下暂无模型（音频分类仅在按类型拉取到模型后出现）。",
+            )
+          : null,
       ),
 
-      // 状态反馈区
       errorMessage
         ? h(
             "div",
@@ -614,7 +694,6 @@ function createYsduiSettingsPanel(host) {
           )
         : null,
 
-      // 底部操作按钮
       h(
         "div",
         {
@@ -649,41 +728,11 @@ function createYsduiSettingsPanel(host) {
   };
 }
 
-export const BUILTIN_SERVICE_PRESET = {
-  id: YSDUI_CHANNEL_ID,
-  name: YSDUI_CHANNEL_NAME,
-  subtitle: "文本 · 多款主流图片 · 多款主流视频",
-  icon: YSDUI_CHANNEL_ICON,
-  baseUrl: DEFAULT_BASE_URL,
-  partner: true,
-  keysUrl: "https://www.ysdui.cn/",
-  websiteUrl: "https://www.ysdui.cn/",
-  protocolPrefixes: ["ysdui-"],
-  hosts: ["tokenhub.ysdui.cn", "ysdui.cn"],
-  hostSuffixes: [".ysdui.cn"],
-  candidates: { text: "chat-completion", audio: "openai-audio" },
-  models: YSDUI_PRESET_MODELS,
-  presetDescription: "文本、图像与视频",
-  providerIntro: YSDUI_PROVIDER_INTRO,
-  declaresReferenceMediaTransport: true,
-  buildChannel(args) {
-    return buildYsduiModelChannel({
-      apiKey: args.apiKey,
-      baseUrl: args.baseUrl,
-      selectedModels: args.selectedModels,
-      existingChannel: args.existingChannel,
-    });
-  },
-  upgradeProfile(profile) {
-    return upgradeYsduiModelProfile(profile);
-  },
-};
-
 export function activate(host) {
-  const SettingsPanel = createYsduiSettingsPanel(host);
+  const SettingsPanel = createMyxsaiSettingsPanel(host);
   const dispose = host.contribute("app.settings", {
-    id: "ysdui-settings",
-    label: "银盛云枢壹算算力与多模态渠道",
+    id: "myxsai-settings",
+    label: "梦由心生AI",
     component: SettingsPanel,
   });
   return () => {

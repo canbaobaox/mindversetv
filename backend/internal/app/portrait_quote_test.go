@@ -25,7 +25,7 @@ func savePortraitTestCatalog(t *testing.T, s *Service, id, modelID, quote string
 		}
 	}
 	profile := map[string]any{"model": modelID, "capability": "video", "protocol": "newapi", "videoPricing": pricing}
-	if id == beeftv.ChannelID {
+	if id == beeftv.ChannelID || id == beeftv.MyxsaiChannelID {
 		profile["capabilityConfig"] = modelcatalog.DefaultModelCapabilityConfigForModel("newapi", modelID)
 		profile["videoCapabilitiesVersion"] = "fixture-v1"
 	}
@@ -103,10 +103,10 @@ func TestPortraitQuoteTaskAdmission(t *testing.T) {
 
 func TestPortraitQuoteManagedAdmission(t *testing.T) {
 	s, _, _, _ := creationTestService(t)
-	savePortraitTestCatalog(t, s, beeftv.ChannelID, "seedance-2.0-portrait", portraitTestQuote)
+	savePortraitTestCatalog(t, s, beeftv.MyxsaiChannelID, "seedance-2.0-portrait", portraitTestQuote)
 	req := portraitTestRequest("seedance-2.0-portrait")
 	config := req.Input["config"].(map[string]any)
-	config["channelId"], config["credentialRef"], config["apiKey"] = beeftv.ChannelID, beeftv.CredentialRef, ""
+	config["channelId"], config["credentialRef"], config["apiKey"] = beeftv.MyxsaiChannelID, beeftv.CredentialRef, ""
 	if _, err := s.TaskService().CreateTask("user", toTaskCreateRequest(req)); err != nil {
 		t.Fatal(err)
 	}

@@ -175,7 +175,7 @@ func (item LocalChannelModel) PublicPrices() (map[string]any, *pricing.Table) {
 		quote, _ = NormalizeCatalogVideoPricing(item.VideoPricing)
 	}
 	var table *pricing.Table
-	if item.ChannelID == managedChannelID {
+	if isManagedChannelID(item.ChannelID) {
 		table, _ = pricing.Normalize(item.Pricing)
 	}
 	return quote, table

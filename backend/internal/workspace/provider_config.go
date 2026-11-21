@@ -574,13 +574,30 @@ func (s *ProviderConfig) decodeStoredDocument(body []byte) (ProviderStateDocumen
 			return ProviderStateDocument{}, false, errors.New("本地模型配置密文缺失")
 		}
 		document, _, err := decodeProviderDocument(body)
-		return document, true, err
+		if err != nil {
+			return ProviderStateDocument{}, false, err
+		}
+		// Unencrypted documents are already rewritten for encryption; the
+		// channel migration rides along in memory and persists with it.
+		migrateBeefTVChannelToMyxsai(document.Config)
+		return document, true, nil
 	}
 	plain, err := localcrypto.Decrypt(s.dataDir, envelope.EncryptedConfig)
 	if err != nil {
 		return ProviderStateDocument{}, false, err
 	}
-	return decodeProviderDocument([]byte(plain))
+	document, migrated, err := decodeProviderDocument([]byte(plain))
+	if err != nil {
+		return ProviderStateDocument{}, false, err
+	}
+	// One-time write migration: the stored official channel is renamed to
+	// the myxsai plugin channel. loadDocument persists the document when
+	// migrated is true; other callers (save paths, audits) see the migrated
+	// document in memory.
+	if migrateBeefTVChannelToMyxsai(document.Config) {
+		migrated = true
+	}
+	return document, migrated, nil
 }
 
 func (s *ProviderConfig) rotateBackup() error {

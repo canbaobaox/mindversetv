@@ -57,6 +57,11 @@ func (s *Service) CheckUpdates(ctx context.Context, registry string) UpdateCheck
 	)
 	for _, item := range s.List() {
 		if isManagedBuiltinPluginID(item.Manifest.ID) && IsBuiltInSource(item.Source) {
+			// 已下线合作伙伴即使本机仍有残留副本也不发官方更新，避免自动更新
+			// 把它重新装回来；移除走 InstallMissingLiveBuiltins 的卸载步骤。
+			if removedPartnerPluginIDs[item.Manifest.ID] {
+				continue
+			}
 			entry, found := pinned[item.Manifest.ID]
 			if !found {
 				continue

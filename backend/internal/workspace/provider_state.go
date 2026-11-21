@@ -100,6 +100,108 @@ func mergeBuiltinProviderPresets(config map[string]any) (map[string]any, error) 
 	return result, nil
 }
 
+func isPluginProtocol(protocol string) bool {
+	for _, prefix := range []string{"ll2-", "ysdui-", "myxsai-"} {
+		if strings.HasPrefix(protocol, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateBeefTVChannelToMyxsai renames the stored official channel ("beeftv",
+// or its pre-v2.2.0 id "beefapi") to the myxsai plugin channel. The rename is
+// a one-time, idempotent write migration: the stored document is rewritten on
+// first load with this build (see decodeStoredDocument) and later loads find
+// nothing to migrate. The key, models and model profiles move as-is;
+// top-level "beeftv::"/"beefapi::" model references are remapped to "myxsai::".
+// When a myxsai channel already exists, the legacy channel's key, models and
+// profiles fill only the gaps, then the legacy channel is dropped so the same
+// upstream is not configured twice.
+func migrateBeefTVChannelToMyxsai(config map[string]any) bool {
+	if config == nil {
+		return false
+	}
+	rawChannels, _ := config["channels"].([]any)
+	legacyIndex := -1
+	myxsaiIndex := -1
+	for index, raw := range rawChannels {
+		channel, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := channel["id"].(string)
+		switch id {
+		case "myxsai":
+			myxsaiIndex = index
+		case "beeftv":
+			legacyIndex = index
+		case "beefapi":
+			if legacyIndex < 0 {
+				legacyIndex = index
+			}
+		}
+	}
+	if legacyIndex < 0 {
+		return remapBeefTVModelRefs(config)
+	}
+	legacy, _ := rawChannels[legacyIndex].(map[string]any)
+	changed := false
+	if myxsaiIndex >= 0 {
+		myxsai, _ := rawChannels[myxsaiIndex].(map[string]any)
+		if key, _ := myxsai["apiKey"].(string); strings.TrimSpace(key) == "" {
+			if legacyKey, _ := legacy["apiKey"].(string); strings.TrimSpace(legacyKey) != "" {
+				myxsai["apiKey"] = legacyKey
+				changed = true
+			}
+		}
+		if models, _ := myxsai["models"].([]any); len(models) == 0 {
+			if legacyModels, _ := legacy["models"].([]any); len(legacyModels) > 0 {
+				myxsai["models"] = legacyModels
+				changed = true
+			}
+		}
+		if profiles, _ := myxsai["modelProfiles"].([]any); len(profiles) == 0 {
+			if legacyProfiles, _ := legacy["modelProfiles"].([]any); len(legacyProfiles) > 0 {
+				myxsai["modelProfiles"] = legacyProfiles
+				changed = true
+			}
+		}
+		rawChannels = append(rawChannels[:legacyIndex], rawChannels[legacyIndex+1:]...)
+		config["channels"] = rawChannels
+		changed = true
+	} else {
+		// Rename in place, preserving the channel's position in the list.
+		legacy["id"] = "myxsai"
+		legacy["name"] = "梦由心生AI"
+		legacy["baseUrl"] = "https://api.lk888.ai"
+		legacy["pinned"] = false
+		delete(legacy, "credentialRef")
+		delete(legacy, "legacyIds")
+		legacy["ownerPluginId"] = "beeftv-plugin-myxsai"
+		changed = true
+	}
+	if remapBeefTVModelRefs(config) {
+		changed = true
+	}
+	return changed
+}
+
+func remapBeefTVModelRefs(config map[string]any) bool {
+	changed := false
+	for _, key := range []string{"model", "imageModel", "videoModel", "textModel", "audioModel", "assistantModel", "mediaReviewModel"} {
+		value, _ := config[key].(string)
+		for _, prefix := range []string{"beeftv::", "beefapi::"} {
+			if strings.HasPrefix(value, prefix) {
+				config[key] = "myxsai::" + strings.TrimPrefix(value, prefix)
+				changed = true
+				break
+			}
+		}
+	}
+	return changed
+}
+
 func overlayHostedBeefTVMediaProfiles(channel map[string]any) map[string]any {
 	baseURL, _ := channel["baseUrl"].(string)
 	profiles, _ := channel["modelProfiles"].([]any)
@@ -117,6 +219,13 @@ func overlayHostedBeefTVMediaProfiles(channel map[string]any) map[string]any {
 		}
 		seen[model] = true
 		if version, _ := profile["videoCapabilitiesVersion"].(string); strings.TrimSpace(version) != "" && declaredVideoProfile(profile) {
+			next = append(next, profile)
+			continue
+		}
+		// A profile whose protocol was declared by a plugin (ll2-/ysdui-/
+		// myxsai-) is authoritative; the hosted contracts are only a fallback
+		// for the old managed channel, never an override of a plugin.
+		if protocol, _ := profile["protocol"].(string); isPluginProtocol(protocol) {
 			next = append(next, profile)
 			continue
 		}
@@ -263,18 +372,9 @@ func presetChannelMap(preset providerpreset.ChannelPreset, local map[string]any)
 	if len(preset.LegacyIDs) > 0 {
 		result["legacyIds"] = append([]string(nil), preset.LegacyIDs...)
 	}
-	for _, key := range []string{"apiKey", "secretKey", "headers", "enabled"} {
+	for _, key := range []string{"apiKey", "secretKey", "headers", "enabled", "ownerPluginId"} {
 		if value, ok := local[key]; ok {
 			result[key] = value
-		}
-	}
-	if preset.ID == "beeftv" {
-		base, _ := local["baseUrl"].(string)
-		if base == "https://beeftv.app" {
-			// 旧版内置渠道地址随预设一起迁到梦由心生AI 聚合站。
-			result["baseUrl"] = "https://api.lk888.ai"
-		} else if key, _ := local["apiKey"].(string); base == "" && key != "" {
-			result["baseUrl"] = "https://api.lk888.ai"
 		}
 	}
 	return result, nil

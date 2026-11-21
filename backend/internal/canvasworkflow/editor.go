@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"infinite-canvas/backend/internal/beeftv"
 	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/mediatools"
 	"infinite-canvas/backend/internal/modelcatalog"
@@ -51,7 +52,7 @@ func EditorDefinition(d Definition, recipes RecipesByNode) Definition {
 		config, _ := recipe.Request.Input["config"].(map[string]any)
 		channel := recipe.ChannelID
 		if IsOfficialWorkflowChannel(channel) {
-			channel = "beeftv"
+			channel = beeftv.MyxsaiChannelID
 		}
 		if channel != "" && stringValue(config["model"]) != "" {
 			n.Config["modelOption"] = channel + "::" + stringValue(config["model"])
@@ -88,7 +89,7 @@ func PresentOperations(host CompileHost) []Operation {
 	if snapshot, err := host.ProviderConfig(); err == nil {
 		upscaleChannels := []FieldOption{}
 		if host.UpscaleAvailable("") == nil {
-			upscaleChannels = append(upscaleChannels, FieldOption{Label: "官方算力", Value: "beeftv"})
+			upscaleChannels = append(upscaleChannels, FieldOption{Label: "官方算力", Value: beeftv.MyxsaiChannelID})
 		}
 		textModels := []FieldOption{}
 		for _, model := range DescribeModels(snapshot) {

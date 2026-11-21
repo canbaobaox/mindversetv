@@ -6,12 +6,18 @@ export function shouldRefreshBeefTVCatalog(previous: string | undefined, next: s
 }
 
 export function mergeManagedBeefTVCatalog(current: AiConfig, server: AiConfig, adoptAuthorizedAssistant = false): AiConfig {
-    const serverBeef = server.channels.find((channel) => channel.id === "beeftv");
+    // The managed channel is now the myxsai plugin channel (the old "beeftv"
+    // id was renamed by the backend write migration). The server snapshot is
+    // the source of truth for its models/profiles; unlike the old managed
+    // channel, the key is a normal user-filled key, so the server-provided
+    // apiKey is kept in memory (the browser persistent cache still strips it
+    // on persist, and generation reads it from memory).
+    const serverBeef = server.channels.find((channel) => channel.id === "myxsai");
     const serverIds = new Set(server.channels.map((channel) => channel.id));
     let found = false;
     // 固定服务由后端维护，重连后移除的旧官方服务也从本地目录移除。
     const channels = current.channels.filter((channel) => !channel.pinned || serverIds.has(channel.id)).map((channel) => {
-        if (channel.id !== "beeftv") return channel;
+        if (channel.id !== "myxsai") return channel;
         found = true;
         if (!serverBeef) {
             return { ...channel, models: [], modelProfiles: [], apiKey: "", secretKey: "", credentialRef: undefined, hasApiKey: false, hasSecretKey: false };
@@ -20,8 +26,8 @@ export function mergeManagedBeefTVCatalog(current: AiConfig, server: AiConfig, a
             ...channel,
             models: [...(serverBeef.models || [])],
             modelProfiles: (serverBeef.modelProfiles || []).map((item) => ({ ...item })),
-            apiKey: "",
-            secretKey: "",
+            apiKey: serverBeef.apiKey || "",
+            secretKey: serverBeef.secretKey || "",
             credentialRef: serverBeef.credentialRef,
             legacyIds: serverBeef.legacyIds,
             hasApiKey: serverBeef.hasApiKey,
@@ -32,8 +38,6 @@ export function mergeManagedBeefTVCatalog(current: AiConfig, server: AiConfig, a
     if (serverBeef && !found) {
         channels.unshift({
             ...serverBeef,
-            apiKey: "",
-            secretKey: "",
             models: [...(serverBeef.models || [])],
             modelProfiles: (serverBeef.modelProfiles || []).map((item) => ({ ...item })),
         });

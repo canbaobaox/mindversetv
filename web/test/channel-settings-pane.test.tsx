@@ -46,15 +46,15 @@ test("BeefTV connected transition refreshes the managed catalog", () => {
     expect(shouldRefreshBeefTVCatalog(undefined, "disconnected")).toBe(false);
 });
 
-test("BeefTV catalog merge keeps manual providers and user-owned BeefTV fields", () => {
+test("myxsai catalog merge keeps manual providers and user-owned myxsai fields", () => {
     const current = {
         ...defaultConfig,
         imageModel: "manual::local-image",
         channels: [
             createModelChannel({
-                id: "beeftv",
-                name: "BeefTV",
-                pinned: true,
+                id: "myxsai",
+                name: "梦由心生AI",
+                pinned: false,
                 enabled: false,
                 models: ["stale-image"],
                 modelProfiles: [{ model: "stale-image", capability: "image" }],
@@ -66,10 +66,10 @@ test("BeefTV catalog merge keeps manual providers and user-owned BeefTV fields",
         ...defaultConfig,
         channels: [
             createModelChannel({
-                id: "beeftv",
-                name: "BeefTV",
-                pinned: true,
-                credentialRef: "beeftv",
+                id: "myxsai",
+                name: "梦由心生AI",
+                pinned: false,
+                apiKey: "server-key",
                 hasApiKey: true,
                 models: ["enterprise-image"],
                 modelProfiles: [{ model: "enterprise-image", capability: "image", protocol: "openai-image" }],
@@ -78,13 +78,15 @@ test("BeefTV catalog merge keeps manual providers and user-owned BeefTV fields",
         ],
     };
     const merged = mergeManagedBeefTVCatalog(current, server);
-    const beef = merged.channels.find((channel) => channel.id === "beeftv");
+    const myxsai = merged.channels.find((channel) => channel.id === "myxsai");
     const manual = merged.channels.find((channel) => channel.id === "manual");
-    expect(beef?.models).toEqual(["enterprise-image"]);
-    expect(beef?.modelProfiles?.[0]?.protocol).toBe("openai-image");
-    expect(beef?.credentialRef).toBe("beeftv");
-    expect(beef?.enabled).toBe(false);
-    expect(beef?.apiKey).toBe("");
+    expect(myxsai?.models).toEqual(["enterprise-image"]);
+    expect(myxsai?.modelProfiles?.[0]?.protocol).toBe("openai-image");
+    // The myxsai channel is a normal plugin channel: no managed credentialRef,
+    // and the server-provided key is kept in memory (Design B).
+    expect(myxsai?.credentialRef).toBeUndefined();
+    expect(myxsai?.enabled).toBe(false);
+    expect(myxsai?.apiKey).toBe("server-key");
     expect(manual?.name).toBe("工作室渠道");
     expect(manual?.apiKey).toBe("manual-key");
     expect(manual?.models).toEqual(["local-image"]);
@@ -100,17 +102,18 @@ test("after reconnecting, old canvas nodes generate with the new official servic
     const server = {
         ...defaultConfig,
         channels: [
-            createModelChannel({ id: "beeftv", name: "BeefTV", pinned: true, legacyIds: ["beefapi"], credentialRef: "beeftv", hasApiKey: true, models: ["seedream-x"], modelProfiles: [{ model: "seedream-x", capability: "image", protocol: "volcengine-ark-image" }] }),
+            createModelChannel({ id: "myxsai", name: "梦由心生AI", pinned: false, legacyIds: ["beefapi"], hasApiKey: true, models: ["seedream-x"], modelProfiles: [{ model: "seedream-x", capability: "image", protocol: "volcengine-ark-image" }] }),
             createModelChannel({ id: "channel-2", name: "我的服务", baseUrl: "https://own.example.com", models: ["own-image"], modelProfiles: [{ model: "own-image", capability: "image", protocol: "openai-image" }] }),
         ],
     };
     const merged = mergeManagedBeefTVCatalog(current, server);
-    expect(merged.channels.map((channel) => channel.id)).toEqual(["beeftv", "channel-2"]);
+    expect(merged.channels.map((channel) => channel.id)).toEqual(["myxsai", "channel-2"]);
     const node = { id: "n1", type: "image", title: "首帧", position: { x: 0, y: 0 }, width: 100, height: 100, metadata: { model: "beefapi::seedream-x" } } as unknown as CanvasNodeData;
     const generation = buildGenerationConfig(merged, node, "image");
     const request = resolveModelRequestConfig(generation, generation.model);
     expect(request.model).toBe("seedream-x");
-    expect(request.credentialRef).toBe("beeftv");
+    // The myxsai channel is a normal plugin channel: no managed credentialRef.
+    expect(request.credentialRef).toBeUndefined();
     expect(request.baseUrl).not.toBe("https://own.example.com");
 });
 
@@ -119,11 +122,11 @@ test("after reconnecting, old canvas nodes generate with the new official servic
 test("reconnecting keeps the assistant and default models saved under the old official service", () => {
     const oldOfficial = createModelChannel({ id: "beefapi", name: "BeefTV", pinned: true, credentialRef: "beefapi-enterprise", models: ["chat-b"] });
     const current = { ...defaultConfig, channels: [oldOfficial], assistantModel: "beefapi::chat-b", textModel: "beefapi::chat-b", model: "beefapi::chat-b" };
-    const official = createModelChannel({ id: "beeftv", name: "BeefTV", pinned: true, legacyIds: ["beefapi"], credentialRef: "beeftv", hasApiKey: true, models: ["chat-a", "chat-b"], modelProfiles: [{ model: "chat-a", capability: "text", protocol: "chat-completion" }, { model: "chat-b", capability: "text", protocol: "chat-completion" }] });
+    const official = createModelChannel({ id: "myxsai", name: "梦由心生AI", pinned: false, legacyIds: ["beefapi"], hasApiKey: true, models: ["chat-a", "chat-b"], modelProfiles: [{ model: "chat-a", capability: "text", protocol: "chat-completion" }, { model: "chat-b", capability: "text", protocol: "chat-completion" }] });
     const merged = mergeManagedBeefTVCatalog(current, { ...defaultConfig, channels: [official] });
-    expect(merged.assistantModel).toBe("beeftv::chat-b");
-    expect(merged.textModel).toBe("beeftv::chat-b");
-    expect(merged.model).toBe("beeftv::chat-b");
+    expect(merged.assistantModel).toBe("myxsai::chat-b");
+    expect(merged.textModel).toBe("myxsai::chat-b");
+    expect(merged.model).toBe("myxsai::chat-b");
 });
 
 

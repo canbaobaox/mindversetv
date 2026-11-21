@@ -29,25 +29,28 @@ func applyCatalog(store *workspace.ProviderConfig, models []CatalogModel, previo
 	}
 	// Reconnecting replaces the official channel saved under the pre-rename ID.
 	channels := withoutLegacyOfficialChannel(config["channels"])
+	// The managed channel is the myxsai plugin channel now; a "beeftv"
+	// channel only survives in configs that have not been migrated yet.
+	managed := findManagedChannel(channels)
+	targetID := MyxsaiChannelID
+	if managed != nil {
+		if id, _ := managed["id"].(string); id != "" {
+			targetID = id
+		}
+	}
 	replaced := false
 	replaceModels := previousAccountID != "" && nextAccountID != "" && previousAccountID != nextAccountID
 	previousVideos := map[string]bool{}
-	if !replaceModels {
-		for _, raw := range channels {
-			channel, _ := raw.(map[string]any)
-			if channel["id"] != ChannelID {
-				continue
-			}
-			profiles, _ := channel["modelProfiles"].([]any)
-			for _, raw := range profiles {
-				profile, _ := raw.(map[string]any)
-				version, _ := profile["videoCapabilitiesVersion"].(string)
-				config, _ := profile["capabilityConfig"].(map[string]any)
-				video, _ := json.Marshal(config["video"])
-				if _, valid := NormalizeVersionedVideoCapability(video, version); valid {
-					id, _ := profile["model"].(string)
-					previousVideos[id] = true
-				}
+	if !replaceModels && managed != nil {
+		profiles, _ := managed["modelProfiles"].([]any)
+		for _, raw := range profiles {
+			profile, _ := raw.(map[string]any)
+			version, _ := profile["videoCapabilitiesVersion"].(string)
+			config, _ := profile["capabilityConfig"].(map[string]any)
+			video, _ := json.Marshal(config["video"])
+			if _, valid := NormalizeVersionedVideoCapability(video, version); valid {
+				id, _ := profile["model"].(string)
+				previousVideos[id] = true
 			}
 		}
 	}
@@ -107,7 +110,7 @@ func applyCatalog(store *workspace.ProviderConfig, models []CatalogModel, previo
 	}
 	for index, raw := range channels {
 		channel, ok := raw.(map[string]any)
-		if !ok || channel["id"] != ChannelID {
+		if !ok || channel["id"] != targetID {
 			continue
 		}
 		if replaceModels {
@@ -131,16 +134,24 @@ func applyCatalog(store *workspace.ProviderConfig, models []CatalogModel, previo
 			}
 			channel["modelProfiles"] = profiles
 		}
-		channel["apiKey"] = ""
-		channel["credentialRef"] = CredentialRef
+		// The legacy beefTV channel's key lives in the enterprise
+		// connection, so the config copy stays empty. The myxsai
+		// channel's key is the user's own (filled in the plugin
+		// panel): never blank it here, and never mark it with the
+		// managed credentialRef, which would block the plugin's
+		// one-click save from overwriting the channel.
+		if targetID == ChannelID {
+			channel["apiKey"] = ""
+			channel["credentialRef"] = CredentialRef
+		}
 		channels[index] = channel
 		replaced = true
 		break
 	}
 	if !replaced {
 		channels = append([]any{map[string]any{
-			"id": ChannelID, "models": nextModels, "modelProfiles": nextProfiles,
-			"apiKey": "", "credentialRef": CredentialRef, "enabled": true,
+			"id": targetID, "models": nextModels, "modelProfiles": nextProfiles,
+			"apiKey": "", "enabled": true,
 		}}, channels...)
 	}
 	config["channels"] = channels
@@ -149,7 +160,7 @@ func applyCatalog(store *workspace.ProviderConfig, models []CatalogModel, previo
 		preferred := DefaultManagedAssistantModel
 		for _, raw := range channels {
 			channel, _ := raw.(map[string]any)
-			if channel["id"] != ChannelID {
+			if channel["id"] != targetID {
 				continue
 			}
 			if aliases, ok := channel["modelAliases"].(map[string]any); ok {
@@ -162,7 +173,7 @@ func applyCatalog(store *workspace.ProviderConfig, models []CatalogModel, previo
 		for _, model := range models {
 			capability, protocol := catalogCapabilityAndProtocol(model)
 			if model.ID == preferred && capability == "text" && (protocol == "chat-completion" || protocol == "claude-api" || protocol == "responses" || protocol == "openai-response") {
-				defaultModel = ChannelID + "::" + preferred
+				defaultModel = targetID + "::" + preferred
 				break
 			}
 		}
@@ -563,19 +574,46 @@ func PreserveManagedChannel(incoming, existing map[string]any, managed bool) {
 	incoming["channels"] = incomingChannels
 }
 
+// findManagedChannel returns the current official channel (myxsai) when
+// present, falling back to the pre-migration "beeftv" id for configs that
+// have not been migrated yet.
+func findManagedChannel(channels []any) map[string]any {
+	var legacy map[string]any
+	for _, raw := range channels {
+		channel, _ := raw.(map[string]any)
+		if channel == nil {
+			continue
+		}
+		switch channel["id"] {
+		case MyxsaiChannelID:
+			return channel
+		case ChannelID:
+			legacy = channel
+		}
+	}
+	return legacy
+}
+
 // withoutLegacyOfficialChannel removes saved channels that still use an ID the
 // official preset lists as legacy (releases before v2.2.0 saved it as
-// "beefapi"). Channel IDs are generated, never typed, so such an entry can only
-// be the old official channel, which this release no longer recognizes.
+// "beefapi"; before the myxsai migration it was "beeftv"). Channel IDs are
+// generated, never typed, so such an entry can only be the old official
+// channel, which this release no longer recognizes.
+// The preset's LegacyIDs also serve model-key resolution (a "beeftv::model"
+// reference must still resolve to the myxsai channel), so the list now
+// contains "beeftv" as well. PreserveManagedChannel still treats "beeftv"
+// (ChannelID) as the current managed channel, so it is excluded here:
+// dropping it would discard the managed channel being saved.
 func withoutLegacyOfficialChannel(raw any) []any {
 	legacy := map[string]bool{}
 	for _, preset := range providerpreset.BuiltinChannels() {
-		if preset.ID == ChannelID {
+		if preset.ID == MyxsaiChannelID {
 			for _, id := range preset.LegacyIDs {
 				legacy[id] = true
 			}
 		}
 	}
+	delete(legacy, ChannelID)
 	channels, _ := raw.([]any)
 	kept := make([]any, 0, len(channels))
 	for _, item := range channels {

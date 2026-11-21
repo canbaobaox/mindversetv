@@ -22,7 +22,8 @@ func TestWorkflowsSavedUnderTheFormerOfficialIDStayOfficial(t *testing.T) {
 
 // Describe and upscale steps saved before the rename store the official
 // channel in the node config; decoding the saved definition reads it as the
-// current official channel. User channels are untouched.
+// current official channel (myxsai since the plugin replacement). User
+// channels are untouched.
 func TestSavedWorkflowNodesUnderTheFormerOfficialIDReadAsOfficial(t *testing.T) {
 	var d Definition
 	raw := `{"nodes":[
@@ -33,16 +34,16 @@ func TestSavedWorkflowNodesUnderTheFormerOfficialIDReadAsOfficial(t *testing.T) 
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.Nodes[0].Config["modelOption"]; got != "beeftv::vision-x" {
+	if got := d.Nodes[0].Config["modelOption"]; got != "myxsai::vision-x" {
 		t.Fatalf("describe modelOption = %v", got)
 	}
-	if got := d.Nodes[1].Config["channelId"]; got != "beeftv" {
+	if got := d.Nodes[1].Config["channelId"]; got != "myxsai" {
 		t.Fatalf("upscale channelId = %v", got)
 	}
 	if d.Nodes[2].Config["modelOption"] != "channel-2::vision-x" || d.Nodes[2].Config["channelId"] != "channel-2" {
 		t.Fatalf("user channel node changed: %#v", d.Nodes[2].Config)
 	}
-	if request, _ := UpscaleRequest(d.Nodes[1]); request.ChannelID != "beeftv" {
+	if request, _ := UpscaleRequest(d.Nodes[1]); request.ChannelID != "myxsai" {
 		t.Fatalf("upscale request channel = %q", request.ChannelID)
 	}
 }

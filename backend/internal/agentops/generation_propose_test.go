@@ -101,7 +101,7 @@ func TestGenerationProposeIsReadOnlyAndReportsCanvasDefaultModel(t *testing.T) {
 	if !isObject {
 		t.Fatalf("结果形状异常: %#v", result.Result)
 	}
-	if payload["model"] != "gpt-image-2" || payload["modelKey"] != "beeftv::gpt-image-2" {
+	if payload["model"] != "gpt-image-2" || payload["modelKey"] != "myxsai::gpt-image-2" {
 		t.Fatalf("应回画布默认图片模型: %#v", payload)
 	}
 	source := payload["source"].(map[string]any)
@@ -200,7 +200,7 @@ func TestGenerationProposeGlobalParameterChangeAdvancesSourceWithoutChangingMode
 		}
 		payload := result.Result.(map[string]any)
 		source := payload["source"].(map[string]any)
-		if payload["modelKey"] != "beeftv::gpt-image-2" || source["modelConfigRevision"] != float64(state.Revision) || state.Revision <= 1 || source["canvasRevision"] != float64(h.revision) {
+		if payload["modelKey"] != "myxsai::gpt-image-2" || source["modelConfigRevision"] != float64(state.Revision) || state.Revision <= 1 || source["canvasRevision"] != float64(h.revision) {
 			t.Fatalf("参数修改应只推进配置版本: %#v", payload)
 		}
 	}
@@ -285,7 +285,7 @@ func TestGenerationProposeUsesNodeOverrideBeforeGlobalDefault(t *testing.T) {
 		t.Fatalf("提议应成功: %v", err)
 	}
 	payload := result.Result.(map[string]any)
-	if payload["model"] != "gpt-image-2.5-flare" || payload["modelKey"] != "beeftv::gpt-image-2.5-flare" {
+	if payload["model"] != "gpt-image-2.5-flare" || payload["modelKey"] != "myxsai::gpt-image-2.5-flare" {
 		t.Fatalf("提议应使用节点覆盖模型而不是全局默认: %#v", payload)
 	}
 	source := payload["source"].(map[string]any)
@@ -305,7 +305,7 @@ func TestGenerationProposeNormalizesUnqualifiedNodeModel(t *testing.T) {
 		t.Fatalf("提议应成功: %v", err)
 	}
 	payload := result.Result.(map[string]any)
-	if payload["model"] != "gpt-image-2.5-flare" || payload["modelKey"] != "beeftv::gpt-image-2.5-flare" {
+	if payload["model"] != "gpt-image-2.5-flare" || payload["modelKey"] != "myxsai::gpt-image-2.5-flare" {
 		t.Fatalf("未带渠道前缀的节点模型应归一为渠道模型键: %#v", payload)
 	}
 }
@@ -320,7 +320,7 @@ func TestGenerationProposeFallsBackToDefaultWhenNodeHasNoModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := result.Result.(map[string]any)
-	if payload["modelKey"] != "beeftv::gpt-image-2" || payload["model"] != "gpt-image-2" {
+	if payload["modelKey"] != "myxsai::gpt-image-2" || payload["model"] != "gpt-image-2" {
 		t.Fatalf("未设置节点模型时应回退全局默认: %#v", payload)
 	}
 }

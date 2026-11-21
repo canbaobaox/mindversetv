@@ -42,20 +42,21 @@ func TestReconnectDropsThePreRenameOfficialChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids := channelIDs(t, effective.Config["channels"])
-	if len(ids) == 0 || ids[0] != ChannelID {
+	if len(ids) == 0 || ids[0] != MyxsaiChannelID {
 		t.Fatalf("official channel is not first after reconnect: %v", ids)
 	}
 	for _, id := range ids {
-		if id == "beefapi" {
+		if id == "beefapi" || id == "beeftv" {
 			t.Fatalf("pre-rename official channel survived reconnect: %v", ids)
 		}
 	}
 	if ids[len(ids)-1] != "channel-2" {
 		t.Fatalf("user channel was lost: %v", ids)
 	}
-	// The web client reads old "beefapi::model" references through this list.
-	official := findChannel(effective.Config["channels"].([]any), ChannelID)
-	if legacy, _ := json.Marshal(official["legacyIds"]); string(legacy) != `["beefapi"]` {
+	// The web client reads old "beefapi::model" and "beeftv::model" references
+	// through this list; the backend model-key resolution does the same.
+	official := findChannel(effective.Config["channels"].([]any), MyxsaiChannelID)
+	if legacy, _ := json.Marshal(official["legacyIds"]); string(legacy) != `["beefapi","beeftv"]` {
 		t.Fatalf("official channel legacyIds = %s", legacy)
 	}
 }

@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestWorkspaceModelConfigReturnsBuiltinBeefTVAndPersistenceMetadata(t *testing.T) {
+func TestWorkspaceModelConfigReturnsBuiltinMyxsaiAndPersistenceMetadata(t *testing.T) {
 	router, _ := newModelConfigTestRouter(t)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/workspace/model-config", nil))
@@ -30,15 +30,15 @@ func TestWorkspaceModelConfigReturnsBuiltinBeefTVAndPersistenceMetadata(t *testi
 	}
 	config, _ := data["config"].(map[string]any)
 	channels, _ := config["channels"].([]any)
-	if len(channels) != 1 || channels[0].(map[string]any)["id"] != "beeftv" {
-		t.Fatalf("builtin BeefTV missing: %#v", channels)
+	if len(channels) != 1 || channels[0].(map[string]any)["id"] != "myxsai" {
+		t.Fatalf("builtin myxsai missing: %#v", channels)
 	}
 	if models, _ := channels[0].(map[string]any)["models"].([]any); len(models) != 0 {
 		t.Fatalf("model catalog must remain dynamic: %#v", models)
 	}
 }
 
-func TestWorkspaceModelConfigGETRedactsBeefTVKey(t *testing.T) {
+func TestWorkspaceModelConfigGETReturnsMyxsaiKey(t *testing.T) {
 	router, _ := newModelConfigTestRouter(t)
 	first := putModelConfig(t, router, 0, "local-secret-key")
 	if first.Code != http.StatusOK {
@@ -49,8 +49,19 @@ func TestWorkspaceModelConfigGETRedactsBeefTVKey(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if bytes.Contains(recorder.Body.Bytes(), []byte("local-secret-key")) {
-		t.Fatalf("model-config leaked api key: %s", recorder.Body.String())
+	// The myxsai channel is a normal plugin-owned channel since the 2026-11-21
+	// plugin replacement: its key is returned to the frontend, which needs it
+	// in memory to call the model (the old managed beefTV channel, whose key
+	// never left the server, no longer exists). The round trip must keep it.
+	data := modelConfigResponseData(t, recorder)
+	config, _ := data["config"].(map[string]any)
+	channels, _ := config["channels"].([]any)
+	if len(channels) != 1 {
+		t.Fatalf("channels = %#v", channels)
+	}
+	channel, _ := channels[0].(map[string]any)
+	if channel["id"] != "myxsai" || channel["apiKey"] != "local-secret-key" {
+		t.Fatalf("myxsai channel key did not round-trip: %#v", channel)
 	}
 	stale := putModelConfig(t, router, 1, "ui-overwrite")
 	if stale.Code != http.StatusOK {
@@ -97,7 +108,7 @@ func putModelConfig(t *testing.T, router *gin.Engine, expectedRevision int64, ap
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"expectedRevision": expectedRevision,
-		"config":           map[string]any{"channels": []any{map[string]any{"id": "beeftv", "apiKey": apiKey, "enabled": true}}},
+		"config":           map[string]any{"channels": []any{map[string]any{"id": "myxsai", "apiKey": apiKey, "enabled": true}}},
 	})
 	if err != nil {
 		t.Fatal(err)

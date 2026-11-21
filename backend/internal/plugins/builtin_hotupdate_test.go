@@ -24,36 +24,35 @@ func (s stubReferenceSource) ReferencedProviders() (map[string]ReferenceUsage, e
 }
 
 func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSymlinks(t *testing.T) {
-	useShippedLL2YsduiForTest(t)
 	v1Bytes, v1SHA := buildTarballBytesForTest(t, map[string]string{
 		"package.json": `{
-			"name": "beeftv-plugin-ll2",
+			"name": "beeftv-plugin-market",
 			"version": "9.9.1",
 			"description": "hot v1",
 			"beeftv": {
-				"name": "LL2",
+				"name": "Hot Example",
 				"client": "./client/index.js",
 				"permissions": ["generation.run", "media.read", "ui.slot", "settings.write"],
 				"configuration": { "fields": [{ "name": "apiKey", "type": "secret", "label": "Key", "required": true }] },
 				"contributes": {
 					"providers": [
 						{
-							"id": "ll2-wan3-video",
+							"id": "hot-wan3-video",
 							"label": "Wan3",
 							"capabilities": ["video"],
 							"scopes": ["user.custom-channel", "canvas"],
-							"baseUrl": "https://api.ll2.cn",
+							"baseUrl": "https://hot.example.test",
 							"auth": { "type": "bearer", "field": "apiKey" },
 							"create": { "method": "POST", "path": "/wan3", "originPath": true, "contentType": "application/json", "body": { "model": { "$ref": "request.model" } } },
 							"poll": { "method": "GET", "path": "/wan3/{{taskId}}", "originPath": true },
 							"response": { "taskId": { "$ref": "response.id" }, "status": { "$ref": "response.status" }, "videos": { "$ref": "response.url" } }
 						},
 						{
-							"id": "ll2-v1-only-video",
+							"id": "hot-v1-only-video",
 							"label": "V1 Only",
 							"capabilities": ["video"],
 							"scopes": ["user.custom-channel", "canvas"],
-							"baseUrl": "https://api.ll2.cn",
+							"baseUrl": "https://hot.example.test",
 							"auth": { "type": "bearer", "field": "apiKey" },
 							"create": { "method": "POST", "path": "/v1only", "originPath": true, "contentType": "application/json", "body": { "model": { "$ref": "request.model" } } },
 							"poll": { "method": "GET", "path": "/v1only/{{taskId}}", "originPath": true },
@@ -68,21 +67,21 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 	})
 	v2Bytes, v2SHA := buildTarballBytesForTest(t, map[string]string{
 		"package.json": `{
-			"name": "beeftv-plugin-ll2",
+			"name": "beeftv-plugin-market",
 			"version": "9.9.2",
-			"description": "hot v2 drops ll2-v1-only-video",
+			"description": "hot v2 drops hot-v1-only-video",
 			"beeftv": {
-				"name": "LL2",
+				"name": "Hot Example",
 				"client": "./client/index.js",
 				"permissions": ["generation.run", "media.read", "ui.slot", "settings.write"],
 				"configuration": { "fields": [{ "name": "apiKey", "type": "secret", "label": "Key", "required": true }] },
 				"contributes": {
 					"providers": [{
-						"id": "ll2-wan3-video",
+						"id": "hot-wan3-video",
 						"label": "Wan3",
 						"capabilities": ["video"],
 						"scopes": ["user.custom-channel", "canvas"],
-						"baseUrl": "https://api.ll2.cn",
+						"baseUrl": "https://hot.example.test",
 						"auth": { "type": "bearer", "field": "apiKey" },
 						"create": { "method": "POST", "path": "/wan3", "originPath": true, "contentType": "application/json", "body": { "model": { "$ref": "request.model" } } },
 						"poll": { "method": "GET", "path": "/wan3/{{taskId}}", "originPath": true },
@@ -97,10 +96,10 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ll2-9.9.1.tgz":
+		case "/hot-9.9.1.tgz":
 			w.Header().Set("Content-Type", "application/gzip")
 			_, _ = w.Write(v1Bytes)
-		case "/ll2-9.9.2.tgz":
+		case "/hot-9.9.2.tgz":
 			w.Header().Set("Content-Type", "application/gzip")
 			_, _ = w.Write(v2Bytes)
 		default:
@@ -123,9 +122,9 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 		t.Fatal(err)
 	}
 	svc := New(rt, nil)
-	shippedView, ok := ByID(svc.List(), "beeftv-plugin-ll2")
+	shippedView, ok := ByID(svc.List(), "beeftv-plugin-market")
 	if !ok {
-		t.Fatal("missing shipped beeftv-plugin-ll2")
+		t.Fatal("missing shipped beeftv-plugin-market")
 	}
 	shippedRev := shippedView.Manifest.Revision
 
@@ -133,47 +132,47 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 	reg1, _ := json.Marshal(map[string]any{
 		"plugins": []map[string]any{},
 		"builtins": []map[string]any{{
-			"id": "beeftv-plugin-ll2", "packageName": "beeftv-plugin-ll2", "version": "9.9.1",
-			"tarball": server.URL + "/ll2-9.9.1.tgz", "sha256": v1SHA,
+			"id": "beeftv-plugin-market", "packageName": "beeftv-plugin-market", "version": "9.9.1",
+			"tarball": server.URL + "/hot-9.9.1.tgz", "sha256": v1SHA,
 		}},
 	})
 	setCuratedRegistryForTest(string(reg1))
-	v1View, err := svc.UpdatePackage("beeftv-plugin-ll2", "")
+	v1View, err := svc.UpdatePackage("beeftv-plugin-market", "")
 	if err != nil {
 		t.Fatalf("update to 9.9.1 failed: %v", err)
 	}
 	v1Rev := v1View.Manifest.Revision
-	if _, _, err := svc.ResolvePackageFile("beeftv-plugin-ll2", "/@rev-"+shippedRev+"/client/index.js"); err != nil {
+	if _, _, err := svc.ResolvePackageFile("beeftv-plugin-market", "/@rev-"+shippedRev+"/client/index.js"); err != nil {
 		t.Fatalf("expected shipped @rev file to remain resolvable, err=%v", err)
 	}
 
-	// 2. 当 9.9.2 删除了仍被未完成任务引用的 ll2-v1-only-video 时，热更新被拒绝（plugin_update_deferred），旧定义保留。
-	refs.usage["ll2-v1-only-video"] = ReferenceUsage{PendingTasks: 1}
+	// 2. 当 9.9.2 删除了仍被未完成任务引用的 hot-v1-only-video 时，热更新被拒绝（plugin_update_deferred），旧定义保留。
+	refs.usage["hot-v1-only-video"] = ReferenceUsage{PendingTasks: 1}
 	reg2, _ := json.Marshal(map[string]any{
 		"plugins": []map[string]any{},
 		"builtins": []map[string]any{{
-			"id": "beeftv-plugin-ll2", "packageName": "beeftv-plugin-ll2", "version": "9.9.2",
-			"tarball": server.URL + "/ll2-9.9.2.tgz", "sha256": v2SHA,
+			"id": "beeftv-plugin-market", "packageName": "beeftv-plugin-market", "version": "9.9.2",
+			"tarball": server.URL + "/hot-9.9.2.tgz", "sha256": v2SHA,
 		}},
 	})
 	setCuratedRegistryForTest(string(reg2))
 	var appErr *kernel.AppError
-	if _, deferErr := svc.UpdatePackage("beeftv-plugin-ll2", ""); deferErr == nil {
+	if _, deferErr := svc.UpdatePackage("beeftv-plugin-market", ""); deferErr == nil {
 		t.Fatal("expected UpdatePackage to defer when removing a referenced provider")
 	} else if !errors.As(deferErr, &appErr) || appErr.Reason != "plugin_update_deferred" || appErr.Status != http.StatusConflict {
 		t.Fatalf("expected 409 plugin_update_deferred error, got %#v (err=%v)", appErr, deferErr)
 	}
-	if _, stillOK := svc.Registry().Resolve("ll2-v1-only-video"); !stillOK {
-		t.Fatal("expected referenced ll2-v1-only-video provider to remain registered")
+	if _, stillOK := svc.Registry().Resolve("hot-v1-only-video"); !stillOK {
+		t.Fatal("expected referenced hot-v1-only-video provider to remain registered")
 	}
 
 	// 3. 引用释放后允许升级到 9.9.2，且切换窗口保留上一版热更新 9.9.1 的 @rev 相对模块文件防 404。
-	delete(refs.usage, "ll2-v1-only-video")
-	v2View, err := svc.UpdatePackage("beeftv-plugin-ll2", "")
+	delete(refs.usage, "hot-v1-only-video")
+	v2View, err := svc.UpdatePackage("beeftv-plugin-market", "")
 	if err != nil {
 		t.Fatalf("update to 9.9.2 after reference cleared failed: %v", err)
 	}
-	v2Path, _, err := svc.ResolvePackageFile("beeftv-plugin-ll2", "/@rev-"+v2View.Manifest.Revision+"/client/presets.js")
+	v2Path, _, err := svc.ResolvePackageFile("beeftv-plugin-market", "/@rev-"+v2View.Manifest.Revision+"/client/presets.js")
 	if err != nil {
 		t.Fatalf("expected v2 @rev presets.js to resolve: %v", err)
 	}
@@ -181,7 +180,7 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 	if !strings.Contains(string(v2Content), "9.9.2") {
 		t.Fatalf("expected v2 presets.js content, got %q", string(v2Content))
 	}
-	v1RetainedPath, _, err := svc.ResolvePackageFile("beeftv-plugin-ll2", "/@rev-"+v1Rev+"/client/presets.js")
+	v1RetainedPath, _, err := svc.ResolvePackageFile("beeftv-plugin-market", "/@rev-"+v1Rev+"/client/presets.js")
 	if err != nil {
 		t.Fatalf("expected retained previous v1 @rev presets.js to resolve without 404: %v", err)
 	}
@@ -197,7 +196,7 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 	}
 	symlinkStage := filepath.Join(t.TempDir(), "stage-symlink")
 	writePluginFolder(t, symlinkStage, map[string]string{
-		"package.json": `{"name":"beeftv-plugin-ll2","version":"9.9.3","beeftv":{"client":"./client/index.js"}}`,
+		"package.json": `{"name":"beeftv-plugin-market","version":"9.9.3","beeftv":{"client":"./client/index.js"}}`,
 	})
 	if err := os.MkdirAll(filepath.Join(symlinkStage, "client"), 0o755); err != nil {
 		t.Fatal(err)
@@ -208,7 +207,7 @@ func TestBuiltinHotUpdateRetainsPreviousRevDefersReferencedRemovalAndRejectsSyml
 		}
 		t.Fatal(err)
 	}
-	if _, _, symErr := stageHotUpdatedBuiltinBlob(dataDir, "beeftv-plugin-ll2", symlinkStage, ".", strings.Repeat("c", 64)); symErr == nil {
+	if _, _, symErr := stageHotUpdatedBuiltinBlob(dataDir, "beeftv-plugin-market", symlinkStage, ".", strings.Repeat("c", 64)); symErr == nil {
 		t.Fatal("expected stageHotUpdatedBuiltinBlob to reject symlink inside staged package")
 	}
 	if info, err := os.Stat(outsideFile); err != nil || info.Mode().Perm() != 0o644 {

@@ -39,7 +39,7 @@ func (s *Service) assistantGenerationConfig(target operations.GenerationTarget) 
 			if channel.CredentialRef != "" {
 				config["credentialRef"] = channel.CredentialRef
 			}
-			if channel.ID == beeftv.ChannelID {
+			if channel.ID == beeftv.ChannelID || channel.ID == beeftv.MyxsaiChannelID {
 				config["channelId"] = channel.ID
 			}
 			break

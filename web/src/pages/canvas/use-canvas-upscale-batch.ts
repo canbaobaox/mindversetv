@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { nanoid } from "nanoid";
 import { App } from "antd";
-import { channelHasGenerationCredential, isBuiltinBeefTVChannel, useConfigStore } from "@/stores/use-config-store";
+import { channelHasGenerationCredential, isMyxsaiChannel, useConfigStore } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasConnection } from "@/types/canvas";
 import { createDefaultUpscaleSettings, deriveUpscaleBatchState, getUpscaleInputNodes, getUpscaleOutputPosition, upscaleParamsForNode, type CanvasUpscaleBatchItem } from "@/lib/canvas/canvas-upscale";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
@@ -125,7 +125,7 @@ export function useCanvasUpscaleBatch({pageUi,  projectId, nodesRef, connections
                 rejectedRetryBlocked = true;
             }
             if (!batch || (batch.items.length > 0 && deriveUpscaleBatchState(batch, nodesRef.current).succeeded === batch.items.length)) {
-                if (!useConfigStore.getState().config.channels.some(channel => channel.enabled !== false && isBuiltinBeefTVChannel(channel) && channelHasGenerationCredential(channel))) throw new Error("暂无可用超分模型，请在模型渠道自填超分模型");
+                if (!useConfigStore.getState().config.channels.some(channel => channel.enabled !== false && isMyxsaiChannel(channel) && channelHasGenerationCredential(channel))) throw new Error("暂无可用超分模型，请在模型渠道自填超分模型");
                 const inputs = structuredClone(getUpscaleInputNodes(processor.id, nodesRef.current, connectionsRef.current));
                 if (!inputs.length) throw new Error("请连接可读取的图片或视频");
                 const defaults = createDefaultUpscaleSettings();
@@ -236,7 +236,7 @@ export function useCanvasUpscaleBatch({pageUi,  projectId, nodesRef, connections
                     await save();
                     continue;
                 }
-                if (!useConfigStore.getState().config.channels.some(channel => channel.enabled !== false && isBuiltinBeefTVChannel(channel) && channelHasGenerationCredential(channel))) {
+                if (!useConfigStore.getState().config.channels.some(channel => channel.enabled !== false && isMyxsaiChannel(channel) && channelHasGenerationCredential(channel))) {
                     update(item, { status: "rejected", error: "暂无可用超分模型，请在模型渠道自填超分模型" });
                     await save();
                     continue;

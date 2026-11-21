@@ -16,7 +16,7 @@ import (
 
 func SubtitleEraseTaskInput(ctx context.Context, user string, request SubtitleEraseRequest, ensureMetadata func(context.Context, string, string) (*model.Resource, error), lookupCred func() (string, string, string, string, error)) (Input, *model.Resource, error) {
 	var input Input
-	if strings.TrimSpace(request.ResourceID) == "" || (request.ChannelID != "" && request.ChannelID != "beeftv") {
+	if strings.TrimSpace(request.ResourceID) == "" || (request.ChannelID != "" && request.ChannelID != "beeftv" && request.ChannelID != beeftv.MyxsaiChannelID) {
 		return input, nil, BadAuthRequest("请选择视频素材与官方算力")
 	}
 	opts, err := normalizeSmartEraseOptions(requestToOptions(request))

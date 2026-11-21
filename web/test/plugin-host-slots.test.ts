@@ -499,14 +499,10 @@ describe("plugin host slots, events, and lifecycle", () => {
 
     test("activates real bundled ESM client plugins from plugin-packages and cleans up on disable", async () => {
         const marketMod = await import("../../plugin-packages/beeftv-plugin-market/client/index.js");
-        const ll2Mod = await import("../../plugin-packages/beeftv-plugin-ll2/client/index.js");
-        const ysduiMod = await import("../../plugin-packages/beeftv-plugin-ysdui/client/index.js");
         const slotTestMod = await import("../../plugin-packages/beeftv-plugin-slot-test/client/index.js");
 
         const packages = [
             { id: "beeftv-plugin-market", name: "插件市场", mod: marketMod },
-            { id: "beeftv-plugin-ll2", name: "LL2 算力与视频渠道", mod: ll2Mod },
-            { id: "beeftv-plugin-ysdui", name: "银盛云枢壹算算力与多模态渠道", mod: ysduiMod },
             { id: "beeftv-plugin-slot-test", name: "挂点测试套件", mod: slotTestMod },
         ];
 
@@ -529,82 +525,91 @@ describe("plugin host slots, events, and lifecycle", () => {
             getPluginSlotEntries("pluginCenter.section").some((e) => e.pluginId === "beeftv-plugin-market"),
         ).toBe(true);
 
-        // LL2 plugin contributes app.settings and builds a complete BYOK channel
-        expect(
-            getPluginSlotEntries("app.settings").some((e) => e.pluginId === "beeftv-plugin-ll2"),
-        ).toBe(true);
-        const builtChannel = ll2Mod.buildLL2ModelChannel({ apiKey: "sk-test-demo", baseUrl: "https://api.ll2.cn" });
-        expect(builtChannel.id).toBe("ll2");
-        expect(builtChannel.models).toContain("wan3.0-video");
-        expect(builtChannel.models).toContain("wan3.0-video-prime");
-        expect(builtChannel.models).toContain("doubao-seedance-2-0-fast");
-        expect(builtChannel.models).toContain("doubao-seedance-2-5");
-        expect(builtChannel.models).toContain("Super Vega 1.0-pro-mini");
-        expect(builtChannel.models).toContain("Super Vega 1.5-pro");
-        expect(builtChannel.models).toContain("auto-hd");
-        expect(builtChannel.modelProfiles).toHaveLength(16);
-
-        // 旧渠道上点「读取模型」误落到 newapi 且带 1440p/2160p/21:9 的 wan3.0-video 自动修复为 ll2-wan3-video
-        const repairedWan3 = ll2Mod.upgradeLL2ModelProfile(
-            {
-                model: "wan3.0-video",
-                capability: "video",
-                protocol: "newapi",
-                capabilityConfig: {
-                    version: 1,
-                    video: {
-                        resolutions: ["480p", "720p", "1080p", "1440p", "2160p"],
-                        defaultResolution: "480p",
-                        ratios: ["16:9", "21:9"],
-                        defaultRatio: "21:9",
-                    },
+        // 热更新后的内置渠道模块激活时，宿主 BUILTIN_PRESETS 同步刷新新增模型。
+        // 以合成 Acme 模块验证通用机制（ll2/ysdui 已退役，不再用真实包验证）。
+        const { builtinPreset, applyPartnerCatalogMetadata, resetDynamicPartnersInMemoryForReloadTest } = await import("@/lib/builtin-service-presets");
+        const acmeModule = {
+            activate: () => undefined,
+            BUILTIN_SERVICE_PRESET: {
+                id: "acme",
+                name: "Acme 算力云",
+                subtitle: "文本 · 高清视频",
+                icon: "OpenAI",
+                baseUrl: "https://api.acme-cloud.example",
+                partner: true,
+                protocolPrefixes: ["acme-"],
+                hosts: ["api.acme-cloud.example"],
+                hostSuffixes: [".acme-cloud.example"],
+                models: [{
+                    model: "acme-video-1",
+                    displayName: "Acme Video 1.0",
+                    capability: "video",
+                    protocol: "acme-video",
+                }],
+                presetDescription: "文本与视频",
+                buildChannel(this: { models: Array<{ model: string; displayName?: string; capability: string; protocol: string }> }, { baseUrl }: { baseUrl: string }) {
+                    const models = this.models ?? [];
+                    return {
+                        models: models.map((item) => item.model),
+                        modelProfiles: models.map((item) => ({
+                            model: item.model,
+                            displayName: item.displayName,
+                            capability: item.capability,
+                            protocol: item.protocol,
+                        })),
+                        baseUrl,
+                    };
+                },
+                upgradeProfile<T extends { model?: string; protocol?: string }>(profile: T): T {
+                    if (profile?.model === "acme-video-1" && profile.protocol === "newapi") {
+                        return { ...profile, protocol: "acme-video" };
+                    }
+                    return profile;
                 },
             },
-            { id: "ll2", baseUrl: "https://api.ll2.cn" },
-        );
-        expect(repairedWan3.protocol).toBe("ll2-wan3-video");
-        expect(repairedWan3.capabilityConfig.video.resolutions).toEqual(["480P", "720P", "1080P"]);
-        expect(repairedWan3.capabilityConfig.video.ratios).not.toContain("21:9");
-
-        // 非 LL2 渠道上的同名模型绝不被误改协议
-        const foreignWan3 = ll2Mod.upgradeLL2ModelProfile(
-            { model: "wan3.0-video", capability: "video", protocol: "newapi-channel-2" },
-            { id: "foreign", baseUrl: "https://relay.example.com" },
-        );
-        expect(foreignWan3.protocol).toBe("newapi-channel-2");
-
-        // 热更新后的内置渠道模块激活时，宿主 BUILTIN_PRESETS 同步刷新新增模型
-        const { builtinPreset } = await import("@/lib/builtin-service-presets");
-        const prevLL2Preset = builtinPreset("ll2")!;
+        };
+        // 动态伙伴预设需后端权威目录背书才上线：先下发 Acme 的 live 目录项。
+        applyPartnerCatalogMetadata([
+            { id: "beeftv-plugin-acme", presetId: "acme", name: "Acme 算力云", live: true, installed: true, enabled: true },
+        ]);
+        usePluginStore.getState().ensurePlugin({
+            id: "beeftv-plugin-acme",
+            name: "Acme 算力云",
+            version: "0.1.0",
+            description: "Acme 算力云",
+            permissions: [],
+            contributes: {},
+        });
+        usePluginStore.getState().setEnabled("beeftv-plugin-acme", true);
+        const prevAcmePreset = builtinPreset("acme");
         try {
             await activateClientPluginModule(
-                "beeftv-plugin-ll2",
+                "beeftv-plugin-acme",
                 {
-                    activate: ll2Mod.activate,
+                    activate: acmeModule.activate,
                     BUILTIN_SERVICE_PRESET: {
-                        ...ll2Mod.BUILTIN_SERVICE_PRESET,
-                        name: "LL2 (DMC Next)",
-                        subtitle: "文本 · 万相 3.0 · 超分",
-                        baseUrl: "https://api-next.ll2.cn",
+                        ...acmeModule.BUILTIN_SERVICE_PRESET,
+                        name: "Acme 算力云 Next",
+                        subtitle: "文本 · 万相 4.0 · 超分",
+                        baseUrl: "https://api-next.acme-cloud.example",
                         models: [
-                            ...ll2Mod.LL2_PRESET_MODELS,
-                            { model: "wan4.0-hot-video", displayName: "Wan 4.0 Hot", capability: "video", protocol: "ll2-wan3-video" },
+                            ...acmeModule.BUILTIN_SERVICE_PRESET.models,
+                            { model: "acme-video-2", displayName: "Acme Video 2.0", capability: "video", protocol: "acme-video" },
                         ],
                     },
                 } as unknown as Parameters<typeof activateClientPluginModule>[1],
                 { reportBackendError: false },
             );
-            expect(builtinPreset("ll2")?.models.some((m) => m.model === "wan4.0-hot-video")).toBe(true);
-            expect(builtinPreset("ll2")?.name).toBe("LL2 (DMC Next)");
-            expect(builtinPreset("ll2")?.baseUrl).toBe("https://api-next.ll2.cn");
+            expect(builtinPreset("acme")?.models.some((m) => m.model === "acme-video-2")).toBe(true);
+            expect(builtinPreset("acme")?.name).toBe("Acme 算力云 Next");
+            expect(builtinPreset("acme")?.baseUrl).toBe("https://api-next.acme-cloud.example");
             const { MODEL_SERVICE_PRESETS, createServicePresetChannel } = await import("../src/lib/model-service-presets");
-            // MindVerseTV 不把合作伙伴预设列入服务列表：热加载只更新内置预设数据，列表里始终没有 ll2。
-            const liveLL2Preset = MODEL_SERVICE_PRESETS.find((item) => item.id === "ll2");
-            expect(liveLL2Preset).toBeUndefined();
-            const hotCreatedChannel = createServicePresetChannel("ll2", "ll2-hot-check");
-            expect(hotCreatedChannel.name).toBe("LL2 (DMC Next)");
-            expect(hotCreatedChannel.baseUrl).toBe("https://api-next.ll2.cn");
-            expect(hotCreatedChannel.models).toContain("wan4.0-hot-video");
+            // MindVerseTV 不把合作伙伴预设列入服务列表：热加载只更新内置预设数据，列表里始终没有 acme。
+            expect(MODEL_SERVICE_PRESETS.find((item) => item.id === "acme")).toBeUndefined();
+            const hotCreatedChannel = createServicePresetChannel("acme", "acme-hot-check");
+            expect(hotCreatedChannel.name).toBe("Acme 算力云 Next");
+            expect(hotCreatedChannel.baseUrl).toBe("https://api-next.acme-cloud.example");
+            expect(hotCreatedChannel.models).toContain("acme-video-2");
 
             // 验证插件激活只迁移本地用户渠道，绝不把 scope="system" 系统渠道写回本地配置，且无变更时不触发多余 replaceConfig。
             const { createModelChannel, defaultConfig, useConfigStore } = await import("../src/stores/use-config-store");
@@ -621,57 +626,34 @@ describe("plugin host slots, events, and lifecycle", () => {
                     channels: [
                         createModelChannel({ id: "sys-managed", name: "系统渠道", baseUrl: "https://sys.example.com", scope: "system", models: ["sys-m1"] }),
                         createModelChannel({
-                            id: "ll2",
-                            name: "LL2 (DMC)",
-                            baseUrl: "https://api.ll2.cn",
+                            id: "acme",
+                            name: "Acme 算力云",
+                            baseUrl: "https://api.acme-cloud.example",
                             scope: "user",
-                            models: ["wan3.0-video"],
-                            modelProfiles: [{ model: "wan3.0-video", capability: "video", protocol: "newapi" }],
+                            models: ["acme-video-1"],
+                            modelProfiles: [{ model: "acme-video-1", capability: "video", protocol: "newapi" }],
                         }),
                     ],
                 },
             });
             try {
-                await activateClientPluginModule("beeftv-plugin-ll2", ll2Mod, { reportBackendError: false });
+                await activateClientPluginModule("beeftv-plugin-acme", acmeModule as unknown as Parameters<typeof activateClientPluginModule>[1], { reportBackendError: false });
                 expect(replaceCount).toBe(1);
                 const afterMigration = useConfigStore.getState().config.channels;
                 expect(afterMigration.some((c) => c.scope === "system")).toBe(false);
-                expect(afterMigration.find((c) => c.id === "ll2")?.modelProfiles?.[0]?.protocol).toBe("ll2-wan3-video");
+                expect(afterMigration.find((c) => c.id === "acme")?.modelProfiles?.[0]?.protocol).toBe("acme-video");
 
                 // 再次激活但渠道未发生任何变化时，不再调用 replaceConfig。
-                await activateClientPluginModule("beeftv-plugin-ll2", ll2Mod, { reportBackendError: false });
+                await activateClientPluginModule("beeftv-plugin-acme", acmeModule as unknown as Parameters<typeof activateClientPluginModule>[1], { reportBackendError: false });
                 expect(replaceCount).toBe(1);
             } finally {
                 useConfigStore.setState({ replaceConfig: origReplace, config: prevConfigSnapshot });
             }
         } finally {
-            await activateClientPluginModule("beeftv-plugin-ll2", ll2Mod, { reportBackendError: false });
-            expect(builtinPreset("ll2")?.models).toHaveLength(prevLL2Preset.models.length);
-            expect(builtinPreset("ll2")?.baseUrl).toBe("https://api.ll2.cn");
+            deactivateClientPlugin("beeftv-plugin-acme");
+            resetDynamicPartnersInMemoryForReloadTest();
+            expect(builtinPreset("acme")).toBe(prevAcmePreset);
         }
-
-        expect(
-            getPluginSlotEntries("app.settings").some((e) => e.pluginId === "beeftv-plugin-ysdui"),
-        ).toBe(true);
-        const builtYsduiChannel = ysduiMod.buildYsduiModelChannel({
-            apiKey: "sk-test-demo",
-            baseUrl: "https://tokenhub.ysdui.cn",
-            selectedModels: ["doubao-seedream-5-0-260128", "wand-vega-image-flash", "doubao-seedance-2-0-260128", "custom-text-model"],
-            existingChannel: {
-                id: "channel-random-123",
-                name: "我的云枢壹算",
-                models: ["custom-text-model"],
-                modelProfiles: [{ model: "custom-text-model", capability: "text", protocol: "chat-completion" }],
-            },
-        });
-        expect(builtYsduiChannel.id).toBe("ysdui");
-        expect(builtYsduiChannel.models).toContain("doubao-seedream-5-0-260128");
-        expect(builtYsduiChannel.models).toContain("wand-vega-image-flash");
-        expect(builtYsduiChannel.models).toContain("doubao-seedance-2-0-260128");
-        expect(builtYsduiChannel.models).toContain("custom-text-model");
-        expect(builtYsduiChannel.modelProfiles).toHaveLength(4);
-        const defaultYsduiChannel = ysduiMod.buildYsduiModelChannel({ apiKey: "sk-test-demo", baseUrl: "https://tokenhub.ysdui.cn" });
-        expect(defaultYsduiChannel.modelProfiles).toHaveLength(32);
 
         // Untrusted plugins without settings.write cannot read or mutate channels
         const untrustedHost = createBeefTVPluginHost("untrusted-plugin", {
@@ -686,22 +668,22 @@ describe("plugin host slots, events, and lifecycle", () => {
         expect(() => untrustedHost.channels?.list()).toThrow();
 
         // Trusted plugin with settings.write gets redacted channel copies
-        const trustedHost = createBeefTVPluginHost("beeftv-plugin-ll2", {
+        const trustedHost = createBeefTVPluginHost("beeftv-plugin-acme", {
             apiVersion: "beeftv.plugin/v2",
-            id: "beeftv-plugin-ll2",
-            name: "LL2",
+            id: "beeftv-plugin-acme",
+            name: "Acme",
             version: "1.0.0",
-            description: "LL2",
+            description: "Acme",
             trusted: true,
             permissions: ["settings.write"],
             contributes: {},
         });
         expect(Array.isArray(trustedHost.channels?.list())).toBe(true);
         await expect(
-            trustedHost.channels?.upsert({ id: "ll2", baseUrl: "ftp://invalid" }),
+            trustedHost.channels?.upsert({ id: "acme", baseUrl: "ftp://invalid" }),
         ).rejects.toThrow("渠道接口地址必须以 http:// 或 https:// 开头");
         await expect(
-            trustedHost.channels?.upsert({ id: "other-user-channel", baseUrl: "https://api.ll2.cn" }),
+            trustedHost.channels?.upsert({ id: "other-user-channel", baseUrl: "https://api.acme.test" }),
         ).rejects.toThrow("仅允许写入自身命名空间下的模型渠道");
 
         // Slot test plugin contributes to every slot and listens to every event
@@ -861,9 +843,9 @@ describe("plugin host slots, events, and lifecycle", () => {
         const { clientEntryFor } = await import("../src/lib/plugins/plugin-client-loader");
         const revA = "a".repeat(64);
         const revB = "b".repeat(64);
-        const entryA = clientEntryFor("beeftv-plugin-ll2", {
-            id: "beeftv-plugin-ll2",
-            name: "LL2",
+        const entryA = clientEntryFor("beeftv-plugin-acme", {
+            id: "beeftv-plugin-acme",
+            name: "Acme",
             version: "1.1.0",
             revision: revA,
             client: "./client/index.js",
@@ -871,9 +853,9 @@ describe("plugin host slots, events, and lifecycle", () => {
             permissions: [],
             contributes: {},
         });
-        const entryB = clientEntryFor("beeftv-plugin-ll2", {
-            id: "beeftv-plugin-ll2",
-            name: "LL2",
+        const entryB = clientEntryFor("beeftv-plugin-acme", {
+            id: "beeftv-plugin-acme",
+            name: "Acme",
             version: "1.2.0",
             revision: revB,
             client: "./client/index.js",
@@ -881,8 +863,8 @@ describe("plugin host slots, events, and lifecycle", () => {
             permissions: [],
             contributes: {},
         });
-        expect(entryA).toBe(`/api/plugins/beeftv-plugin-ll2/files/@rev-${revA}/client/index.js`);
-        expect(entryB).toBe(`/api/plugins/beeftv-plugin-ll2/files/@rev-${revB}/client/index.js`);
+        expect(entryA).toBe(`/api/plugins/beeftv-plugin-acme/files/@rev-${revA}/client/index.js`);
+        expect(entryB).toBe(`/api/plugins/beeftv-plugin-acme/files/@rev-${revB}/client/index.js`);
 
         const tmpRoot = mkdtempSync(join(tmpdir(), "beeftv-rev-import-"));
         try {
@@ -891,14 +873,14 @@ describe("plugin host slots, events, and lifecycle", () => {
             mkdirSync(dirname(pathA), { recursive: true });
             mkdirSync(dirname(pathB), { recursive: true });
             writeFileSync(pathA, 'import { MODELS } from "./presets.js"; export { MODELS };');
-            writeFileSync(join(dirname(pathA), "presets.js"), 'export const MODELS = ["wan3.0-video"];');
+            writeFileSync(join(dirname(pathA), "presets.js"), 'export const MODELS = ["acme-video"];');
             writeFileSync(pathB, 'import { MODELS } from "./presets.js"; export { MODELS };');
-            writeFileSync(join(dirname(pathB), "presets.js"), 'export const MODELS = ["wan3.0-video", "wan4.0-live"];');
+            writeFileSync(join(dirname(pathB), "presets.js"), 'export const MODELS = ["acme-video", "acme-video-v2"];');
 
             const modA = (await import(pathToFileURL(pathA).href)) as { MODELS: string[] };
             const modB = (await import(pathToFileURL(pathB).href)) as { MODELS: string[] };
-            expect(modA.MODELS).toEqual(["wan3.0-video"]);
-            expect(modB.MODELS).toEqual(["wan3.0-video", "wan4.0-live"]);
+            expect(modA.MODELS).toEqual(["acme-video"]);
+            expect(modB.MODELS).toEqual(["acme-video", "acme-video-v2"]);
         } finally {
             rmSync(tmpRoot, { recursive: true, force: true });
         }

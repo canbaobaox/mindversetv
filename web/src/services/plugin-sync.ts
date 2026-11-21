@@ -73,7 +73,7 @@ export async function syncPluginsFromBackend() {
 
 /**
  * MindVerseTV 不接入上游的合作伙伴热更新：不拉取合作伙伴目录、不应用远端
- * 合作商元数据、不自动安装合作伙伴插件（ll2、银盛、Infistar 等均不热接入）。
+ * 合作商元数据、不自动安装合作伙伴插件（上游合作商均不热接入）。
  * 调用方（应用启动、模型服务编辑页）仍可照常调用，本函数直接返回空列表。
  */
 export async function syncPartnerCatalogFromBackend(_options?: { retryFailed?: boolean }) {

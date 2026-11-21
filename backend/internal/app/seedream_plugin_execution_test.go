@@ -97,7 +97,7 @@ func TestSeedreamPluginUsedByAdminModelTest(t *testing.T) {
 	}
 }
 
-func TestYsduiPluginCreateRejectionWithTraceRequestIDKeepsRegenerateAllowed(t *testing.T) {
+func TestArkImageCreateRejectionWithTraceRequestIDKeepsRegenerateAllowed(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	for _, tc := range []struct {
 		name       string
@@ -109,11 +109,12 @@ func TestYsduiPluginCreateRejectionWithTraceRequestIDKeepsRegenerateAllowed(t *t
 			httpStatus: http.StatusBadRequest,
 			respBody:   `{"error":{"code":"InvalidParameter","message":"The parameter size specified in the request is not valid."},"request_id":"req-trace-synthetic-400"}`,
 		},
-		{
-			name:       "http-200-payload-rejection-with-trace-request-id",
-			httpStatus: http.StatusOK,
-			respBody:   `{"code":400,"message":"invalid parameter: size","request_id":"req-trace-payload-400"}`,
-		},
+		// The http-200-payload-rejection case went with the ysdui plugin: ysdui
+		// returned business errors as HTTP 200 with a top-level code/message/
+		// request_id envelope, which the ark provider does not interpret as a
+		// rejection. The http-400 case above still covers the behaviour this
+		// test exists for (a create rejection records failure diagnostics
+		// with a source and keeps regenerate allowed).
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, db, _, _ := creationTestService(t)
@@ -134,14 +135,14 @@ func TestYsduiPluginCreateRejectionWithTraceRequestIDKeepsRegenerateAllowed(t *t
 					"baseUrl":       server.URL,
 					"apiKey":        "synthetic",
 					"model":         "doubao-seedream-5-0-pro-260628",
-					"interfaceType": "ysdui-image",
+					"interfaceType": "volcengine-ark-image",
 					"size":          "16:9",
 					"count":         "1",
 				},
 			})
 			expires := time.Now().Add(time.Hour)
 			task := model.Task{
-				ID:             "ysdui-pro-reject-" + tc.name,
+				ID:             "ark-reject-" + tc.name,
 				UserID:         "user",
 				Type:           "canvas_image",
 				Status:         model.TaskStatusRunning,

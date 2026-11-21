@@ -78,7 +78,7 @@ func estimateTarget(catalog *modelcatalog.CatalogResponse, target EstimateTarget
 		table = pricing.FromVideoQuote(model.VideoPricing)
 	}
 	if table == nil {
-		if channelID != beeftv.ChannelID {
+		if channelID != beeftv.ChannelID && channelID != beeftv.MyxsaiChannelID {
 			return pricing.Unknown("自带 Key 的渠道暂无价格，按该渠道实际计费")
 		}
 		return pricing.Unknown("这个模型暂无价格")

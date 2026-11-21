@@ -1,10 +1,12 @@
 package workspace
 
 import (
-	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"infinite-canvas/backend/internal/localcrypto"
 )
 
 func TestEffectiveConfigOverlaysStaleHostedSeedanceProfiles(t *testing.T) {
@@ -34,6 +36,35 @@ func TestEffectiveConfigOverlaysStaleHostedSeedanceProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The canonical snapshot still carries the legacy channel: the rename
+	// happens at load time, not at canonicalization time. decodeStoredDocument
+	// migrates in memory, so read the encrypted bytes back and decrypt them
+	// manually instead of going through it.
+	var envelope struct {
+		EncryptedConfig string `json:"encryptedConfig"`
+	}
+	if err := json.Unmarshal(before, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := localcrypto.Decrypt(dir, envelope.EncryptedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeDoc, _, err := decodeProviderDocument([]byte(plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeChannels, _ := beforeDoc.Config["channels"].([]any)
+	foundLegacy := false
+	for _, raw := range beforeChannels {
+		channel, _ := raw.(map[string]any)
+		if channel["id"] == "beeftv" {
+			foundLegacy = true
+		}
+	}
+	if !foundLegacy {
+		t.Fatalf("canonical snapshot lost the legacy channel: %#v", beforeChannels)
+	}
 	effective, _, err := store.LoadEffectiveModelConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -42,14 +73,27 @@ func TestEffectiveConfigOverlaysStaleHostedSeedanceProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("effective overlay must not rewrite the on-disk snapshot")
+	// The one-time channel migration DOES persist (beeftv -> myxsai), but
+	// the effective overlay (catalog edits) must not: the stored snapshot
+	// keeps the original stale profiles, the in-memory effective config
+	// carries the overlaid ones.
+	stored, _, err := store.decodeStoredDocument(after)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if effective.Config["imageModel"] != "beeftv::gpt-image-2" || effective.Config["videoModel"] != "beeftv::wan3.0-video" {
+	storedChannel := requireEffectiveChannel(t, EffectiveModelConfig{Config: stored.Config}, "myxsai")
+	storedSeedance := requireEffectiveProfile(t, storedChannel, "seedance-2.0")
+	if storedSeedance["capability"] != "text" || storedSeedance["protocol"] != "chat-completion" {
+		t.Fatalf("overlay leaked into the stored snapshot: %#v", storedSeedance)
+	}
+	if stored.Config["imageModel"] != "myxsai::gpt-image-2" || stored.Config["videoModel"] != "myxsai::wan3.0-video" {
+		t.Fatalf("stored refs not migrated: image=%#v video=%#v", stored.Config["imageModel"], stored.Config["videoModel"])
+	}
+	if effective.Config["imageModel"] != "myxsai::gpt-image-2" || effective.Config["videoModel"] != "myxsai::wan3.0-video" {
 		t.Fatalf("user defaults changed: image=%#v video=%#v", effective.Config["imageModel"], effective.Config["videoModel"])
 	}
 
-	hosted := requireEffectiveChannel(t, effective, "beeftv")
+	hosted := requireEffectiveChannel(t, effective, "myxsai")
 	for _, model := range []string{"seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5"} {
 		profile := requireEffectiveProfile(t, hosted, model)
 		if profile["capability"] != "video" || profile["protocol"] != "newapi" {

@@ -814,8 +814,11 @@ const bundledPluginsSubdir = "bundled-plugins"
 
 // BundledBuiltinPluginNames is the single source of truth for default built-in
 // plugin directories shipped inside the MindVerseTV desktop app (agent-host/bundled-plugins).
+// Keep in sync with plugin-packages/bundled-plugin-dirs.txt, which drives
+// the release scripts that copy these directories into the installer.
 var BundledBuiltinPluginNames = []string{
 	"beeftv-plugin-market",
+	"beeftv-plugin-myxsai",
 }
 
 var (
@@ -833,7 +836,7 @@ func isBundledBuiltinPlugin(name string) bool {
 }
 
 // BundledSampleDir resolves a built-in plugin package directory shipped with
-// MindVerseTV (only beeftv-plugin-market). Market plugins are
+// MindVerseTV (beeftv-plugin-market and beeftv-plugin-myxsai). Market plugins are
 // never bundled inside the desktop app and are always installed online.
 func BundledSampleDir(name string) (string, bool) {
 	executable, _ := runtimeExecutable()

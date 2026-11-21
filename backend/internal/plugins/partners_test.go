@@ -652,27 +652,19 @@ func TestCuratedRegistryFreshnessNeverLetsUndatedCacheOutrankBundled(t *testing.
 	t.Cleanup(func() { runtimeExecutable = prevExec })
 
 	cacheFile := filepath.Join(t.TempDir(), "market-registry-cache.json")
-	if err := os.WriteFile(cacheFile, []byte(`{"plugins":[],"builtins":[{"id":"beeftv-plugin-ll2","packageName":"beeftv-plugin-ll2","name":"Old LL2","version":"0.0.1"}]}`), 0o644); err != nil {
+	if err := os.WriteFile(cacheFile, []byte(`{"plugins":[],"builtins":[{"id":"beeftv-plugin-acme","packageName":"beeftv-plugin-acme","name":"Acme","version":"0.0.1"}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	baseline := readLocalCuratedRegistryBaseline(cacheFile)
-	if stamp := curatedRegistryUpdatedAt(baseline); stamp == "" {
-		t.Fatalf("expected dated bundled registry to outrank undated cache, got baseline=%s", string(baseline))
+	// 随包 builtins 已清空：未带 updatedAt 的旧缓存只补随包时间戳（2026-11-19），条目原样保留、不被随包升级。
+	if stamp := curatedRegistryUpdatedAt(baseline); stamp != "2026-11-19" {
+		t.Fatalf("expected undated cache to inherit the bundled registry stamp 2026-11-19, got stamp=%q baseline=%s", stamp, string(baseline))
 	}
 	var parsed curatedRegistryPayload
-	if err := json.Unmarshal(baseline, &parsed); err != nil || len(parsed.Builtins) < 2 {
-		t.Fatalf("expected non-empty undated cache to merge missing bundled builtins by ID, err=%v builtins=%#v", err, parsed.Builtins)
+	if err := json.Unmarshal(baseline, &parsed); err != nil || len(parsed.Builtins) != 1 {
+		t.Fatalf("expected undated cache entry to pass through unchanged with an empty bundled builtins list, err=%v builtins=%#v", err, parsed.Builtins)
 	}
-	hasYsdui, upgradedLL2 := false, false
-	for _, b := range parsed.Builtins {
-		if b.ID == "beeftv-plugin-ysdui" {
-			hasYsdui = true
-		}
-		if b.ID == "beeftv-plugin-ll2" && b.Version != "0.0.1" {
-			upgradedLL2 = true
-		}
-	}
-	if !hasYsdui || !upgradedLL2 {
-		t.Fatalf("expected bundled builtins merged by ID (ysdui=%v upgradedLL2=%v), got %#v", hasYsdui, upgradedLL2, parsed.Builtins)
+	if parsed.Builtins[0].ID != "beeftv-plugin-acme" || parsed.Builtins[0].Version != "0.0.1" {
+		t.Fatalf("expected cached acme entry to keep its version, got %#v", parsed.Builtins)
 	}
 }

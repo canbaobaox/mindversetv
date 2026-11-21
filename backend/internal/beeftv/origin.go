@@ -16,8 +16,14 @@ const (
 	ClientScope      = "inference"
 	CredentialRef    = "beeftv"
 	ChannelID        = "beeftv"
-	TestOriginEnv    = "BEEFTV_ENTERPRISE_TEST_ORIGIN"
-	WalletPath       = "/console/topup"
+	// MyxsaiChannelID is the successor of the managed beefTV channel. After
+	// the plugin replacement (2026-11-21) the user's 梦由心生AI channel is
+	// stored under this id; managed-channel resolution (stored-key lookup,
+	// capability overlays, workflow credential tokens) treats it exactly like
+	// the old id so in-flight tasks and stored channels keep working.
+	MyxsaiChannelID = "myxsai"
+	TestOriginEnv   = "BEEFTV_ENTERPRISE_TEST_ORIGIN"
+	WalletPath      = "/console/topup"
 )
 
 // CanonicalOrigin defaults to BeefTV and only accepts an explicit loopback test origin.
@@ -127,7 +133,10 @@ func ValidateWalletURL(origin, raw string) (*url.URL, error) {
 }
 
 func IsManagedChannel(channelID, credentialRef, _ string) bool {
-	return strings.TrimSpace(credentialRef) == CredentialRef || strings.TrimSpace(channelID) == ChannelID
+	channelID = strings.TrimSpace(channelID)
+	credentialRef = strings.TrimSpace(credentialRef)
+	return credentialRef == CredentialRef || credentialRef == MyxsaiChannelID ||
+		channelID == ChannelID || channelID == MyxsaiChannelID
 }
 
 func IsManagedTaskInput(inputJSON string) bool {

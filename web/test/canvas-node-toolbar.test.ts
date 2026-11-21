@@ -188,7 +188,7 @@ describe("canvas node toolbar model", () => {
 
         expect(buildSmartEraseApiParams("res-1", baseState, subRegion, wmRegion)).toEqual({
             resourceId: "res-1",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "subtitle",
             eraseMethod: "auto",
             subtitleModel: "standard",
@@ -211,7 +211,7 @@ describe("canvas node toolbar model", () => {
             ),
         ).toEqual({
             resourceId: "res-custom-full",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "subtitle",
             eraseMethod: "custom",
             subtitleModel: "standard",
@@ -241,7 +241,7 @@ describe("canvas node toolbar model", () => {
             ),
         ).toEqual({
             resourceId: "res-mega",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "subtitle",
             eraseMethod: "auto",
             subtitleModel: "mega",
@@ -256,7 +256,7 @@ describe("canvas node toolbar model", () => {
             ),
         ).toEqual({
             resourceId: "res-wm",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "watermark",
             eraseMethod: "custom",
             watermarkModel: "advanced",
@@ -267,7 +267,7 @@ describe("canvas node toolbar model", () => {
             buildSmartEraseApiParams("res-priv", { ...baseState, eraseType: "privacy" }, subRegion, wmRegion),
         ).toEqual({
             resourceId: "res-priv",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "privacy",
             privacyModel: "mosaic",
             privacyTargets: ["face", "plate"],
@@ -446,7 +446,7 @@ describe("canvas node toolbar model", () => {
             ),
         ).toEqual({
             resourceId: "res-reconciled-priv",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "privacy",
             privacyModel: "mosaic",
             privacyTargets: ["face"],
@@ -462,7 +462,7 @@ describe("canvas node toolbar model", () => {
             ),
         ).toEqual({
             resourceId: "res-reconciled-sub",
-            channelId: "beeftv",
+            channelId: "myxsai",
             eraseType: "subtitle",
             eraseMethod: "auto",
             subtitleModel: "standard",

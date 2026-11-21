@@ -41,13 +41,16 @@ func TestGeminiAppliedCatalogResolvesBundledProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The public config projection adds the managed credential reference; the
-	// canonical built-in channel deliberately does not persist that UI marker.
+	// The myxsai channel is plugin-owned: the public config projection does
+	// not add a managed credential reference to it, and the managed key
+	// must never be persisted in the model config (it lives in the
+	// enterprise connection store). The service resolves the credential
+	// server-side via IsManagedChannel / LookupBeefTVCredential.
 	presented := restarted.RedactConfig(effective.Config)
-	channel := findChannel(presented["channels"].([]any), ChannelID)
+	channel := findChannel(presented["channels"].([]any), MyxsaiChannelID)
 	plainKey, _ := channel["apiKey"].(string)
-	if channel["credentialRef"] != CredentialRef || plainKey != "" {
-		t.Fatal("catalog did not preserve the managed credential reference")
+	if plainKey != "" {
+		t.Fatal("catalog persisted the managed key in the model config")
 	}
 	profiles := channel["modelProfiles"].([]any)
 	id := profiles[0].(map[string]any)["protocol"].(string)
@@ -158,7 +161,7 @@ func TestApplyCatalogReplacesModelsOnAccountSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel := findChannel(effective.Config["channels"].([]any), ChannelID)
+	channel := findChannel(effective.Config["channels"].([]any), MyxsaiChannelID)
 	ids := map[string]bool{}
 	switch models := channel["models"].(type) {
 	case []any:
@@ -324,7 +327,10 @@ func lookupCatalogProfile(t *testing.T, store *workspace.ProviderConfig, model s
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel := findChannel(effective.Config["channels"].([]any), ChannelID)
+	channel := findManagedChannel(effective.Config["channels"].([]any))
+	if channel == nil {
+		return nil, false
+	}
 	profiles, _ := channel["modelProfiles"].([]any)
 	for _, raw := range profiles {
 		profile, _ := raw.(map[string]any)

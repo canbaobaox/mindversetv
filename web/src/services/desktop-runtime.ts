@@ -86,6 +86,7 @@ export type DesktopRuntimeBinding = {
     OpenBeefTVX?: () => Promise<void>;
     OpenBeefTVWebsite?: () => Promise<void>;
     OpenBeefTVGitHub?: () => Promise<void>;
+    OpenMyxsaiRecharge?: () => Promise<void>;
     OpenMyxsaiRegister?: () => Promise<void>;
 };
 

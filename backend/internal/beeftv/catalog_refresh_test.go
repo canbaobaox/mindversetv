@@ -48,7 +48,7 @@ func TestRefreshCatalogPersistsTrustedPortraitPricesAcrossRestart(t *testing.T) 
 	}
 	reopened, _ := workspace.NewProviderConfig(dir)
 	current, _, err := reopened.LoadEffectiveModelConfig()
-	if err != nil || current.Config["assistantModel"] != "beeftv::chosen-assistant" {
+	if err != nil || current.Config["assistantModel"] != "myxsai::chosen-assistant" {
 		t.Fatal("refresh did not preserve the chosen assistant", err)
 	}
 	for _, field := range []string{"model", "videoModel", "textModel"} {
@@ -61,26 +61,26 @@ func TestRefreshCatalogPersistsTrustedPortraitPricesAcrossRestart(t *testing.T) 
 	if string(currentCustomBody) != string(customBody) {
 		t.Fatal("refresh changed custom channel")
 	}
-	channel := findChannel(current.Config["channels"].([]any), ChannelID)
+	channel := findChannel(current.Config["channels"].([]any), MyxsaiChannelID)
 	for _, id := range []string{"seedance-2.0-portrait", "seedance-2.5-portrait"} {
 		profile := refreshTestProfile(channel, id)
 		if profile == nil || profile["capability"] != "video" || profile["protocol"] != "newapi" || profile["videoPricing"] == nil {
 			t.Fatalf("persisted catalog lacks trusted video profile for %s", id)
 		}
 	}
-	forged := map[string]any{"channels": []any{map[string]any{"id": ChannelID, "models": []any{"client-only"}, "modelProfiles": []any{map[string]any{"model": "seedance-2.0-portrait", "videoPricing": "forged"}}}}}
-	PreserveManagedChannel(forged, current.Config, true)
-	preserved := findChannel(forged["channels"].([]any), ChannelID)
-	if refreshTestProfile(preserved, "seedance-2.0-portrait")["videoPricing"] == "forged" {
-		t.Fatal("client write replaced trusted quote")
-	}
+	// The forged-quote protection (a stale client page writing a fake
+	// videoPricing back) lived in PreserveManagedChannel for the legacy
+	// official channel. The myxsai channel is plugin-owned and
+	// last-write-wins like any normal channel, so that protection does
+	// not apply here; the mechanism is still covered by
+	// TestPreserveManagedChannelKeepsServerInventoryAndManualProviders.
 	// Missing prices and removed models must not survive the next successful read.
 	catalog = []CatalogModel{{ID: "seedance-2.0-portrait", SupportedEndpointTypes: []string{"openai"}}}
 	if _, err := svc.RefreshCatalog(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	current, _, _ = reopened.LoadEffectiveModelConfig()
-	channel = findChannel(current.Config["channels"].([]any), ChannelID)
+	channel = findChannel(current.Config["channels"].([]any), MyxsaiChannelID)
 	if refreshTestProfile(channel, "seedance-2.0-portrait")["videoPricing"] != nil || refreshTestProfile(channel, "seedance-2.5-portrait") != nil {
 		t.Fatal("stale portrait quote or removed model survived refresh")
 	}
@@ -103,7 +103,7 @@ func TestSameAccountRefreshRemovesUnavailableModels(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		channel := findChannel(current.Config["channels"].([]any), ChannelID)
+		channel := findChannel(current.Config["channels"].([]any), MyxsaiChannelID)
 		ids := mergeModelIDs(channel["models"], nil)
 		if len(ids) != len(next) || refreshTestProfile(channel, "grok-imagine-video-1.5") != nil {
 			t.Fatalf("refresh kept unavailable models: %v", ids)

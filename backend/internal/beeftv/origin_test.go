@@ -101,3 +101,24 @@ func TestValidateReturnedBaseURLRequiresCanonicalV1(t *testing.T) {
 		t.Fatal("double /v1 must be rejected")
 	}
 }
+
+// The myxsai plugin channel is the successor of the managed beeftv channel:
+// it must count as managed for credential resolution, upscale and erase.
+func TestIsManagedChannelTreatsMyxsaiAsManaged(t *testing.T) {
+	cases := []struct {
+		channelID, credentialRef string
+		want                     bool
+	}{
+		{channelID: "myxsai", want: true},
+		{channelID: "beeftv", want: true},
+		{credentialRef: "beeftv", want: true},
+		{credentialRef: "myxsai", want: true},
+		{channelID: "custom", want: false},
+		{channelID: "", credentialRef: "", want: false},
+	}
+	for _, tc := range cases {
+		if got := IsManagedChannel(tc.channelID, tc.credentialRef, ""); got != tc.want {
+			t.Fatalf("IsManagedChannel(%q, %q) = %v, want %v", tc.channelID, tc.credentialRef, got, tc.want)
+		}
+	}
+}

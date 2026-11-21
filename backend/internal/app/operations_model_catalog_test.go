@@ -103,7 +103,7 @@ func TestAgentModelCatalogDesktopUsesActualSnapshotWithoutCredentials(t *testing
 		t.Fatalf("catalog=%#v", catalog)
 	}
 	ch := catalog.Channels[0]
-	if ch.ID != "beeftv" || ch.Name != "梦由心生AI" || len(ch.Models) != 2 || ch.Models[0].ModelKey != "gemini-native" || !ch.Models[0].Available || ch.Models[1].Capability != "image" {
+	if ch.ID != "myxsai" || ch.Name != "梦由心生AI" || len(ch.Models) != 2 || ch.Models[0].ModelKey != "gemini-native" || !ch.Models[0].Available || ch.Models[1].Capability != "image" {
 		t.Fatalf("channel=%#v", ch)
 	}
 	registry := operations.NewRegistry(svc, operations.NewStore(svc.repo.DB()))
@@ -156,7 +156,7 @@ func TestAgentModelCatalogKeepsUnlimitedPromptImageModelsPriced(t *testing.T) {
 	if len(catalog.Channels) != 1 || len(catalog.Channels[0].Models) != 1 || catalog.Channels[0].Models[0].ModelKey != "gpt-image-2" {
 		t.Fatalf("the image model left the assistant catalog: %#v", catalog)
 	}
-	got := operations.EstimateGenerationCost(session, []operations.EstimateTarget{{ModelKey: "beeftv::gpt-image-2", Kind: "image", Parameters: map[string]string{"count": "2"}}})
+	got := operations.EstimateGenerationCost(session, []operations.EstimateTarget{{ModelKey: "myxsai::gpt-image-2", Kind: "image", Parameters: map[string]string{"count": "2"}}})
 	if got.Items[0].Amount == nil || *got.Items[0].Amount != 0.7 {
 		t.Fatalf("estimate: %+v", got.Items[0])
 	}
@@ -382,20 +382,20 @@ func TestAgentModelCatalogCapabilityDeclaredMatchesWebSourceRules(t *testing.T) 
 			key := ch.ID + "::" + m.ModelKey
 			declaredByKey[key] = *m.CapabilityDeclared
 			managedByKey[key] = *m.ManagedBeefTV
-			if key == "beeftv::empty-oprefs" {
+			if key == "myxsai::empty-oprefs" {
 				videoMap, _ := m.CapabilityConfig["video"].(map[string]any)
 				if _, ok := videoMap["operationReferences"]; !ok {
 					t.Fatalf("expected empty operationReferences map preserved on %s, got %#v", key, videoMap)
 				}
 			}
-			if key == "beeftv::minimax-h3-max" {
+			if key == "myxsai::minimax-h3-max" {
 				videoMap, _ := m.CapabilityConfig["video"].(map[string]any)
 				opRefs, ok := videoMap["operationReferences"].(map[string]any)
 				if !ok || len(opRefs) != 0 || videoMap["middleFrame"] != false {
 					t.Fatalf("unversioned user profile overwritten on %s: %#v", key, videoMap)
 				}
 			}
-			if key == "beeftv::minimax-h3" {
+			if key == "myxsai::minimax-h3" {
 				videoMap, _ := m.CapabilityConfig["video"].(map[string]any)
 				opRefs, _ := videoMap["operationReferences"].(map[string]any)
 				i2v, _ := opRefs["image_to_video"].(map[string]any)
@@ -410,16 +410,16 @@ func TestAgentModelCatalogCapabilityDeclaredMatchesWebSourceRules(t *testing.T) 
 		"custom::user-cap":       true,
 		"custom::versioned-cap":  true,
 		"sys::sys-cap":           true,
-		"beeftv::empty-oprefs":   true,
-		"beeftv::minimax-h3-max": true,
-		"beeftv::minimax-h3":     true,
+		"myxsai::empty-oprefs":   true,
+		"myxsai::minimax-h3-max": true,
+		"myxsai::minimax-h3":     true,
 	}
 	for key, expected := range want {
 		if got, ok := declaredByKey[key]; !ok || got != expected {
 			t.Fatalf("%s CapabilityDeclared = %v (present=%v), want %v", key, got, ok, expected)
 		}
 	}
-	if managedByKey["custom::versioned-cap"] || managedByKey["sys::sys-cap"] || !managedByKey["beeftv::empty-oprefs"] {
+	if managedByKey["custom::versioned-cap"] || managedByKey["sys::sys-cap"] || !managedByKey["myxsai::empty-oprefs"] {
 		t.Fatalf("ManagedBeefTV flags = %#v", managedByKey)
 	}
 }

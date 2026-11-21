@@ -1,20 +1,19 @@
 import { expect, test } from "bun:test";
-import * as ReactNamespace from "react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { applyFetchedChannelModelCatalog } from "../src/lib/channel-model-catalog";
 import { normalizeChannelBaseUrl } from "../src/lib/channel-url";
 import { ModelLogo } from "../src/components/model-logo";
-import { BUILTIN_PRESETS, applyPartnerCatalogMetadata, builtinPreset, clearDynamicPartnerModulesForTest, getBuiltinPresetsVersion, getPartnerIndicatorVersion, livePartnerSyncIssues, markPartnersNoticed, nextActivePartnerWindowDelayMs, resetDynamicPartnersInMemoryForReloadTest, syncBuiltinPresetFromModule, unnoticedLivePartners } from "../src/lib/builtin-service-presets";
+import { BUILTIN_PRESETS, applyPartnerCatalogMetadata, builtinPreset, clearDynamicPartnerModulesForTest, getBuiltinPresetsVersion, getPartnerIndicatorVersion, livePartnerSyncIssues, markPartnersNoticed, nextActivePartnerWindowDelayMs, resetDynamicPartnersInMemoryForReloadTest, syncBuiltinPresetFromModule, unnoticedLivePartners, upgradeBuiltinModelProfile } from "../src/lib/builtin-service-presets";
 import { clearTransientPartnerRetryForTest, nextTransientPartnerRetryDelayMs, recordTransientPartnerRetryForTest, syncPartnerCatalogFromBackend } from "../src/services/plugin-sync";
-import { MODEL_SERVICE_PRESETS, builtinPresetIntro, createPluginServiceChannel, createServicePresetChannel, ll2ProtocolsAvailable, ysduiProtocolsAvailable, partnerServicePresets, pluginServices, mergeSavedServiceChannel, presetCatalogFor, presetKeysUrl, presetPluginId, presetPromoText, serviceConnectionError, serviceModelProfile, servicePresetFor, standardServicePresets } from "../src/lib/model-service-presets";
+import { MODEL_SERVICE_PRESETS, builtinPresetIntro, createPluginServiceChannel, createServicePresetChannel, partnerServicePresets, pluginServices, mergeSavedServiceChannel, presetCatalogFor, presetKeysUrl, presetPluginId, presetPromoText, serviceConnectionError, serviceModelProfile, servicePresetFor, standardServicePresets } from "../src/lib/model-service-presets";
 import { modelConnectionResultDetail, testChannelModelConnection } from "../src/lib/model-connection-test";
 import { channelValidationError, modelConfigChannelStatusLabel } from "../src/pages/settings/channel-settings-pane";
 import { refreshNewBuiltinDraftProfiles, removeManualModelEntry, updateManualModelEntry } from "../src/pages/settings/model-service-editor";
 import "../src/lib/plugins/plugin-client-loader";
 import { backendProviderConfig } from "../src/services/api/generation-task";
-import { configWithoutCachedSecrets, createModelChannel, defaultConfig, normalizeConfigSnapshot, useConfigStore } from "../src/stores/use-config-store";
-import { defaultModelCapabilityConfig, sanitizeServerImageCapability, sanitizeServerVideoCapability } from "../src/lib/model-capabilities";
+import { configWithoutCachedSecrets, createModelChannel, defaultConfig, isBuiltinBeefTVChannel, isMyxsaiChannel, normalizeConfigSnapshot, useConfigStore } from "../src/stores/use-config-store";
+import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { defaultProtocolForCapability, modelProtocolDefinition, type ModelProtocolDefinition } from "../src/lib/model-protocols";
 import { serviceCredentialGuide } from "../src/lib/service-credentials";
 import { toProviderDefinitions } from "../src/services/api/plugin-catalog";
@@ -235,55 +234,29 @@ test("official OpenAI and Gemini presets stop advertising discontinued video API
         expect(subtitle).not.toMatch(/·\s*(Veo\s*)?视频\s*$/);
     }
     expect(presets.get("compatible")).toContain("中转");
-    // MindVerseTV 不展示上游合作伙伴预设（ll2、银盛），它们不在服务列表里。
+    // MindVerseTV 不展示已退役合作伙伴预设（ll2、银盛），它们不在服务列表里。
     expect(presets.has("ll2")).toBe(false);
     expect(presets.has("ysdui")).toBe(false);
     expect(presets.get("ark")).toContain("Seedance 视频");
 });
 
-test("Ysdui service preset resolves all 4 Ysdui protocols when plugin is enabled and fails closed when disabled", () => {
-    const ysduiProtocols = [
-        ...protocols,
-        { value: "ysdui-image", capability: "image", authType: "bearer", enabled: true } as ModelProtocolDefinition,
-        { value: "ysdui-image-task", capability: "image", authType: "bearer", enabled: true } as ModelProtocolDefinition,
-        { value: "ysdui-video", capability: "video", authType: "bearer", enabled: true } as ModelProtocolDefinition,
-    ];
-    expect(ysduiProtocolsAvailable(ysduiProtocols)).toBe(true);
-    expect(ysduiProtocolsAvailable(protocols)).toBe(false);
-
-    const channel = createServicePresetChannel("ysdui", "ysdui-test", ysduiProtocols);
+test("retired Ysdui preset keeps saved channels identifiable but offers no catalog or protocol upgrade", () => {
+    const channel = createServicePresetChannel("ysdui", "ysdui-test", protocols);
     const catalog = presetCatalogFor("ysdui");
-    // 银盛预设数据仍保留（已存渠道兼容），但不在服务列表里展示。
+    // 银盛已退役：预设数据仅供已存渠道兼容，不在服务列表里展示。
     expect(MODEL_SERVICE_PRESETS.find((item) => item.id === "ysdui")).toBeUndefined();
     const ysduiPreset = builtinPreset("ysdui");
     expect(ysduiPreset?.icon).toBe("Ysdui");
-    expect(builtinPresetIntro("ysdui")).toBe("银盛通信有限公司成立于2002年，注册资本5亿元，国家高新技术企业。银盛·云枢壹算是银盛通信有限公司旗下企业级一站式AI服务平台，为企业提供算力支持以及AI产品解决方案。");
+    expect(ysduiPreset?.live).toBe(false);
+    expect(builtinPresetIntro("ysdui")).toBe("");
     expect(builtinPresetIntro("ll2")).toBe("");
-    const renderedLogo = renderToStaticMarkup(createElement(ModelLogo, { icon: ysduiPreset?.icon, size: 24 }));
-    expect(renderedLogo).toContain('viewBox="0 0 1024 1024"');
-    expect(renderedLogo).toContain('fill="#005CD2"');
-    expect(renderedLogo).not.toContain("<mask");
-    expect(renderedLogo).not.toContain("<clipPath");
     expect(servicePresetFor(channel)).toBe("ysdui");
     expect(channel.name).toBe("银盛云枢壹算");
     expect(channel.baseUrl).toBe("https://tokenhub.ysdui.cn");
-    expect(channel.models).toHaveLength(32);
-    expect(catalog).toHaveLength(32);
-    expect(channel.models).toEqual(expect.arrayContaining(["hy3", "hy-role", "hy-mt2-pro"]));
+    expect(channel.models).toEqual([]);
+    expect(catalog).toEqual([]);
 
-    for (const profile of channel.modelProfiles || []) {
-        if (profile.capability === "image") {
-            expect(sanitizeServerImageCapability(profile.capabilityConfig?.image)).not.toBeNull();
-        } else if (profile.capability === "video") {
-            expect(sanitizeServerVideoCapability(profile.capabilityConfig?.video)).not.toBeNull();
-        }
-    }
-    const seedreamPro = channel.modelProfiles?.find((item) => item.model === "doubao-seedream-5-0-pro-260628");
-    expect(seedreamPro?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(false);
-    expect(seedreamPro?.capabilityConfig?.image?.transparentBackground?.supported).toBe(true);
-    const seedreamLite = channel.modelProfiles?.find((item) => item.model === "doubao-seedream-5-0-260128");
-    expect(seedreamLite?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(true);
-
+    // 已存渠道水合时原样通过：退役预设不再按目录重写协议与能力配置。
     const legacyYsduiChannel = createModelChannel({
         id: "ysdui",
         baseUrl: "https://tokenhub.ysdui.cn",
@@ -331,75 +304,81 @@ test("Ysdui service preset resolves all 4 Ysdui protocols when plugin is enabled
         ],
     });
     const hydratedYsdui = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [legacyYsduiChannel] } }).config.channels[0];
-    expect(hydratedYsdui.modelProfiles?.[0]?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(false);
-    expect(hydratedYsdui.modelProfiles?.[0]?.capabilityConfig?.image?.transparentBackground?.supported).toBe(true);
-    expect(hydratedYsdui.modelProfiles?.[1]?.capabilityConfig?.video?.resolutions).toEqual(["480P", "720P"]);
-    expect(hydratedYsdui.modelProfiles?.[1]?.capabilityConfig?.video?.defaultResolution).toBe("720P");
-    expect(hydratedYsdui.modelProfiles?.[2]?.capabilityConfig?.video?.resolutions).toEqual(["768P", "1080P"]);
-    expect(hydratedYsdui.modelProfiles?.[2]?.capabilityConfig?.video?.defaultResolution).toBe("768P");
+    expect(hydratedYsdui.modelProfiles?.[0]?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(true);
+    expect(hydratedYsdui.modelProfiles?.[0]?.capabilityConfig?.image?.transparentBackground?.supported).toBe(false);
+    expect(hydratedYsdui.modelProfiles?.[1]?.capabilityConfig?.video?.resolutions).toEqual(["480P", "720P", "1080P"]);
+    expect(hydratedYsdui.modelProfiles?.[1]?.capabilityConfig?.video?.defaultResolution).toBe("1080P");
+    expect(hydratedYsdui.modelProfiles?.[2]?.capabilityConfig?.video?.resolutions).toEqual(["720P", "1080P"]);
+    expect(hydratedYsdui.modelProfiles?.[2]?.capabilityConfig?.video?.defaultResolution).toBe("720P");
 
-    const resolvedProtocols = new Set(
-        catalog.map((item) => serviceModelProfile(channel, item, ysduiProtocols).protocol),
-    );
-    expect([...resolvedProtocols].sort()).toEqual([
-        "chat-completion",
-        "ysdui-image",
-        "ysdui-image-task",
-        "ysdui-video",
-    ]);
-
-    const unknownImage = serviceModelProfile(channel, { id: "custom-ysdui-image-model", modelType: "image" }, ysduiProtocols);
+    const unknownImage = serviceModelProfile(channel, { id: "custom-ysdui-image-model", modelType: "image" }, protocols);
     expect(unknownImage.protocol).toBeUndefined();
-
-    const withoutPlugin = catalog.map((item) => serviceModelProfile(channel, item, protocols));
-    expect(withoutPlugin.find((profile) => profile.capability === "text")?.protocol).toBe("chat-completion");
-    for (const mediaProfile of withoutPlugin.filter((profile) => profile.capability !== "text")) {
-        expect(mediaProfile.protocol).toBeUndefined();
-    }
 });
 
-test("LL2 service preset resolves all 7 LL2 protocols when plugin is enabled and fails closed when disabled", () => {
-    const ll2Protocols = [
-        ...protocols,
-        ...["ll2-wan3-video", "ll2-seedance-video", "ll2-vidu-video", "ll2-minimax-video", "ll2-super-vega-video", "ll2-auto-hd-video"].map(
-            (value) => ({ value, capability: "video", authType: "bearer", enabled: true } as ModelProtocolDefinition),
-        ),
-    ];
-    expect(ll2ProtocolsAvailable(ll2Protocols)).toBe(true);
-    expect(ll2ProtocolsAvailable(protocols)).toBe(false);
-
-    const channel = createServicePresetChannel("ll2", "ll2-test", ll2Protocols);
+test("retired LL2 preset keeps saved channels identifiable but offers no catalog or protocols", () => {
+    const channel = createServicePresetChannel("ll2", "ll2-test", protocols);
     const catalog = presetCatalogFor("ll2");
+    expect(MODEL_SERVICE_PRESETS.find((item) => item.id === "ll2")).toBeUndefined();
+    const ll2Preset = builtinPreset("ll2");
+    expect(ll2Preset?.icon).toBe("OpenAI");
+    expect(ll2Preset?.live).toBe(false);
     expect(servicePresetFor(channel)).toBe("ll2");
     expect(channel.name).toBe("LL2 (DMC)");
     expect(channel.baseUrl).toBe("https://api.ll2.cn");
-    expect(channel.models).toHaveLength(16);
-    expect(catalog).toHaveLength(16);
-
-    const resolvedProtocols = new Set(
-        catalog.map((item) => serviceModelProfile(channel, item, ll2Protocols).protocol),
-    );
-    expect([...resolvedProtocols].sort()).toEqual([
-        "chat-completion",
-        "ll2-auto-hd-video",
-        "ll2-minimax-video",
-        "ll2-seedance-video",
-        "ll2-super-vega-video",
-        "ll2-vidu-video",
-        "ll2-wan3-video",
-    ]);
-
-    // When the LL2 plugin is disabled/missing, video models must not resolve to unavailable ll2-* protocols.
-    const withoutPlugin = catalog.map((item) => serviceModelProfile(channel, item, protocols));
-    expect(withoutPlugin.find((profile) => profile.capability === "text")?.protocol).toBe("chat-completion");
-    for (const videoProfile of withoutPlugin.filter((profile) => profile.capability === "video")) {
-        expect(videoProfile.protocol).toBeUndefined();
-    }
+    expect(channel.models).toEqual([]);
+    expect(catalog).toEqual([]);
 
     // Switching back to another preset clears LL2 preset models.
-    const switched = createServicePresetChannel("compatible", "ll2-test", ll2Protocols);
+    const switched = createServicePresetChannel("compatible", "ll2-test", protocols);
     expect(switched.models).toEqual([]);
     expect(presetCatalogFor("compatible")).toEqual([]);
+});
+
+test("myxsai preset is the first service choice and its channel identifies as myxsai", () => {
+    const preset = builtinPreset("myxsai");
+    expect(preset?.name).toBe("梦由心生AI");
+    expect(preset?.baseUrl).toBe("https://api.lk888.ai");
+    expect(preset?.keysUrl).toBe("https://myxsai.com");
+    expect(preset?.live).toBe(true);
+    expect(preset?.models?.length).toBeGreaterThan(0);
+    expect(MODEL_SERVICE_PRESETS[0]?.id).toBe("myxsai");
+    expect(presetKeysUrl("myxsai")).toBe("https://myxsai.com");
+
+    const channel = createServicePresetChannel("myxsai", "myxsai-user", protocols);
+    expect(channel.name).toBe("梦由心生AI");
+    expect(channel.baseUrl).toBe("https://api.lk888.ai");
+    expect(channel.models).toContain("doubao-seed-2-1-pro-260628");
+    expect(channel.models).toContain("doubao-seedream-5-5-261028");
+    expect(channel.models).toContain("doubao-seedance-2-5-260628");
+    expect(servicePresetFor(channel)).toBe("myxsai");
+
+    const catalog = presetCatalogFor("myxsai");
+    expect(catalog.find((item) => item.id === "doubao-seed-2-1-pro-260628")?.modelType).toBe("text");
+    expect(catalog.find((item) => item.id === "doubao-seedream-5-5-261028")?.modelType).toBe("image");
+    expect(catalog.find((item) => item.id === "doubao-seedance-2-5-260628")?.modelType).toBe("video");
+
+    // Pulled (non-preset) models fall back to the preset candidates: image
+    // and video go through the media protocol, not the OpenAI image path.
+    // The candidate only applies when the protocol is installed (present in
+    // the available protocol list), as in the real app once the plugin loads.
+    const myxsaiProtocols = [
+        ...protocols,
+        { value: "myxsai-media", capability: "image", enabled: true },
+        { value: "myxsai-media", capability: "video", enabled: true },
+    ] as ModelProtocolDefinition[];
+    const pulledImage = serviceModelProfile(channel, { id: "doubao-seedream-9-9", modelType: "image" }, myxsaiProtocols);
+    expect(pulledImage.protocol).toBe("myxsai-media");
+    const pulledVideo = serviceModelProfile(channel, { id: "kling-v9-video", modelType: "video" }, myxsaiProtocols);
+    expect(pulledVideo.protocol).toBe("myxsai-media");
+    const pulledText = serviceModelProfile(channel, { id: "kimi-k9", modelType: "text" }, myxsaiProtocols);
+    expect(pulledText.protocol).toBe("chat-completion");
+});
+
+test("isMyxsaiChannel identifies the myxsai plugin channel, not the legacy beeftv one", () => {
+    expect(isMyxsaiChannel(createModelChannel({ id: "myxsai" }))).toBe(true);
+    expect(isMyxsaiChannel(createModelChannel({ id: "beeftv", pinned: true }))).toBe(false);
+    expect(isBuiltinBeefTVChannel(createModelChannel({ id: "beeftv", pinned: true }))).toBe(true);
+    expect(isBuiltinBeefTVChannel(createModelChannel({ id: "myxsai" }))).toBe(false);
 });
 
 test("mergeSavedServiceChannel prioritizes exact channel id, collapses duplicate LL2 channels, and remaps model selections", () => {
@@ -438,11 +417,7 @@ test("mergeSavedServiceChannel prioritizes exact channel id, collapses duplicate
     expect(mergedFromNew.channels[0].apiKey).toBe("k3");
 });
 
-test("legacy LL2 auto-hd profile upgrades expired testVideoUrl and removes unsupported 720p resolution", () => {
-    const ll2Protocols = [
-        ...protocols,
-        { value: "ll2-auto-hd-video", capability: "video", authType: "bearer", enabled: true } as ModelProtocolDefinition,
-    ];
+test("retired LL2 auto-hd profile passes through unchanged instead of upgrading expired testVideoUrl or dropping 720p", () => {
     const legacyChannel = createModelChannel({
         id: "ll2",
         baseUrl: "https://api.ll2.cn",
@@ -472,10 +447,10 @@ test("legacy LL2 auto-hd profile upgrades expired testVideoUrl and removes unsup
             },
         ],
     });
-    const upgraded = serviceModelProfile(legacyChannel, { id: "auto-hd", modelType: "video" }, ll2Protocols);
-    expect(upgraded.defaultOptions?.testVideoUrl).toContain("help-static-aliyun-doc.aliyuncs.com");
-    expect(upgraded.capabilityConfig?.video?.resolutions).toEqual(["1080p", "2k", "4k"]);
-    expect(upgraded.capabilityConfig?.video?.defaultResolution).toBe("1080p");
+    const hydratedLL2 = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [legacyChannel] } }).config.channels[0];
+    expect(hydratedLL2.modelProfiles?.[0]?.defaultOptions?.testVideoUrl).toBe("https://h3-gz-public-1483601991.cos.ap-guangzhou.myqcloud.com/outputs/expired.mp4");
+    expect(hydratedLL2.modelProfiles?.[0]?.capabilityConfig?.video?.resolutions).toEqual(["720p", "1080p", "2k", "4k"]);
+    expect(hydratedLL2.modelProfiles?.[0]?.capabilityConfig?.video?.defaultResolution).toBe("720p");
 
     // Non-LL2 channel sharing a model name must not have its resolutions rewritten on config hydration
     const nonLL2Channel = createModelChannel({
@@ -516,8 +491,7 @@ test("a retired interface is not offered again but still names a saved choice", 
     expect(modelProtocolDefinition("old-video", [definition])?.label).toBe("旧视频接口");
 });
 
-test("upgradeYsduiModelProfile preserves server-versioned capabilities and keeps user defaultResolution valid", async () => {
-    const { upgradeYsduiModelProfile } = await import("../../plugin-packages/beeftv-plugin-ysdui/client/presets.js");
+test("upgradeBuiltinModelProfile leaves retired ysdui and ll2 profiles untouched", () => {
     const serverProfile = {
         model: "doubao-seedream-5-0-pro-260628",
         capability: "image",
@@ -531,7 +505,7 @@ test("upgradeYsduiModelProfile preserves server-versioned capabilities and keeps
             },
         },
     };
-    expect(upgradeYsduiModelProfile(serverProfile)).toBe(serverProfile);
+    expect(upgradeBuiltinModelProfile(serverProfile, { id: "ysdui", baseUrl: "https://tokenhub.ysdui.cn" })).toBe(serverProfile);
 
     const userVideoProfile = {
         model: "wand-vega-video-1.0-lite",
@@ -553,23 +527,15 @@ test("upgradeYsduiModelProfile preserves server-versioned capabilities and keeps
             },
         },
     };
-    const migrated = upgradeYsduiModelProfile(userVideoProfile);
-    expect(migrated.capabilityConfig.video.resolutions).toEqual(["1080P"]);
-    expect(migrated.capabilityConfig.video.defaultResolution).toBe("1080P");
+    expect(upgradeBuiltinModelProfile(userVideoProfile, { id: "ysdui", baseUrl: "https://tokenhub.ysdui.cn" })).toBe(userVideoProfile);
 
-    const ysduiClient = await import("../../plugin-packages/beeftv-plugin-ysdui/client/index.js");
-    let contributedComponent: ReactNamespace.ComponentType<Record<string, unknown>> | null = null;
-    ysduiClient.activate({
-        React: ReactNamespace,
-        contribute: (_slot: string, payload: { component: ReactNamespace.ComponentType<Record<string, unknown>> }) => {
-            contributedComponent = payload.component;
-            return () => undefined;
-        },
-    });
-    expect(contributedComponent).not.toBeNull();
-    const panelMarkup = renderToStaticMarkup(createElement(contributedComponent!, {}));
-    expect(panelMarkup).toContain('fill="#005CD2"');
-    expect(panelMarkup).toContain("银盛通信有限公司成立于2002年，注册资本5亿元，国家高新技术企业。");
+    const ll2Profile = {
+        model: "auto-hd",
+        capability: "video",
+        protocol: "ll2-auto-hd-video",
+        capabilityConfig: { version: 1, video: { resolutions: ["720p", "1080p"], defaultResolution: "720p" } },
+    };
+    expect(upgradeBuiltinModelProfile(ll2Profile, { id: "ll2", baseUrl: "https://api.ll2.cn" })).toBe(ll2Profile);
 });
 
 test("raw # baseUrl passes service and channel validation while real URL fragments stay rejected", () => {
@@ -873,7 +839,7 @@ test("versioned ComfyUI module profiles preserve capabilityConfig across preset 
     expect(refreshedProfile?.capabilityConfig).toEqual(customConfig);
 });
 
-test("LL2 wan3.0-video and Super Vega user-edited profiles migrate 2160p/1440p without silent downgrade to 720P", () => {
+test("retired LL2 wan3.0-video and Super Vega user-edited profiles pass through unchanged on hydration", () => {
     const legacyLL2 = createModelChannel({
         id: "ll2",
         baseUrl: "https://api.ll2.cn",
@@ -913,17 +879,18 @@ test("LL2 wan3.0-video and Super Vega user-edited profiles migrate 2160p/1440p w
     });
     const hydrated = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [legacyLL2] } }).config.channels[0];
     const wan3 = hydrated.modelProfiles?.find((p) => p.model === "wan3.0-video");
-    expect(wan3?.protocol).toBe("ll2-wan3-video");
-    expect(wan3?.capabilityConfig?.video?.resolutions).toEqual(["480P", "720P", "1080P"]);
-    expect(wan3?.capabilityConfig?.video?.defaultResolution).toBe("1080P");
-    expect(wan3?.capabilityConfig?.video?.ratios).toEqual(["16:9", "9:16"]);
-    expect(wan3?.capabilityConfig?.video?.defaultRatio).toBe("16:9");
+    expect(wan3?.protocol).toBe("newapi");
+    expect(wan3?.capabilityConfig?.video?.resolutions).toEqual(["480p", "720p", "1080p", "1440p", "2160p"]);
+    expect(wan3?.capabilityConfig?.video?.defaultResolution).toBe("2160p");
+    expect(wan3?.capabilityConfig?.video?.ratios).toEqual(["16:9", "9:16", "21:9"]);
+    expect(wan3?.capabilityConfig?.video?.defaultRatio).toBe("21:9");
 
     const vega = hydrated.modelProfiles?.find((p) => p.model === "Super Vega 1.0-pro");
-    expect(vega?.capabilityConfig?.video?.resolutions).toEqual(["720P", "2K", "4K"]);
-    expect(vega?.capabilityConfig?.video?.defaultResolution).toBe("4K");
+    expect(vega?.protocol).toBe("ll2-super-vega-video");
+    expect(vega?.capabilityConfig?.video?.resolutions).toEqual(["720p", "1440p", "2160p"]);
+    expect(vega?.capabilityConfig?.video?.defaultResolution).toBe("2160p");
 
-    // 当分辨率列表本身已是合法的 480P/720P/1080P 但 defaultResolution 仍是非法 2160p 时，同样修复为 1080P。
+    // 当分辨率列表本身已是合法的 480P/720P/1080P 但 defaultResolution 仍是非法 2160p 时，退役预设不再修复为 1080P。
     const validListBadDefault = createModelChannel({
         id: "ll2",
         baseUrl: "https://api.ll2.cn",
@@ -946,7 +913,7 @@ test("LL2 wan3.0-video and Super Vega user-edited profiles migrate 2160p/1440p w
         }],
     });
     const repairedDefault = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [validListBadDefault] } }).config.channels[0];
-    expect(repairedDefault.modelProfiles?.[0]?.capabilityConfig?.video?.defaultResolution).toBe("1080P");
+    expect(repairedDefault.modelProfiles?.[0]?.capabilityConfig?.video?.defaultResolution).toBe("2160p");
 });
 
 test("dynamic partner metadata still lands in the preset catalog for saved channels, but MindVerseTV never lists partners in the UI", async () => {
@@ -1079,7 +1046,7 @@ test("dynamic partner metadata still lands in the preset catalog for saved chann
         expect(afterRefreshDraft.modelProfiles?.some((p) => p.model === "acme-custom-2")).toBe(true);
 
         expect(partnerServicePresets()).toEqual([]);
-        expect(standardServicePresets().map((item) => item.id)).toEqual(["compatible", "openai", "gemini", "ark"]);
+        expect(standardServicePresets().map((item) => item.id)).toEqual(["myxsai", "compatible", "openai", "gemini", "ark"]);
         expect(presetKeysUrl("acme")).toBe("https://acme-cloud.example/register?invite=beeftv");
         expect(presetPluginId("acme")).toBe("beeftv-plugin-acme");
         expect(presetPromoText("acme")).toBe("注册即送体验算力");

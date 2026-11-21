@@ -438,6 +438,9 @@ func TestBundledPluginDirsManifestAndDesktopAgentHostResolution(t *testing.T) {
 	names := readBundledPluginManifestForTest(t, repoPluginPackages)
 	wantNames := map[string]bool{
 		"beeftv-plugin-market": false,
+		// First-party official channel plugin, shipped with the installer
+		// since the 2026-11-21 plugin replacement.
+		"beeftv-plugin-myxsai": false,
 	}
 	for _, name := range names {
 		if _, ok := wantNames[name]; !ok {

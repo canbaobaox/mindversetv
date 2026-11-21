@@ -12,7 +12,18 @@ const (
 	managedChannelID             = "beeftv"
 	managedCredentialRef         = "beeftv"
 	defaultManagedAssistantModel = "deepseek-v4.1-flash"
+	// currentManagedChannelID is the official channel id since the 2026-11-21
+	// plugin replacement (beeftv.MyxsaiChannelID; this package cannot import
+	// beeftv because beeftv imports modelcatalog). managedChannelID stays as
+	// the pre-migration id so saved references keep resolving.
+	currentManagedChannelID = "myxsai"
 )
+
+// isManagedChannelID reports whether the id is the official (managed)
+// channel, before or after the plugin replacement.
+func isManagedChannelID(id string) bool {
+	return id == managedChannelID || id == currentManagedChannelID
+}
 
 // TaskSelectRequest is the typed admission input. App supplies the live
 // frontend-models flag; this package owns routing, system-channel rebuild,
@@ -268,7 +279,7 @@ func TaskInputUsesCustomChannel(input map[string]any) bool {
 	baseURL, _ := config["baseUrl"].(string)
 	apiKey, _ := config["apiKey"].(string)
 	credentialRef, _ := config["credentialRef"].(string)
-	if strings.EqualFold(strings.TrimSpace(credentialRef), managedCredentialRef) || strings.TrimSpace(channelID) == managedChannelID {
+	if strings.EqualFold(strings.TrimSpace(credentialRef), managedCredentialRef) || isManagedChannelID(strings.TrimSpace(channelID)) {
 		return strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
 	}
 	if strings.TrimSpace(channelID) != "" || SystemChannelIDFromBaseURL(baseURL) != "" {
