@@ -2,17 +2,11 @@
 
 > MindVerseTV 是 BeefTV（glanderness/BeefTV，v2.2.5）的修改版，不是官方发布，未获官方背书；仍按 BeefTV Source Available License 1.0 与历史 MIT 条款执行，商业转售、套壳、收费部署与托管需原作者书面授权。
 
-<p align="center"><strong>High-performance · Lightweight · AI Native</strong></p>
+MindVerseTV 是一个无限画布 AI 视频工作台。
 
-<p align="center">
-  面向 AI 时代的视频创作工作台。<br>
-  在一个自由画布中连接创意、模型与素材。
-</p>
+在一张自由画布上，把图片、视频、模型和提示词连起来做视频：从分镜、素材到成片，都可以继续编辑、迭代。
 
-<p align="center">
-  与 MindVerseTV Agent 一起推进创作，用 Skills 扩展方法，用工作流复用过程。<br>
-  从分镜、素材到成片，让创作可以继续编辑、迭代和积累。
-</p>
+Windows 安装包在 [Releases](https://github.com/canbaobaox/mindversetv/releases/latest)，下载后双击就能装；模型自己填地址和 Key 就能用。
 
 <p align="center">
   <a href="https://github.com/canbaobaox/mindversetv/stargazers"><img src="https://img.shields.io/github/stars/glanderness/MindVerseTV?style=flat-square&amp;logo=github&amp;label=Stars&amp;labelColor=303030&amp;color=E86C36" alt="MindVerseTV GitHub Stars"></a>
