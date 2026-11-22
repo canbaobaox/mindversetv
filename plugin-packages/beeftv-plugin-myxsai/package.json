@@ -89,8 +89,26 @@
                   }
                 },
                 "resolution": {
-                  "$omitEmpty": {
-                    "$ref": "request.resolution"
+                  "$switch": {
+                    "cases": [
+                      {
+                        "when": { "$eq": [{ "$lower": { "$ref": "request.resolution" } }, "auto"] },
+                        "then": "auto"
+                      },
+                      {
+                        "when": { "$eq": [{ "$lower": { "$ref": "request.resolution" } }, "1k"] },
+                        "then": "1K"
+                      },
+                      {
+                        "when": { "$eq": [{ "$lower": { "$ref": "request.resolution" } }, "2k"] },
+                        "then": "2K"
+                      },
+                      {
+                        "when": { "$eq": [{ "$lower": { "$ref": "request.resolution" } }, "4k"] },
+                        "then": "4K"
+                      }
+                    ],
+                    "default": null
                   }
                 },
                 "video_url": {

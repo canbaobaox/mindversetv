@@ -24,7 +24,7 @@
   "params": {
     "images": { "$omitEmpty": { "$map": "request.images -> media.value" } },
     "aspect_ratio": { "$omitEmpty": "request.aspectRatio" },
-    "resolution": { "$omitEmpty": "request.resolution" },
+    "resolution": { "$switch": "仅 auto / 1K / 2K / 4K（大小写归一）才发，其余省略" },
     "duration": { "$if": "request.duration > 0 才发送" },
     "_quan_neng_mode": { "$if": "request.operation == \"extend\" 时为 \"extend\"，否则不发" },
     "video_url": { "$if": "request.operation == \"extend\" 时为 request.videos 的 URL 列表，否则不发" }
@@ -115,6 +115,10 @@ wenyinos/ai-image-generator `lib/utils.js`）提交体都是
 2. `images` 参考图是否被接受、接受 URL 还是 base64、字段名是不是 `images`。
 3. `GET /v1/media/models?type=...` 是否存在、返回体形状、音频类型是否返回模型。
 4. `aspect_ratio` / `resolution` / `duration` 在 `params` 里的取值范围与默认值。
+   `resolution` 已有站方证据：2026-11-22 真机报错“参数 resolution 的值 720 不合法，
+   支持的值：auto / 1K / 2K / 4K”，插件只发这四个值（大小写归一），720 / 720P /
+   1080P 等一律省略、由服务端自己定，不猜映射。`aspect_ratio` 与 `duration`
+   的取值范围仍未验证。
 5. 实际轮询间隔是否为 5 秒；取消接口是否存在（本插件未声明 cancel，未编造）。
 6. 另一轮询端点 `GET /v1/skills/task-status?task_id=` 与 `/v1/media/status`
    的响应是否相同（公开客户端两边都在用；本插件用前者）。

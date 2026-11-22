@@ -62,6 +62,13 @@ export type UseCanvasVideoToolsOptions = {
     modal: useAppProps["modal"];
 };
 
+/** 深度组件检查失败时的常驻说明：原因 + 下一步。只弹 3 秒 toast 等于点了没反应，所以这里用弹窗。 */
+function depthComponentUnavailableDetail(error: unknown): string {
+    const reason = generationErrorMessage(error);
+    const punctuated = /[。！？.]$/u.test(reason) ? reason : `${reason}。`;
+    return `${punctuated}请到设置 → 存储查看深度组件状态，或稍后重试。`;
+}
+
 export function useCanvasVideoTools({
     pageUi, projectId, projectIdRef, depthObserversRef, nodesRef, connectionsRef, selectedNodeIdsRef,
     setNodes, setConnections, startUploadStatus, startGenerationRequest, finishGenerationRequest, beginMediaOperation, persistMediaNodes, message, modal,
@@ -262,10 +269,17 @@ export function useCanvasVideoTools({
             message.error("请先等待视频保存到本地资源库，再进行深度动作捕捉");
             return;
         }
+        // 状态接口最长可能等 25 秒（后端上下文超时）：先给加载提示，失败弹常驻弹窗，不静默。
+        const hideDepthComponentCheck = message.loading("正在检查深度处理组件…", 0);
         try {
             if (!await confirmDepthComponents(modal)) return;
             if (projectIdRef.current !== projectId || !nodesRef.current.some(item => item.id === node.id)) return;
-        } catch (error) { message.error(generationErrorMessage(error)); return; }
+        } catch (error) {
+            modal.error({ title: "深度动作捕捉暂不可用", content: depthComponentUnavailableDetail(error) });
+            return;
+        } finally {
+            hideDepthComponentCheck();
+        }
         const originalProjectId = projectId;
         const frozenInputKey = localExecutorFrozenInputKey(["depth_capture", originalProjectId, resourceId]);
         const clientOperationId = nextLocalExecutorClientOperationId(null, frozenInputKey);
@@ -322,10 +336,17 @@ export function useCanvasVideoTools({
             message.error(details);
             return;
         }
+        // 与 depthCaptureNode 同款：加载提示 + 失败弹常驻弹窗，不静默。
+        const hideDepthComponentCheck = message.loading("正在检查深度处理组件…", 0);
         try {
             if (!await confirmDepthComponents(modal)) return;
             if (projectIdRef.current !== projectId || !nodesRef.current.some(item => item.id === node.id)) return;
-        } catch (error) { message.error(generationErrorMessage(error)); return; }
+        } catch (error) {
+            modal.error({ title: "深度动作捕捉暂不可用", content: depthComponentUnavailableDetail(error) });
+            return;
+        } finally {
+            hideDepthComponentCheck();
+        }
         const originalProjectId = projectId;
         const frozenInputKey = localExecutorFrozenInputKey(["depth_capture", originalProjectId, resourceId]);
         const clientOperationId = nextLocalExecutorClientOperationId({

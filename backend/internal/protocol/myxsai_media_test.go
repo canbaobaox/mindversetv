@@ -194,6 +194,68 @@ func TestMyxsaiMediaBuildPollURL(t *testing.T) {
 	}
 }
 
+// 回归测试：站方只接受 auto / 1K / 2K / 4K（站方自己的报错文本，
+// 2026-11-22 用户截图：“参数 resolution 的值 720 不合法，支持的值：
+// auto / 1K / 2K / 4K”）。数值型档位（720 / 720P 等）没有出处可
+// 映射，宁可不发、让服务端自己定，也绝不猜一个映射值发出去。
+// 覆盖生图与生视频两条链：宿主侧对图片节点也会塞 vquality="720"，
+// 视频预置默认 "720P"，两处都要被挡在站外。
+func TestMyxsaiMediaResolutionAllowlist(t *testing.T) {
+	adapter := loadMyxsaiAdapter(t)
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		capability Capability
+		model      string
+		resolution string
+		want       string
+		wantSet    bool
+	}{
+		// 用户截图原样：tt-image-2.5 生图，resolution "720" 必须不发。
+		{name: "image tt-image-2.5 with 720 omits resolution", capability: CapabilityImage, model: "tt-image-2.5", resolution: "720"},
+		{name: "image with 1080 omits resolution", capability: CapabilityImage, model: "doubao-seedream-5-5-261028", resolution: "1080"},
+		{name: "video with 720P omits resolution", capability: CapabilityVideo, model: "doubao-seedance-2-5-260628", resolution: "720P"},
+		{name: "video with 1080P omits resolution", capability: CapabilityVideo, model: "doubao-seedance-2-5-260628", resolution: "1080P"},
+		{name: "empty omits resolution", capability: CapabilityImage, model: "tt-image-2.5", resolution: ""},
+		{name: "auto passes through", capability: CapabilityImage, model: "tt-image-2.5", resolution: "auto", want: "auto", wantSet: true},
+		{name: "1k normalizes to 1K", capability: CapabilityImage, model: "tt-image-2.5", resolution: "1k", want: "1K", wantSet: true},
+		{name: "2K passes through", capability: CapabilityImage, model: "doubao-seedream-5-5-261028", resolution: "2K", want: "2K", wantSet: true},
+		{name: "4k normalizes to 4K", capability: CapabilityVideo, model: "doubao-seedance-2-5-260628", resolution: "4k", want: "4K", wantSet: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := adapter.BuildCreate(ctx, RequestContext{Request: GenerationRequest{
+				Capability:  tc.capability,
+				Model:       tc.model,
+				Prompt:      "测试",
+				AspectRatio: "16:9",
+				Resolution:  tc.resolution,
+			}})
+			if err != nil {
+				t.Fatalf("BuildCreate: %v", err)
+			}
+			body, ok := spec.Body.(map[string]any)
+			if !ok {
+				t.Fatalf("body is %T, want map", spec.Body)
+			}
+			params, ok := body["params"].(map[string]any)
+			if !ok {
+				t.Fatalf("body params is %T, want map", body["params"])
+			}
+			got, exists := params["resolution"]
+			if !tc.wantSet {
+				if exists {
+					t.Fatalf("resolution = %v, want it omitted (params %v)", got, params)
+				}
+				return
+			}
+			if !exists || got != tc.want {
+				t.Fatalf("resolution = %v, want %q (params %v)", got, tc.want, params)
+			}
+		})
+	}
+}
+
 // 回归测试：视频续写（extend，仅 Seedance 2.5）走媒体协议 _quan_neng_mode +
 // video_url；非 extend 一律不发这两个参数。画幅须被 Seedance 约束锁到 adaptive。
 func TestMyxsaiMediaCreateBodyExtend(t *testing.T) {

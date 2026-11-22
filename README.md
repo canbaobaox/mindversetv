@@ -18,6 +18,7 @@ Windows 安装包在 [Releases](https://github.com/canbaobaox/mindversetv/releas
 
 ## 最近更新
 
+- **[v2.3.5](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.5)** — 修复梦由心生生图仍失败（resolution 只发站方接受的 auto / 1K / 2K / 4K），生成面板无价格时显示“价格待确认”，超分门禁收紧，深度动作捕捉失败弹常驻弹窗不再静默。
 - **[v2.3.4](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.4)** — 修复梦由心生生图失败（结果地址与轮询判定按站方协议对齐），选择模型加全选，每个模型显示费用。
 - **[v2.3.3](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.3)** — 移除无限星河、LL2、银盛三家接口插件，新增梦由心生插件，内置渠道迁移为梦由心生，账号与余额联动梦由心生。
 - **[v2.3.2](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.2)** — 修复 Windows 内置助手连续对话无法操作画布的问题。

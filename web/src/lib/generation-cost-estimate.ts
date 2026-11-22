@@ -25,7 +25,13 @@ export function formatInlineCostEstimate(
     if (!estimate) return null;
     if (estimate.variable && options?.hideVariableRate) return null;
     const label = estimate.label?.trim() || "";
-    if (!label) return null;
+    if (!label) {
+        // 服务端估算无价格时只给原因文本（pricing.Unknown）：生成面板不能
+        // 一片空白，显示“价格待确认”，完整原因放 Tooltip；绝不编数字。
+        const reason = estimate.text?.trim() || "";
+        if (!reason) return null;
+        return { label: "价格待确认", tooltip: reason };
+    }
     const tooltip = estimate.text?.trim() || label;
     return { label, tooltip };
 }

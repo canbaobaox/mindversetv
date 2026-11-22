@@ -78,7 +78,7 @@ describe("formatInlineCostEstimate", () => {
         });
     });
 
-    test("按量结算保留服务端标签，自带 Key 与暂无价格保持静默", () => {
+    test("按量结算保留服务端标签，暂无价格显示价格待确认而不是空白", () => {
         expect(
             formatInlineCostEstimate({
                 amount: null,
@@ -105,19 +105,45 @@ describe("formatInlineCostEstimate", () => {
             ),
         ).toBeNull();
 
+        // 无价格时不留空白：显示“价格待确认”，原因放 Tooltip；绝不编数字。
         expect(
             formatInlineCostEstimate({
                 amount: null,
                 basis: "自带 Key 的渠道暂无价格，按该渠道实际计费",
                 text: "自带 Key 的渠道暂无价格，按该渠道实际计费",
             }),
-        ).toBeNull();
+        ).toEqual({
+            label: "价格待确认",
+            tooltip: "自带 Key 的渠道暂无价格，按该渠道实际计费",
+        });
+
+        expect(
+            formatInlineCostEstimate({
+                amount: null,
+                basis: "这个模型暂无价格",
+                text: "这个模型暂无价格",
+            }),
+        ).toEqual({
+            label: "价格待确认",
+            tooltip: "这个模型暂无价格",
+        });
 
         expect(
             formatInlineCostEstimate({
                 amount: null,
                 basis: "台词为空，暂无价格",
                 text: "台词为空，暂无价格",
+            }),
+        ).toEqual({
+            label: "价格待确认",
+            tooltip: "台词为空，暂无价格",
+        });
+
+        expect(
+            formatInlineCostEstimate({
+                amount: null,
+                basis: "",
+                text: "",
             }),
         ).toBeNull();
     });

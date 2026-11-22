@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"strings"
+
+	"infinite-canvas/backend/internal/beeftv"
 )
 
 type Request struct {
@@ -135,7 +137,7 @@ func Validate(r Request, kind string) error {
 }
 
 func ResolveModelID(r Request, kind string, modes []Mode) (string, error) {
-	if r.ResourceID == "" || r.ChannelID != "beeftv" || math.IsNaN(r.Scale) || math.IsInf(r.Scale, 0) || r.Scale < 1 || r.Scale > 4 || r.Scale != math.Trunc(r.Scale) {
+	if r.ResourceID == "" || (r.ChannelID != beeftv.ChannelID && r.ChannelID != beeftv.MyxsaiChannelID) || math.IsNaN(r.Scale) || math.IsInf(r.Scale, 0) || r.Scale < 1 || r.Scale > 4 || r.Scale != math.Trunc(r.Scale) {
 		return "", errors.New("请选择素材、官方算力及 1–4 倍整数倍率")
 	}
 	requested := strings.TrimSpace(r.Model)
