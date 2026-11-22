@@ -325,12 +325,21 @@
 
 - `web/test/service-credentials.browser.test.ts:109` 期望侧边栏 `.model-service-provider` 为 4 项、实际 5 项。核对结论：5 项是产品逻辑——`standardServicePresets()`（`web/src/lib/model-service-presets.ts:60-62`）返回 `[myxsai, 第三方模型服务, OpenAI, Google Gemini, 火山方舟]`，文件注释写明“梦由心生（自家渠道，置顶）+ 通用与直连入口”；测试注释是插件替换前的旧期望。修法：测试期望改成 5，注释同步。87360b4 时 quality 全绿是因为那次提交只改了 `MODIFICATIONS.md`、各分片被跳过，不是测试不稳定。
 
+### 视频二创续写接 Seedance 2.5 extend
+
+- 根因：视频节点工具栏“视频二创 → 视频续写”流程完整（`createVideoEditNodeFromVideo` 按 `modelCapabilityConfigFor(...).video?.operations` 找声明了 extend 的模型），但梦由心生插件的 `VIDEO_CAPABILITY_CONFIG`（`plugin-packages/beeftv-plugin-myxsai/client/presets.js`）只声明了 `["text_to_video","image_to_video","reference_to_video"]`，续写永远匹配不到，子节点只能按普通参考生视频走。
+- 改动 1（声明）：新增 `SEEDANCE_VIDEO_CAPABILITY_CONFIG`（VIDEO 的克隆 + operations 加 "extend"），只用于两个 Seedance 2.5 预置模型（`doubao-seedance-2-5-260628`、`seedance-2.5-guanfang`）；其它视频模型不动。证据：站方模型标签含“视频编辑/视频延长”。
+- 改动 2（映射）：`myxsai-media` provider 的 `create.body.params` 加 `_quan_neng_mode` 与 `video_url`，都只在 `request.operation == "extend"` 时发（`$if` + `$eq`，否则 key 直接省略——表达式求值 nil 键不入 map），不影响其它模式；`video_url` 为 `request.videos` 的 URL 列表（`$map` + `$sortByOrder`，与 `images` 同款写法）。约束：1–10 个片段、单段 2–30 秒、总计 ≤30 秒、aspect_ratio 须为 adaptive——后端 `NormalizeSeedanceTaskOptions` 对 extend 已锁定 adaptive，续写子节点也写死 `size: "adaptive"`，无需另改。
+- 局部修改（inpaint）未接：Seedance 上游虽有 edit（`omni_reference_task_type: "edit"`，见 `backend/internal/protocol/seedance_constraints.go` 的 `SeedanceOmniTaskType`），但站内客户端无 edit 入口，需真 Key 实测，留待以后；预置里不声明 inpaint。
+- 验证：后端新增 `TestMyxsaiMediaCreateBodyExtend`（读真实 package.json）：extend 发 `_quan_neng_mode: "extend"` + `video_url` + adaptive 画幅、顶层无平铺参数；`reference_to_video` 对照不发这两个参数。前端新增 `web/test/myxsai-preset-extend.test.ts`（3 个测试）：两个 Seedance 模型含 extend、其它视频模型不含、全部视频模型不含 inpaint。
+
 ### 仍需用户真 Key 实测（没 Key 验证不了）
 
 - 拿一次真实生图任务的提交响应与每次轮询响应的原始 JSON 全文，逐字段对照上文（重点：`result_urls` / `result_url` 是否如公开客户端所写、`code` 字段是否出现、`is_final` 与 `state` 是否同步变化）。
 - `/v1/media/models` 与 `/v1/skills/models` 带 Key 后返回里是否含价格字段（决定宿主编辑器与插件面板的价格是否能真正显示出来，还是继续“价格待确认”）；登录后调 `GET /gongkai/moxingguangchang` 确认 `price_min` 是否返回及数值单位（算力点还是人民币）。
 - `images` 参考图是否被接受、接受 URL 还是 base64；`aspect_ratio` / `resolution` / `duration` 在 `params` 里的取值范围与默认值；另一轮询端点 `GET /v1/skills/task-status?task_id=` 与 `/v1/media/status` 的响应是否相同。
 - `/v1/skills/balance` 返回字段、充值/用量页准确 URL、音频 6 个模型 ID（同 v2.3.3 遗留）。
+- 视频续写 extend 真机验证：`video_url` 列表形状是否被站方接受、续写是否按 `_quan_neng_mode: "extend"` 走、局部修改（inpaint）是否可用。
 
 ### 验证
 

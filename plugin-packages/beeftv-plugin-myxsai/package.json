@@ -38,6 +38,20 @@
                 "$ref": "request.model"
               },
               "params": {
+                "_quan_neng_mode": {
+                  "$if": {
+                    "condition": {
+                      "$eq": [
+                        {
+                          "$ref": "request.operation"
+                        },
+                        "extend"
+                      ]
+                    },
+                    "else": null,
+                    "then": "extend"
+                  }
+                },
                 "aspect_ratio": {
                   "$omitEmpty": {
                     "$ref": "request.aspectRatio"
@@ -77,6 +91,34 @@
                 "resolution": {
                   "$omitEmpty": {
                     "$ref": "request.resolution"
+                  }
+                },
+                "video_url": {
+                  "$if": {
+                    "condition": {
+                      "$eq": [
+                        {
+                          "$ref": "request.operation"
+                        },
+                        "extend"
+                      ]
+                    },
+                    "else": null,
+                    "then": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "as": "media",
+                          "from": {
+                            "$sortByOrder": {
+                              "$ref": "request.videos"
+                            }
+                          },
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
                   }
                 }
               },

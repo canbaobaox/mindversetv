@@ -105,6 +105,13 @@ const VIDEO_CAPABILITY_CONFIG = {
   },
 };
 
+// Seedance 2.5 专属能力：只在有证据的两个 Seedance 2.5 模型上声明 extend（视频续写）。
+// 证据：站方模型标签含“视频编辑/视频延长”，走媒体协议 _quan_neng_mode: "extend" + video_url
+//（1–10 个片段、单段 2–30 秒、总计 ≤30 秒、aspect_ratio 须为 adaptive）。
+// 局部修改（inpaint）上游虽有 edit 能力，但站内客户端无 edit 入口，需真 Key 实测，暂不声明。
+const SEEDANCE_VIDEO_CAPABILITY_CONFIG = structuredClone(VIDEO_CAPABILITY_CONFIG);
+SEEDANCE_VIDEO_CAPABILITY_CONFIG.video.operations = [...SEEDANCE_VIDEO_CAPABILITY_CONFIG.video.operations, "extend"];
+
 export const MYXSAI_PRESET_MODELS = [
   // ---- 聊天：POST /v1/chat/completions（宿主通用 chat-completion）----
   {
@@ -224,7 +231,7 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
-    capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
+    capabilityConfig: structuredClone(SEEDANCE_VIDEO_CAPABILITY_CONFIG),
   },
   {
     model: "kling-v4-video",
@@ -251,7 +258,7 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
-    capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
+    capabilityConfig: structuredClone(SEEDANCE_VIDEO_CAPABILITY_CONFIG),
   },
   {
     model: "kling-v4-flash",

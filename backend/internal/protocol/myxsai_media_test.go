@@ -193,3 +193,71 @@ func TestMyxsaiMediaBuildPollURL(t *testing.T) {
 		t.Fatalf("Path = %q", spec.Path)
 	}
 }
+
+// 回归测试：视频续写（extend，仅 Seedance 2.5）走媒体协议 _quan_neng_mode +
+// video_url；非 extend 一律不发这两个参数。画幅须被 Seedance 约束锁到 adaptive。
+func TestMyxsaiMediaCreateBodyExtend(t *testing.T) {
+	adapter := loadMyxsaiAdapter(t)
+	spec, err := adapter.BuildCreate(context.Background(), RequestContext{Request: GenerationRequest{
+		Capability:  CapabilityVideo,
+		Model:       "doubao-seedance-2-5-260628",
+		Prompt:      "继续",
+		Operation:   "extend",
+		AspectRatio: "16:9",
+		Duration:    5,
+		Videos:      []MediaReference{{URL: "https://example.test/src.mp4"}},
+	}})
+	if err != nil {
+		t.Fatalf("BuildCreate: %v", err)
+	}
+	body, ok := spec.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("body is %T, want map", spec.Body)
+	}
+	for _, key := range []string{"_quan_neng_mode", "video_url", "aspect_ratio", "duration", "images", "resolution"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("body must not carry top-level %q, got %v", key, body)
+		}
+	}
+	params, ok := body["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("body params is %T, want map", body["params"])
+	}
+	if params["_quan_neng_mode"] != "extend" {
+		t.Fatalf("_quan_neng_mode = %v, want extend (params %v)", params["_quan_neng_mode"], params)
+	}
+	urls, ok := params["video_url"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != "https://example.test/src.mp4" {
+		t.Fatalf("video_url = %v, want [https://example.test/src.mp4]", params["video_url"])
+	}
+	if params["aspect_ratio"] != "adaptive" {
+		t.Fatalf("extend must lock aspect_ratio to adaptive, params = %v", params)
+	}
+
+	// 对照：普通参考生视频不发 extend 参数。
+	spec, err = adapter.BuildCreate(context.Background(), RequestContext{Request: GenerationRequest{
+		Capability:  CapabilityVideo,
+		Model:       "doubao-seedance-2-5-260628",
+		Prompt:      "参考",
+		Operation:   "reference_to_video",
+		AspectRatio: "16:9",
+		Duration:    5,
+		Videos:      []MediaReference{{URL: "https://example.test/src.mp4"}},
+	}})
+	if err != nil {
+		t.Fatalf("BuildCreate: %v", err)
+	}
+	body, ok = spec.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("body is %T, want map", spec.Body)
+	}
+	params, ok = body["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("body params is %T, want map", body["params"])
+	}
+	for _, key := range []string{"_quan_neng_mode", "video_url"} {
+		if _, exists := params[key]; exists {
+			t.Fatalf("non-extend must not carry params %q, got %v", key, params)
+		}
+	}
+}

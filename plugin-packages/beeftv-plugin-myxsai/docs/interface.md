@@ -25,10 +25,19 @@
     "images": { "$omitEmpty": { "$map": "request.images -> media.value" } },
     "aspect_ratio": { "$omitEmpty": "request.aspectRatio" },
     "resolution": { "$omitEmpty": "request.resolution" },
-    "duration": { "$if": "request.duration > 0 才发送" }
+    "duration": { "$if": "request.duration > 0 才发送" },
+    "_quan_neng_mode": { "$if": "request.operation == \"extend\" 时为 \"extend\"，否则不发" },
+    "video_url": { "$if": "request.operation == \"extend\" 时为 request.videos 的 URL 列表，否则不发" }
   }
 }
 ```
+
+视频续写（extend，仅 Seedance 2.5 的两个预置模型声明）：站方模型标签含“视频编辑/视频延长”，
+`_quan_neng_mode: "extend"` + `video_url`（1–10 个片段、单段 2–30 秒、总计 ≤30 秒、
+`aspect_ratio` 须为 `adaptive`——后端 `NormalizeSeedanceTaskOptions` 对 extend 已锁定 adaptive，
+续写子节点本身也写死 `size: "adaptive"`）。`video_url` 只在 extend 时发，普通参考生视频
+（`reference_to_video`）不发（站方对该模式是否接受 `video_url` 未验证，不乱发）。
+局部修改（inpaint）未接：上游虽有 edit 能力，但站内客户端无 edit 入口，需真 Key 实测。
 
 提交成功返回 `{ data: { task_id } }`（已确认）。可选参数必须包在 `params` 里——
 站方两个公开客户端（lingkeai/ComfyUI-LingKe `lingke_client.py`、
