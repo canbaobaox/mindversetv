@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "antd";
-import { createUpscaleTask, estimateUpscale, getUpscaleCapabilities, isUpscaleMediaSelectionAvailable, normalizeUpscaleMediaSelection, recoverUpscaleTask, UPSCALE_CAPABILITIES_TIMEOUT_MS, UPSCALE_CREATE_TIMEOUT_MS, UPSCALE_ESTIMATE_TIMEOUT_MS, UPSCALE_RECOVER_TIMEOUT_MS, validUpscaleScale, type UpscaleCapabilities } from "../src/services/api/media-upscale";
+import { createUpscaleTask, estimateUpscale, getUpscaleCapabilities, isUpscaleMediaSelectionAvailable, isUpscaleUpstreamAvailable, normalizeUpscaleMediaSelection, recoverUpscaleTask, UPSCALE_CAPABILITIES_TIMEOUT_MS, UPSCALE_CREATE_TIMEOUT_MS, UPSCALE_ESTIMATE_TIMEOUT_MS, UPSCALE_RECOVER_TIMEOUT_MS, validUpscaleScale, type UpscaleCapabilities } from "../src/services/api/media-upscale";
 import { parseBackendGenerationResult } from "../src/services/api/generation-task";
 import { generationTaskMode } from "../src/lib/canvas/canvas-generation-task-sync";
 import { mediaResultMetadata } from "../src/lib/canvas/canvas-node-semantics";
@@ -301,5 +301,18 @@ describe("Topaz upscale contract", () => {
         } finally {
             apiClient.request = originalRequest;
         }
+    });
+});
+
+describe("isUpscaleUpstreamAvailable", () => {
+    const base: UpscaleCapabilities = { modes: [], cloudProcessing: true, maxVideoDurationMs: 300000 };
+    test("defaults to available when the backend predates the flag", () => {
+        expect(isUpscaleUpstreamAvailable(undefined)).toBe(true);
+        expect(isUpscaleUpstreamAvailable(base)).toBe(true);
+        expect(isUpscaleUpstreamAvailable({ ...base, upstreamAvailable: true })).toBe(true);
+    });
+
+    test("reports unavailable only when the backend says the upstream returned no models", () => {
+        expect(isUpscaleUpstreamAvailable({ ...base, upstreamAvailable: false })).toBe(false);
     });
 });

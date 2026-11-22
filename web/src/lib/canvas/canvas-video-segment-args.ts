@@ -10,6 +10,26 @@ export const AUDIO_OUTPUT_NAME = "segment-output.mp3";
 export const WAV_OUTPUT_NAME = "segment-output.wav";
 export const MUTED_VIDEO_OUTPUT_NAME = "segment-muted-output.mp4";
 export const CROP_OUTPUT_NAME = "segment-crop-output.mp4";
+export const ERASE_OUTPUT_NAME = "segment-erase-output.mp4";
+
+/** 归一化选框（0-1）转源视频像素坐标：夹到画面内、坐标向下对齐到偶数（yuv420p 下 delogo 要求偶数坐标），宽高至少 2px。 */
+export function eraseRegionToPixels(region: { x: number; y: number; width: number; height: number }, videoWidth: number, videoHeight: number): { x: number; y: number; width: number; height: number } {
+    const width = Math.max(2, Math.floor(videoWidth));
+    const height = Math.max(2, Math.floor(videoHeight));
+    const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+    const x = Math.max(0, Math.floor(clamp01(region.x) * width / 2) * 2);
+    const y = Math.max(0, Math.floor(clamp01(region.y) * height / 2) * 2);
+    const maxWidth = Math.max(2, width - x);
+    const maxHeight = Math.max(2, height - y);
+    const regionWidth = Math.min(maxWidth, Math.max(2, Math.ceil(clamp01(region.width) * width / 2) * 2));
+    const regionHeight = Math.min(maxHeight, Math.max(2, Math.ceil(clamp01(region.height) * height / 2) * 2));
+    return { x, y, width: regionWidth, height: regionHeight };
+}
+
+/** 本地擦除：delogo 按选框做像素修复，保留原音轨输出新视频。坐标和尺寸使用源视频像素值。 */
+export function buildEraseVideoArgs(x: number, y: number, width: number, height: number, inputName = SEGMENT_INPUT_NAME, outputName = ERASE_OUTPUT_NAME): string[] {
+    return ["-i", inputName, "-vf", `delogo=x=${Math.round(x)}:y=${Math.round(y)}:w=${Math.round(width)}:h=${Math.round(height)}:band=10`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-pix_fmt", "yuv420p", "-movflags", "+faststart", outputName];
+}
 
 /** 视频片段裁切参数：输出统一编码 MP4。 */
 export function buildSegmentTrimArgs(startSec: string, durationSec: string, inputName = SEGMENT_INPUT_NAME, outputName = SEGMENT_OUTPUT_NAME): string[] {

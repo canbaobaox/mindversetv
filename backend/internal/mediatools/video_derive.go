@@ -56,9 +56,10 @@ type DerivedMediaFile struct {
 }
 
 type SeparatedMedia struct {
-	Audio      DerivedMediaFile
-	MutedVideo DerivedMediaFile
-	DurationMs int64
+	Audio        DerivedMediaFile
+	MutedVideo   DerivedMediaFile
+	DurationMs   int64
+	VideoEncoder string
 }
 
 type frameTarget struct {
@@ -322,13 +323,14 @@ func SeparateVideoAudio(ctx context.Context, srcPath string, outDir string) (*Se
 	}
 	mutedPath := filepath.Join(outDir, "muted-video.mp4")
 	var (
-		audioName  string
-		audioMime  string
-		audioPath  string
-		audioFacts MediaMetadata
-		videoFacts MediaMetadata
-		lastRunErr error
-		succeeded  bool
+		audioName    string
+		audioMime    string
+		audioPath    string
+		audioFacts   MediaMetadata
+		videoFacts   MediaMetadata
+		lastRunErr   error
+		succeeded    bool
+		videoEncoder string
 	)
 	// Decouple audio encoder fallback from video re-encoding: if only libmp3lame is unavailable,
 	// step 2 switches audio to PCM WAV while preserving fast lossless stream copy for the video.
@@ -343,11 +345,12 @@ func SeparateVideoAudio(ctx context.Context, srcPath string, outDir string) (*Se
 		var audioArgs []string
 		audioName, audioMime, audioArgs = buildAudioOutputSpec(facts.AudioCodec, outDir, plan[0])
 		audioPath = filepath.Join(outDir, audioName)
-		videoArgs, videoCodecErr := buildMutedVideoOutputArgs(ffmpegBin, facts.VideoCodec, mutedPath, plan[1])
+		videoArgs, encoder, videoCodecErr := buildMutedVideoOutputArgs(ffmpegBin, facts.VideoCodec, mutedPath, plan[1])
 		if videoCodecErr != nil {
 			lastRunErr = videoCodecErr
 			continue
 		}
+		videoEncoder = encoder
 
 		args := append([]string{"-protocol_whitelist", "file,pipe", "-i", srcPath}, audioArgs...)
 		args = append(args, videoArgs...)
@@ -421,6 +424,7 @@ func SeparateVideoAudio(ctx context.Context, srcPath string, outDir string) (*Se
 			DurationMs: videoDuration,
 		},
 		DurationMs: max(facts.DurationMs, max(audioDuration, videoDuration)),
+		VideoEncoder: videoEncoder,
 	}, nil
 }
 
@@ -441,19 +445,19 @@ func buildAudioOutputSpec(codec string, outDir string, allowCopy bool) (fileName
 	return fileName, "audio/wav", []string{"-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", filepath.Join(outDir, fileName)}
 }
 
-func buildMutedVideoOutputArgs(ffmpegBin string, codec string, outPath string, allowCopy bool) ([]string, error) {
+func buildMutedVideoOutputArgs(ffmpegBin string, codec string, outPath string, allowCopy bool) ([]string, string, error) {
 	if allowCopy {
 		switch codec {
 		case "h264", "hevc", "mpeg4", "av1":
-			return []string{"-map", "0:V:0", "-an", "-c:v", "copy", "-movflags", "+faststart", outPath}, nil
+			return []string{"-map", "0:V:0", "-an", "-c:v", "copy", "-movflags", "+faststart", outPath}, "copy", nil
 		}
 	}
 	if !SupportsH264Encode(ffmpegBin) {
-		return nil, fmt.Errorf("%w：本机媒体编码器缺少 H.264 视频编码支持", ErrMediaProcessFailed)
+		return nil, "", fmt.Errorf("%w：本机媒体编码器缺少 H.264 视频编码支持", ErrMediaProcessFailed)
 	}
 	args := []string{"-map", "0:V:0", "-an"}
 	args = append(args, PreferredH264VideoArgs(ffmpegBin, "veryfast", "20", "6M", "10M")...)
-	return append(args, "-movflags", "+faststart", outPath), nil
+	return append(args, "-movflags", "+faststart", outPath), PreferredH264Encoder(ffmpegBin), nil
 }
 
 var (

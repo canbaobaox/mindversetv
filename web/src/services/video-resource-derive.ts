@@ -26,6 +26,7 @@ export type BackendDerivedSeparatedAudio = {
     audio: UploadedFile;
     mutedVideo: UploadedFile;
     durationMs?: number;
+    videoEncoder?: string;
 };
 
 export type VideoDeriveCallOptions = {
@@ -138,6 +139,7 @@ export async function deriveNodeSeparatedAudioViaBackend(
             audio: remoteResourceToUploadedFile(response.audio, durationMs, true),
             mutedVideo: remoteResourceToUploadedFile(response.mutedVideo, durationMs, false),
             durationMs,
+            videoEncoder: response.videoEncoder,
         };
     } catch (error) {
         if (shouldFallbackToBrowserMediaTools(error)) {

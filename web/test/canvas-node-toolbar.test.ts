@@ -477,6 +477,17 @@ describe("canvas node toolbar model", () => {
         });
     });
 
+    test("local smart erase is offered only when the cloud service is unavailable and only for subtitle/watermark", async () => {
+        const { resolveLocalSmartEraseAvailability } = await import("../src/components/canvas/video-subtitle-erase-dialog");
+        expect(resolveLocalSmartEraseAvailability("subtitle", true, true)).toBe(true);
+        expect(resolveLocalSmartEraseAvailability("watermark", true, true)).toBe(true);
+        // Privacy needs cloud face/plate detection; there is no local equivalent.
+        expect(resolveLocalSmartEraseAvailability("privacy", true, true)).toBe(false);
+        expect(resolveLocalSmartEraseAvailability("subtitle", false, true)).toBe(false);
+        expect(resolveLocalSmartEraseAvailability("subtitle", true, false)).toBe(false);
+        expect(resolveLocalSmartEraseAvailability("watermark", false, false)).toBe(false);
+    });
+
     test("subtitle erase task predicate and unknown-submission recovery stay operation-scoped and query-only", async () => {
         const {
             canRecoverManagedToolNode,

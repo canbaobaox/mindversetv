@@ -161,6 +161,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const { download: downloadNode, duplicate: duplicateNode, deleteNode, updateNode, stepImageHistory } = useCanvasNodeActions();
     const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
+    const hasVideoCropSource = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content || data.metadata?.storageKey);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content || data.metadata?.storageKey);
     const isComposerNode = data.type === CanvasNodeType.Config;
     const isDirectorNode = data.type === CanvasNodeType.Director || Boolean(data.metadata?.directorSceneId);
@@ -460,7 +461,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 }}
             >
                 <div
-                    className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${annotationActive || maskEditActive || (imageCropActive && hasImageContent) || (videoCropActive && hasVideoContent) || isBatchRoot || hasImageHistory || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable || data.type === CanvasNodeType.Upscale || isComposerNode ? "overflow-visible" : "overflow-hidden"}`}
+                    className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${annotationActive || maskEditActive || (imageCropActive && hasImageContent) || (videoCropActive && hasVideoCropSource) || isBatchRoot || hasImageHistory || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable || data.type === CanvasNodeType.Upscale || isComposerNode ? "overflow-visible" : "overflow-hidden"}`}
                     style={
                         {
                             background: hasImageContent || hasVideoContent || hasAudioContent || isDirectorNode ? "transparent" : theme.node.fill,
@@ -529,9 +530,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                             onConfirm={(payload) => onConfirmMaskEdit?.(data, payload)}
                         />
                     ) : null}
-                    {videoCropActive && hasVideoContent ? (
+                    {videoCropActive && hasVideoCropSource ? (
                         <CanvasVideoCropEditor
-                            videoUrl={data.metadata?.content || ""}
+                            videoUrl={data.metadata?.content || ""} storageKey={data.metadata?.storageKey}
                             videoDimensions={{
                                 width: Math.max(1, data.metadata?.naturalWidth || data.width),
                                 height: Math.max(1, data.metadata?.naturalHeight || data.height),

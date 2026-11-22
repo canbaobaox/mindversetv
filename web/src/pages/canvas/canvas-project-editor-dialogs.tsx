@@ -201,7 +201,7 @@ export function CanvasProjectEditorDialogs({
             ) : null}
             <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} readOnly={readOnly} onClose={() => dialogs.setInfoNodeId(null)} onMetadataChange={readOnly ? undefined : nodeEditor.handleConfigNodeChange} />
             {subtitleNode ? <Suspense fallback={null}><CanvasSubtitleDialog node={subtitleNode} open projectId={projectId} config={config} onClose={() => dialogs.setSubtitleNodeId(null)} onSave={saveSubtitles} /></Suspense> : null}
-            {subtitleEraseNode ? <Suspense fallback={null}><CanvasVideoSubtitleEraseDialog node={subtitleEraseNode} open initialEraseType={mediaTools.subtitleEraseInitialType} onClose={() => mediaTools.setSubtitleEraseNodeId(null)} onPrepareResource={mediaTools.prepareUpscaleResource} onConfirm={mediaTools.submitVideoSubtitleErase} /></Suspense> : null}
+            {subtitleEraseNode ? <Suspense fallback={null}><CanvasVideoSubtitleEraseDialog node={subtitleEraseNode} open initialEraseType={mediaTools.subtitleEraseInitialType} onClose={() => mediaTools.setSubtitleEraseNodeId(null)} onPrepareResource={mediaTools.prepareUpscaleResource} onConfirm={mediaTools.submitVideoSubtitleErase} onConfirmLocal={mediaTools.submitVideoSubtitleEraseLocally} /></Suspense> : null}
             {frameNode ? <Suspense fallback={null}><CanvasVideoFrameDialog node={frameNode} open onClose={mediaTools.closeFrameDialog} onConfirm={params => { if (frameNode) void mediaTools.extractVideoFrames(frameNode, params); }} /></Suspense> : null}
             {timelineNode ? (
                 <Suspense fallback={null}>

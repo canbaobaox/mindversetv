@@ -28,25 +28,56 @@ func SupportsFFmpegFilter(bin, filter string) bool {
 	return strings.Contains(cachedFFmpegListing(&ffmpegFiltersCache, bin, "-filters"), " "+filter+" ")
 }
 
-// SupportsH264Encode reports whether bin advertises a supported H.264 encoder.
-func SupportsH264Encode(bin string) bool {
-	return SupportsFFmpegEncoder(bin, "libx264") || SupportsFFmpegEncoder(bin, "h264_videotoolbox")
+// PreferredH264Encoder reports the best H.264 encoder the binary advertises:
+// hardware encoders first (NVENC, Quick Sync, AMF, VideoToolbox), software
+// libx264 last. Returns "" when no H.264 encoder is available.
+func PreferredH264Encoder(bin string) string {
+	for _, encoder := range []string{"h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"} {
+		if SupportsFFmpegEncoder(bin, encoder) {
+			return encoder
+		}
+	}
+	return ""
 }
 
-// PreferredH264VideoArgs returns libx264 arguments by default and switches to
-// Apple VideoToolbox when the bundled LGPL runtime exposes h264_videotoolbox without libx264.
+// SupportsH264Encode reports whether bin advertises a supported H.264 encoder.
+func SupportsH264Encode(bin string) bool {
+	return PreferredH264Encoder(bin) != ""
+}
+
+// PreferredH264VideoArgs returns hardware-accelerated H.264 arguments when the
+// bundled runtime exposes a hardware encoder, falling back to libx264.
+// Hardware encoders do not accept libx264 preset names, so each encoder gets
+// its own quality arguments; crf maps to the encoder's constant-quality
+// control (cq for NVENC, global_quality for QSV, qp for AMF).
 func PreferredH264VideoArgs(bin, preset, crf, vtBitrate, vtMaxrate string) []string {
-	if !SupportsFFmpegEncoder(bin, "libx264") && SupportsFFmpegEncoder(bin, "h264_videotoolbox") {
+	quality := crf
+	if quality == "" {
+		quality = "20"
+	}
+	switch PreferredH264Encoder(bin) {
+	case "h264_nvenc":
+		return []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", quality, "-pix_fmt", "yuv420p"}
+	case "h264_qsv":
+		args := []string{"-c:v", "h264_qsv"}
+		if preset != "" {
+			args = append(args, "-preset", preset)
+		}
+		return append(args, "-global_quality", quality, "-pix_fmt", "yuv420p")
+	case "h264_amf":
+		return []string{"-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", quality, "-qp_p", quality, "-pix_fmt", "yuv420p"}
+	case "h264_videotoolbox":
 		return []string{"-c:v", "h264_videotoolbox", "-allow_sw", "1", "-b:v", vtBitrate, "-maxrate", vtMaxrate, "-bufsize", vtMaxrate, "-pix_fmt", "yuv420p"}
+	default:
+		args := []string{"-c:v", "libx264"}
+		if preset != "" {
+			args = append(args, "-preset", preset)
+		}
+		if crf != "" {
+			args = append(args, "-crf", crf)
+		}
+		return append(args, "-pix_fmt", "yuv420p")
 	}
-	args := []string{"-c:v", "libx264"}
-	if preset != "" {
-		args = append(args, "-preset", preset)
-	}
-	if crf != "" {
-		args = append(args, "-crf", crf)
-	}
-	return append(args, "-pix_fmt", "yuv420p")
 }
 
 func cachedFFmpegListing(cache *sync.Map, bin, flag string) string {

@@ -1,6 +1,6 @@
 import { ownedResourceIdFromMediaRef, resourceStorageKey } from "@/services/api/resources";
 import { getMediaBlob } from "@/services/file-storage";
-import { AUDIO_OUTPUT_NAME, assertUsableSegmentOutput, assertVideoAudioProbe, buildExtractAudioArgs, buildRemoveAudioArgs, buildSegmentTrimArgs, buildVideoCropArgs, canStreamCopyVideoToMp4, CROP_OUTPUT_NAME, isFullSourceRange, MUTED_VIDEO_OUTPUT_NAME, SEGMENT_INPUT_NAME, SEGMENT_OUTPUT_NAME, WAV_OUTPUT_NAME } from "./canvas-video-segment-args";
+import { AUDIO_OUTPUT_NAME, assertUsableSegmentOutput, assertVideoAudioProbe, buildEraseVideoArgs, buildExtractAudioArgs, buildRemoveAudioArgs, buildSegmentTrimArgs, buildVideoCropArgs, canStreamCopyVideoToMp4, CROP_OUTPUT_NAME, ERASE_OUTPUT_NAME, isFullSourceRange, MUTED_VIDEO_OUTPUT_NAME, SEGMENT_INPUT_NAME, SEGMENT_OUTPUT_NAME, WAV_OUTPUT_NAME } from "./canvas-video-segment-args";
 import { withFFmpegLease } from "./canvas-ffmpeg-session";
 import { videoFrameFetchCredentials } from "./canvas-video-frame";
 
@@ -8,6 +8,11 @@ export type VideoSegmentRange = {
     startMs: number;
     endMs: number;
 };
+
+/** 视频节点只要有内容地址或本地素材键就算有源：与视频二创/超分入口的判定一致，剪辑/裁切/本地擦除都按它放行。 */
+export function hasLocalVideoSource(node: { metadata?: { content?: string; storageKey?: string } }): node is { metadata: { content?: string; storageKey?: string } } {
+    return Boolean(node.metadata?.content || node.metadata?.storageKey);
+}
 
 export type VideoSegmentSource = {
     url?: string;
@@ -232,6 +237,32 @@ export async function cropVideo(source: VideoSegmentSource, crop: VideoCropRect,
             return new Blob([output as BlobPart], { type: "video/mp4" });
         } finally {
             await Promise.all([inputName, cropName].map((file) => ffmpeg.deleteFile(file).catch(() => undefined)));
+        }
+    }, { onProgress: leaseProgress(onProgress) });
+}
+
+export type VideoEraseRegion = { x: number; y: number; width: number; height: number };
+
+/** 本地擦除选框区域（去字幕/去水印）：delogo 像素修复，保留原音轨并输出新视频。 */
+export async function eraseVideoRegion(source: VideoSegmentSource, region: VideoEraseRegion, onProgress?: (progress: VideoSegmentProgress) => void, deps?: SegmentJobDeps) {
+    const leaseRunner = deps?.leaseRunner ?? withFFmpegLease;
+    const readBlob = deps?.readSourceBlob ?? readVideoSourceBlob;
+    return leaseRunner(async ({ ffmpeg, filePrefix }) => {
+        const inputName = `${filePrefix}${INPUT_NAME}`;
+        const eraseName = `${filePrefix}${ERASE_OUTPUT_NAME}`;
+        const blob = await readBlob(source);
+        onProgress?.({ phase: "reading", progress: 45 });
+        await ffmpeg.writeFile(inputName, new Uint8Array(await blob.arrayBuffer()));
+        onProgress?.({ phase: "encoding", progress: 55 });
+        try {
+            const exitCode = await ffmpeg.exec(["-y", ...buildEraseVideoArgs(region.x, region.y, region.width, region.height, inputName, eraseName)]);
+            if (exitCode !== 0) throw new Error("视频本地擦除失败，请确认视频编码格式兼容");
+            const output = await ffmpeg.readFile(eraseName);
+            assertUsableSegmentOutput(output, "video");
+            onProgress?.({ phase: "encoding", progress: 100 });
+            return new Blob([output as BlobPart], { type: "video/mp4" });
+        } finally {
+            await Promise.all([inputName, eraseName].map((file) => ffmpeg.deleteFile(file).catch(() => undefined)));
         }
     }, { onProgress: leaseProgress(onProgress) });
 }

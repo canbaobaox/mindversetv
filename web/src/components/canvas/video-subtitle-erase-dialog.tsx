@@ -20,6 +20,7 @@ import {
     type SubtitleEraseModel,
     type SubtitleEraseParams,
     type SubtitleEraseRegion,
+    type VideoSubtitleEraseLocalOptions,
     type WatermarkEraseModel,
 } from "@/services/api/video-subtitle-erase";
 import { resolveMediaUrl } from "@/services/file-storage";
@@ -67,7 +68,13 @@ type CanvasVideoSubtitleEraseDialogProps = {
     onClose: () => void;
     onPrepareResource: (node: CanvasNodeData) => Promise<string>;
     onConfirm: (node: CanvasNodeData, options: VideoSubtitleEraseSubmitOptions) => Promise<void> | void;
+    onConfirmLocal?: (node: CanvasNodeData, options: VideoSubtitleEraseLocalOptions) => Promise<void> | void;
 };
+
+/** 云端擦除不可用时能否走本地处理：只有去字幕/去水印能按选框做 delogo 擦除；隐私打码要云端自动检测人脸/车牌，本地没有等价实现。 */
+export function resolveLocalSmartEraseAvailability(eraseType: SmartEraseType, serviceUnavailable: boolean, hasVideoUrl: boolean): boolean {
+    return serviceUnavailable && (eraseType === "subtitle" || eraseType === "watermark") && hasVideoUrl;
+}
 
 const DEFAULT_CONTROL_STATE: SmartEraseControlState = {
     eraseType: "subtitle",
@@ -201,6 +208,7 @@ export function CanvasVideoSubtitleEraseDialog({
     onClose,
     onPrepareResource,
     onConfirm,
+    onConfirmLocal,
 }: CanvasVideoSubtitleEraseDialogProps) {
     const theme = canvasThemes[useActiveTheme()];
     const config = useEffectiveConfig();
@@ -240,6 +248,7 @@ export function CanvasVideoSubtitleEraseDialog({
     const [estimating, setEstimating] = useState(false);
     const [notice, setNotice] = useState("");
     const [submitting, setSubmitting] = useState(false);
+    const [submittingLocal, setSubmittingLocal] = useState(false);
 
     const nodeStorageKey = node.metadata?.storageKey || "";
     const nodeContent = node.metadata?.content || "";
@@ -420,6 +429,11 @@ export function CanvasVideoSubtitleEraseDialog({
         [resolvedCapabilities, effectiveControls],
     );
 
+    const localAvailable = useMemo(
+        () => Boolean(onConfirmLocal) && resolveLocalSmartEraseAvailability(effectiveControls.eraseType, serviceUnavailable, Boolean(videoUrl)),
+        [effectiveControls.eraseType, onConfirmLocal, serviceUnavailable, videoUrl],
+    );
+
     const requestParams = useMemo(
         () => buildSmartEraseApiParams(resourceId, effectiveControls, subtitleRegion, watermarkRegion, capabilities),
         [resourceId, effectiveControls, subtitleRegion, watermarkRegion, capabilities],
@@ -480,7 +494,8 @@ export function CanvasVideoSubtitleEraseDialog({
         ((effectiveControls.eraseType === "subtitle" &&
             effectiveControls.subtitleModel !== "mega" &&
             effectiveControls.eraseMethod === "custom") ||
-            (effectiveControls.eraseType === "watermark" && effectiveControls.eraseMethod === "custom"));
+            (effectiveControls.eraseType === "watermark" && effectiveControls.eraseMethod === "custom") ||
+            localAvailable);
     const activeRegion = effectiveControls.eraseType === "watermark" ? watermarkRegion : subtitleRegion;
     const setActiveRegion = effectiveControls.eraseType === "watermark" ? setWatermarkRegion : setSubtitleRegion;
     const regionLabel = effectiveControls.eraseType === "watermark" ? "水印区域" : "字幕区域";
@@ -538,6 +553,24 @@ export function CanvasVideoSubtitleEraseDialog({
         }
     };
 
+    const handleLocalSubmit = async () => {
+        if (!onConfirmLocal || !localAvailable || submittingLocal) return;
+        setSubmittingLocal(true);
+        setNotice("");
+        try {
+            await onConfirmLocal(node, {
+                eraseType: effectiveControls.eraseType as "subtitle" | "watermark",
+                region: activeRegion,
+                dimensions,
+            });
+            onClose();
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : "本地处理失败");
+        } finally {
+            setSubmittingLocal(false);
+        }
+    };
+
     const billingSummary = quote?.billingSummary || capabilities?.billingSummary || "保留原视频音轨 · 按实际时长结算，多扣退回";
     const stageSize = useMemo(
         () => fitPreviewStage(dimensions.width, dimensions.height, PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT),
@@ -552,7 +585,7 @@ export function CanvasVideoSubtitleEraseDialog({
             width={700}
             footer={null}
             onCancel={() => {
-                if (!submitting) onClose();
+                if (!submitting && !submittingLocal) onClose();
             }}
         >
             <div className="space-y-3.5 pt-1 text-xs" style={{ color: theme.node.text }}>
@@ -679,6 +712,7 @@ export function CanvasVideoSubtitleEraseDialog({
                     ) : serviceUnavailable ? (
                         <p role="status" style={{ color: theme.node.muted }}>
                             当前渠道暂未开启视频去字幕服务，请稍后再试。
+                            {effectiveControls.eraseType === "privacy" ? "隐私打码需云端自动检测人脸/车牌，本地暂不支持。" : null}
                         </p>
                     ) : preparingResource || loadingCapabilities || estimating ? (
                         <span className="inline-flex items-center gap-1.5" style={{ color: theme.node.muted }}>
@@ -705,10 +739,26 @@ export function CanvasVideoSubtitleEraseDialog({
                     </p>
                 ) : null}
 
+                {localAvailable ? (
+                    <p role="status" className="text-xs" style={{ color: theme.node.muted }}>
+                        云端服务暂未开启，可用本地处理：按上方选框区域擦除（免费，不走云端；可拖动选框调整位置）。
+                    </p>
+                ) : null}
+
                 <div className="flex items-center justify-end gap-2 pt-1">
-                    <Button disabled={submitting} onClick={onClose}>
+                    <Button disabled={submitting || submittingLocal} onClick={onClose}>
                         取消
                     </Button>
+                    {localAvailable ? (
+                        <Button
+                            icon={<Eraser className="size-3.5" />}
+                            loading={submittingLocal}
+                            disabled={submitting}
+                            onClick={() => void handleLocalSubmit()}
+                        >
+                            本地处理
+                        </Button>
+                    ) : null}
                     <Button
                         type="primary"
                         icon={<Eraser className="size-3.5" />}

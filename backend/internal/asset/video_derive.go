@@ -42,9 +42,10 @@ type ExtractVideoFramesResult struct {
 }
 
 type SeparateVideoAudioResult struct {
-	Audio      model.Resource `json:"audio"`
-	MutedVideo model.Resource `json:"mutedVideo"`
-	DurationMs int64          `json:"durationMs,omitempty"`
+	Audio        model.Resource `json:"audio"`
+	MutedVideo   model.Resource `json:"mutedVideo"`
+	DurationMs   int64          `json:"durationMs,omitempty"`
+	VideoEncoder string         `json:"videoEncoder,omitempty"`
 }
 
 type derivedOutputSpec struct {
@@ -200,9 +201,10 @@ func (s *Service) SeparateVideoAudio(ctx context.Context, userID, resourceID str
 		return nil, err
 	}
 	return &SeparateVideoAudioResult{
-		Audio:      *stored[0],
-		MutedVideo: *stored[1],
-		DurationMs: separated.DurationMs,
+		Audio:        *stored[0],
+		MutedVideo:   *stored[1],
+		DurationMs:   separated.DurationMs,
+		VideoEncoder: separated.VideoEncoder,
 	}, nil
 }
 

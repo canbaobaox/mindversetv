@@ -18,7 +18,8 @@ import { captureVideoFrames, resolveVideoFramePresetTimeMs } from "@/lib/canvas/
 import { resolveCanvasVideoDurationMs } from "@/lib/canvas/canvas-video-duration";
 import { buildVideoFrameNodes } from "@/lib/canvas/canvas-video-frame-nodes";
 import { mergeVideos, warmFFmpeg, type MergeVideoProgress } from "@/lib/canvas/canvas-video-merge";
-import { cropVideo, extractVideoAudio, removeAudioFromVideo, trimVideoSegment } from "@/lib/canvas/canvas-video-segment";
+import { cropVideo, eraseVideoRegion, extractVideoAudio, hasLocalVideoSource, removeAudioFromVideo, trimVideoSegment } from "@/lib/canvas/canvas-video-segment";
+import { eraseRegionToPixels } from "@/lib/canvas/canvas-video-segment-args";
 import { applyInlineVideoTrimMetadata, normalizeInlineVideoTrimRange, type InlineVideoTrimRange } from "@/lib/canvas/canvas-video-inline-trim";
 import { generationErrorMessage } from "@/lib/generation-error";
 import { submissionUnknownTaskOutcome } from "@/lib/task-outcome";
@@ -27,6 +28,7 @@ import { getMediaBlob, resolveMediaUrl, uploadMediaFile } from "@/services/file-
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { persistCanvasDocument } from "@/services/local-workspace-repository";
 import { queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import type { VideoSubtitleEraseLocalOptions } from "@/services/api/video-subtitle-erase";
 import { getResourcePlaybackBlob, ownedResourceIdFromMediaRef, resourceStorageKey } from "@/services/api/resources";
 import { canvasNodeDiagnosticContext } from "@/services/diagnostics/canvas-media-diagnostics";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
@@ -101,7 +103,7 @@ export function useCanvasVideoTools({
         const operation = beginMediaOperation();
         if (!operation.isCurrent()) return;
         const source = { url: node.metadata?.content, storageKey: node.metadata?.storageKey };
-        if (!source.url && !source.storageKey) return;
+        if (!hasLocalVideoSource(node)) return;
         const normalizedCrop = normalizeVideoCropForEncoding(crop, sourceDimensions);
         const childId = nanoid();
         const connection = { id: nanoid(), fromNodeId: node.id, toNodeId: childId };
@@ -143,6 +145,55 @@ export function useCanvasVideoTools({
             } : item));
         }
     }, [beginMediaOperation, pageUi, projectId, persistMediaNodes, setConnections, setNodes]);
+
+    const submitVideoSubtitleEraseLocally = useCallback(async (node: CanvasNodeData, options: VideoSubtitleEraseLocalOptions) => {
+        const operation = beginMediaOperation();
+        if (!operation.isCurrent()) return;
+        if (!hasLocalVideoSource(node)) {
+            message.warning("视频节点为空，无法本地处理");
+            return;
+        }
+        const source = { url: node.metadata?.content, storageKey: node.metadata?.storageKey };
+        const pixelRegion = eraseRegionToPixels(options.region, options.dimensions.width, options.dimensions.height);
+        const label = options.eraseType === "watermark" ? "去水印" : "去字幕";
+        const childId = nanoid();
+        const connection = { id: nanoid(), fromNodeId: node.id, toNodeId: childId };
+        const size = fitNodeSize(node.metadata?.naturalWidth || node.width, node.metadata?.naturalHeight || node.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+        const pendingChild: CanvasNodeData = {
+            id: childId, type: CanvasNodeType.Video, title: `${node.title || "视频"} · ${label}`,
+            position: { x: node.position.x + node.width + 96, y: node.position.y }, width: size.width, height: size.height,
+            metadata: mediaResultMetadata("derived", {
+                status: NODE_STATUS_LOADING, processingLabel: `正在本地${label}`, prompt: `从「${node.title || "视频"}」本地${label}`,
+                generatedFromNodeId: node.id, videoSubtitleEraseSourceNodeId: node.id, videoSmartEraseType: options.eraseType,
+            }),
+        };
+        // The source remains available as soon as the erase is confirmed. The
+        // downstream node owns the asynchronous FFmpeg work and its outcome.
+        setNodes((current) => [...current, pendingChild]);
+        setConnections((current) => [...current, connection]);
+        pageUi.getState().setSelectedNodeIds(new Set([childId]));
+        pageUi.getState().setSelectedConnectionId(null);
+        try {
+            const output = await operation.wait(eraseVideoRegion(source, pixelRegion));
+            const uploaded = await operation.wait(uploadMediaFile(output, "video"));
+            const fitted = fitNodeSize(uploaded.width || size.width, uploaded.height || size.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+            const completedChild: CanvasNodeData = {
+                ...pendingChild, width: fitted.width, height: fitted.height,
+                metadata: mediaResultMetadata("derived", {
+                    ...videoMetadata(uploaded), prompt: pendingChild.metadata?.prompt, status: NODE_STATUS_SUCCESS,
+                    generatedFromNodeId: node.id, videoSubtitleEraseSourceNodeId: node.id, videoSmartEraseType: options.eraseType,
+                }),
+            };
+            setNodes((current) => current.map((item) => item.id === childId ? completedChild : item));
+            await operation.wait(persistMediaNodes([completedChild], [connection], {}));
+        } catch (error) {
+            if (!operation.isCurrent()) return;
+            const details = error instanceof Error ? error.message : `视频本地${label}失败`;
+            setNodes((current) => current.map((item) => item.id === childId ? {
+                ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details },
+            } : item));
+        }
+    }, [beginMediaOperation, message, pageUi, projectId, persistMediaNodes, setConnections, setNodes]);
 
     const runDepthCaptureForTarget = useCallback(async (
         originalProjectId: string, targetNodeId: string, resourceId: string, clientOperationId: string, frozenInputKey: string,
@@ -484,7 +535,7 @@ export function useCanvasVideoTools({
     }, [beginMediaOperation, connectionsRef, extractVideoFrames, message, nodesRef, pageUi, persistMediaNodes, projectId, selectedNodeIdsRef, setConnections, setNodes, startUploadStatus]);
 
     const openInlineVideoTrim = useCallback((node: CanvasNodeData) => {
-        if (!node.metadata?.content) {
+        if (!hasLocalVideoSource(node)) {
             message.warning("视频节点为空，无法剪辑");
             return;
         }
@@ -499,7 +550,7 @@ export function useCanvasVideoTools({
     }, [pageUi, projectId, message]);
 
     const openVideoCrop = useCallback((node: CanvasNodeData) => {
-        if (!node.metadata?.content) {
+        if (!hasLocalVideoSource(node)) {
             message.warning("视频节点为空，无法裁切");
             return;
         }
@@ -518,7 +569,7 @@ export function useCanvasVideoTools({
     const confirmInlineVideoTrim = useCallback(async (node: CanvasNodeData, requestedRange: InlineVideoTrimRange) => {
         const operation = beginMediaOperation();
         if (!operation.isCurrent()) return;
-        if (inlineTrimRunningRef.current || !node.metadata?.content) return;
+        if (inlineTrimRunningRef.current || !hasLocalVideoSource(node)) return;
         const sourceDurationMs = Math.max(100, node.metadata.durationMs || requestedRange.endMs);
         const range = normalizeInlineVideoTrimRange(requestedRange, sourceDurationMs);
         inlineTrimRunningRef.current = true;
@@ -597,6 +648,7 @@ export function useCanvasVideoTools({
                 uploadedVideo = backendDerived.mutedVideo;
                 uploadedAudio = backendDerived.audio;
                 resolvedDurationMs = backendDerived.durationMs || resolvedDurationMs || uploadedAudio.durationMs || 0;
+                if (backendDerived.videoEncoder === "libx264") message.info("未检测到硬件编码器，本次音视频分离用 CPU 编码完成");
             } else {
                 const source = { url: node.metadata?.content, storageKey: node.metadata?.storageKey };
                 const audio = await operation.wait(extractVideoAudio(source, undefined, node.metadata?.durationMs, (status) => {
@@ -736,7 +788,7 @@ export function useCanvasVideoTools({
     const mergeSelectedVideos = useCallback(() => mergeVideosByIds(Array.from(selectedNodeIdsRef.current)), [mergeVideosByIds, selectedNodeIdsRef]);
 
     return {
-        clearDeletedVideoNodes, videoCropNodeId, setVideoCropNodeId, cropVideoNode, depthCaptureNode, retryDepthCaptureNode,
+        clearDeletedVideoNodes, videoCropNodeId, setVideoCropNodeId, cropVideoNode, submitVideoSubtitleEraseLocally, depthCaptureNode, retryDepthCaptureNode,
         recoverDepthCaptureNodes, closeFrameDialog, extractAudioFromVideo, extractVideoFrameAt, extractVideoFrames,
         extractingVideoFramesNodeId, frameDialogNodeId, setFrameDialogNodeId, mergeSelectedVideos, mergeVideosByIds,
         mergeVideoProgress, segmentRunningMode, inlineTrimNodeId, inlineTrimRunning, setInlineTrimNodeId,

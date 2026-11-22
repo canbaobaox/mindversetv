@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { ArrowUp, LoaderCircle, X } from "lucide-react";
 
 import { moveVideoCrop, resizeVideoCrop, type VideoCropHandle, type VideoCropRect } from "@/lib/canvas/video-crop-geometry";
+import { resolveMediaUrl } from "@/services/file-storage";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 
 export type CanvasVideoCropRect = VideoCropRect;
 
@@ -9,16 +11,45 @@ const cropHandles: VideoCropHandle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "
 
 type CanvasVideoCropEditorProps = {
     videoUrl: string;
+    storageKey?: string;
     videoDimensions: { width: number; height: number };
     onCancel: () => void;
     onConfirm: (crop: CanvasVideoCropRect, sourceDimensions: { width: number; height: number }) => void | Promise<void>;
 };
 
-export function CanvasVideoCropEditor({ videoUrl, videoDimensions, onCancel, onConfirm }: CanvasVideoCropEditorProps) {
+export function CanvasVideoCropEditor({ videoUrl, storageKey, videoDimensions, onCancel, onConfirm }: CanvasVideoCropEditorProps) {
     const frameRef = useRef<HTMLDivElement>(null);
     const [sourceDimensions, setSourceDimensions] = useState(videoDimensions);
     const [crop, setCrop] = useState<CanvasVideoCropRect>(() => initialVideoCrop(videoDimensions));
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [resolvedUrl, setResolvedUrl] = useState(videoUrl);
+
+    // The hidden video only loads metadata to correct the source dimensions.
+    // Nodes restored from the archive may carry a storageKey without a content
+    // URL; resolve it the same way the inline trim overlay does.
+    useEffect(() => {
+        if (videoUrl) {
+            setResolvedUrl(videoUrl);
+            return;
+        }
+        if (!storageKey) {
+            setResolvedUrl("");
+            return;
+        }
+        let cancelled = false;
+        void cacheResourceObjectUrl(storageKey)
+            .then((cached) => {
+                if (cancelled) return;
+                if (cached) setResolvedUrl(cached);
+                else void resolveMediaUrl(storageKey, videoUrl, { renderable: true }).then((url) => { if (!cancelled) setResolvedUrl(url); });
+            })
+            .catch(() => {
+                if (!cancelled) void resolveMediaUrl(storageKey, videoUrl, { renderable: true }).then((url) => { if (!cancelled) setResolvedUrl(url); });
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [videoUrl, storageKey]);
 
     useEffect(() => {
         setSourceDimensions(videoDimensions);
@@ -80,7 +111,7 @@ export function CanvasVideoCropEditor({ videoUrl, videoDimensions, onCancel, onC
         >
             <video
                 data-video-crop-metadata-loader="true"
-                src={videoUrl}
+                src={resolvedUrl}
                 preload="metadata"
                 muted
                 playsInline

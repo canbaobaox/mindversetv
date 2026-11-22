@@ -12,6 +12,7 @@ import {
     estimateUpscale,
     getUpscaleCapabilities,
     isUpscaleMediaSelectionAvailable,
+    isUpscaleUpstreamAvailable,
     normalizeUpscaleMediaSelection,
     resolveUpscaleCapabilityModel,
     type UpscaleCapabilities,
@@ -70,13 +71,14 @@ export function UpscaleNodeContent({ node, theme }: { node: CanvasNodeData; them
         && (!hasImageInput || isUpscaleMediaSelectionAvailable(capabilities, "image", settings.image))
         && (!hasVideoInput || isUpscaleMediaSelectionAvailable(capabilities, "video", settings.video))
         && (hasImageInput || hasVideoInput || isUpscaleMediaSelectionAvailable(capabilities, "image", settings.image) || isUpscaleMediaSelectionAvailable(capabilities, "video", settings.video));
+    const upstreamUnavailable = Boolean(capabilities && !isUpscaleUpstreamAvailable(capabilities));
     const inputKey = inputs.map(item => `${item.id}:${item.type}:${item.metadata?.storageKey || ""}:${item.metadata?.content || ""}`).join("|");
     const estimateKey = JSON.stringify({ channelId, settings });
     useEffect(() => {
         let active = true;
         setEstimates({});
         setNotice("");
-        if (!capabilities || !channelId || !inputs.length) return;
+        if (!capabilities || !channelId || !inputs.length || !isUpscaleUpstreamAvailable(capabilities)) return;
         const timer = window.setTimeout(() => {
             setEstimating(true);
             void Promise.all(inputs.map(async input => {
@@ -174,10 +176,10 @@ export function UpscaleNodeContent({ node, theme }: { node: CanvasNodeData; them
             {Object.keys(estimates).length ? <details><summary className="cursor-pointer" style={{ color: theme.node.muted }}>超分后的分辨率</summary><div className="mt-2 space-y-1">{inputs.map(input => { const estimate = estimates[input.id]; return estimate ? <div key={input.id} className="flex gap-2"><span className="min-w-0 flex-1 truncate">{input.title}</span><span className="shrink-0 tabular-nums">{estimate.output.width} × {estimate.output.height}</span></div> : null; })}</div></details> : null}
             <div className="space-y-3">
                 <Select getPopupContainer={trigger => trigger.parentElement || document.body} className="w-full" aria-label="超分模型" placeholder="暂无可用超分模型" disabled={!officialConnected} value={channelId || undefined} options={officialConnected ? [{ label: "超分模型", value: "myxsai" }] : []} onChange={channelId => patch({ channelId })} />
-                {!officialConnected ? <p role="status" style={{ color: theme.node.muted }}>暂无可用超分模型，请在模型渠道自填可用的超分模型。<a href="#/settings?section=channels" className="ml-1 underline">前往模型渠道</a></p> : capabilities && !hasAvailableMode ? <p role="status" style={{ color: theme.node.muted }}>暂无可用超分模型，请刷新模型目录或更换输入素材类型。</p> : null}
+                {!officialConnected ? <p role="status" style={{ color: theme.node.muted }}>暂无可用超分模型，请在模型渠道自填可用的超分模型。<a href="#/settings?section=channels" className="ml-1 underline">前往模型渠道</a></p> : upstreamUnavailable ? <p role="status" style={{ color: theme.node.muted }}>云端超分服务暂未开启：梦由心生暂无超分模型，无法提交。</p> : capabilities && !hasAvailableMode ? <p role="status" style={{ color: theme.node.muted }}>暂无可用超分模型，请刷新模型目录或更换输入素材类型。</p> : null}
             </div>
             {notice ? <p role="alert" className="break-words" style={{ color: "var(--status-error)" }}>{notice}</p> : null}
-            <Button type="primary" block loading={busy} disabled={!inputs.length || !channelId || !hasAvailableMode || !actions.startUpscaleBatch} onClick={() => void run()}>{batchButtonLabel}</Button>
+            <Button type="primary" block loading={busy} disabled={!inputs.length || !channelId || !hasAvailableMode || upstreamUnavailable || !actions.startUpscaleBatch} onClick={() => void run()}>{batchButtonLabel}</Button>
         </div>
     </div>;
 }

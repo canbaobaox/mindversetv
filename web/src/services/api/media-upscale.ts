@@ -5,7 +5,7 @@ export type UpscaleMode = "precision" | "generative" | "transparent";
 export type UpscaleModelOption = { id: string; label: string; billingMode?: string; billingSummary?: string };
 export type UpscaleParams = { resourceId: string; channelId: string; mode: UpscaleMode; model: string; scale: number; outputFormat?: string; enhancementStrength?: "low" | "medium" | "high" };
 export type UpscaleCapability = { mediaType: "image" | "video"; mode: UpscaleMode; models: string[]; modelOptions?: UpscaleModelOption[]; scales: number[]; outputFormats: string[]; fixedScale?: number };
-export type UpscaleCapabilities = { modes: UpscaleCapability[]; cloudProcessing: boolean; maxVideoDurationMs: number };
+export type UpscaleCapabilities = { modes: UpscaleCapability[]; cloudProcessing: boolean; maxVideoDurationMs: number; upstreamAvailable?: boolean };
 export type UpscaleEstimate = { mediaType: "image" | "video"; source: { width: number; height: number; durationMs?: number }; output: { width: number; height: number; durationMs?: number }; reservation: number; currency: "CNY"; billingMode?: string; generationSubmitted: false; cloudProcessing: boolean };
 export const UPSCALE_CAPABILITIES_TIMEOUT_MS = 8_000;
 export const UPSCALE_ESTIMATE_TIMEOUT_MS = 120_000;
@@ -46,6 +46,10 @@ export function resolveUpscaleCapabilityModel(capabilities: UpscaleCapabilities 
 }
 export function isUpscaleMediaSelectionAvailable(capabilities: UpscaleCapabilities | undefined, mediaType: "image" | "video", selected: { mode: UpscaleMode; model: string }) {
     return Boolean(resolveUpscaleCapabilityModel(capabilities, mediaType, selected.mode, selected.model));
+}
+/** 云端超分是否真的可用：后端拿不到上游 Topaz 模型时会回退默认模式列表，此时提交必失败；只有上游明确返回模型才算可用。未返回该字段的老后端按可用处理。 */
+export function isUpscaleUpstreamAvailable(capabilities: UpscaleCapabilities | undefined): boolean {
+    return capabilities?.upstreamAvailable !== false;
 }
 export function normalizeUpscaleMediaSelection<T extends { mode: UpscaleMode; model: string; outputFormat?: string }>(capabilities: UpscaleCapabilities | undefined, mediaType: "image" | "video", selected: T): T {
     if (!capabilities) return selected;

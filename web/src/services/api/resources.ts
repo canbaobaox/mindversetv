@@ -59,6 +59,7 @@ export type SeparateResourceVideoAudioResponse = {
     audio: RemoteResource;
     mutedVideo: RemoteResource;
     durationMs?: number;
+    videoEncoder?: string;
 };
 
 const VIDEO_DERIVE_REQUEST_TIMEOUT_MS = 120_000;

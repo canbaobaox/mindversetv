@@ -181,6 +181,9 @@ func TestDynamicUpscaleModesAndSubtitleEraseClient(t *testing.T) {
 	if caps["maxVideoDurationMs"] != 300000 {
 		t.Fatalf("expected maxVideoDurationMs=300000, got %+v", caps["maxVideoDurationMs"])
 	}
+	if caps["upstreamAvailable"] != true {
+		t.Fatalf("expected upstreamAvailable=true when the upstream returns models, got %+v", caps["upstreamAvailable"])
+	}
 	modes := caps["modes"].([]topaz.Mode)
 	if len(modes) != 1 {
 		t.Fatalf("expected dynamic upstream catalog to omit unconfigured static modes, got %+v", modes)
@@ -258,6 +261,20 @@ func TestDynamicUpscaleModesAndSubtitleEraseClient(t *testing.T) {
 	}, ensure, lookup)
 	if err != nil || payload["mode"] != "video" {
 		t.Fatalf("payload=%+v err=%v", payload, err)
+	}
+
+	// Without credentials the upstream cannot be reached: capabilities fall back
+	// to the static Topaz defaults and must report the upstream as unavailable
+	// so the UI can disable submission instead of failing late.
+	brokenLookup := func() (string, string, string, string, error) {
+		return "", "", "", "", errors.New("no credential")
+	}
+	fallbackCaps := LiveUpscaleCapabilities(context.Background(), brokenLookup, bind)
+	if fallbackCaps["upstreamAvailable"] != false {
+		t.Fatalf("expected upstreamAvailable=false without credentials, got %+v", fallbackCaps["upstreamAvailable"])
+	}
+	if fallbackModes, ok := fallbackCaps["modes"].([]topaz.Mode); !ok || len(fallbackModes) != len(topaz.Modes()) {
+		t.Fatalf("expected static Topaz fallback modes without credentials, got %+v", fallbackCaps["modes"])
 	}
 }
 

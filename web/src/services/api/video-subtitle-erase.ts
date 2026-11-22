@@ -51,6 +51,13 @@ export type SubtitleEraseRegion = {
     height: number;
 };
 
+/** 本地擦除提交选项：云端服务不可用时走浏览器 FFmpeg 按选框 delogo 擦除，不走云端、不扣费；隐私打码无本地等价实现，不用它。 */
+export type VideoSubtitleEraseLocalOptions = {
+    eraseType: "subtitle" | "watermark";
+    region: SubtitleEraseRegion;
+    dimensions: { width: number; height: number };
+};
+
 export type SubtitleEraseParams = {
     resourceId: string;
     channelId: string;

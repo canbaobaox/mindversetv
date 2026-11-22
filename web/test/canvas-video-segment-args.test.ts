@@ -279,3 +279,89 @@ describe("removeAudioFromVideo orchestration", () => {
         expect(execCalls[1]).toContain("yuv420p");
     });
 });
+
+import { buildEraseVideoArgs, eraseRegionToPixels, ERASE_OUTPUT_NAME } from "../src/lib/canvas/canvas-video-segment-args";
+import { eraseVideoRegion, hasLocalVideoSource } from "../src/lib/canvas/canvas-video-segment";
+
+describe("buildEraseVideoArgs", () => {
+    test("delogo 按选框擦除并保留原音轨", () => {
+        expect(buildEraseVideoArgs(100, 200, 300, 60)).toEqual([
+            "-i", SEGMENT_INPUT_NAME, "-vf", "delogo=x=100:y=200:w=300:h=60:band=10",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", ERASE_OUTPUT_NAME,
+        ]);
+    });
+});
+
+describe("eraseRegionToPixels", () => {
+    test("归一化选框转像素并对齐偶数", () => {
+        expect(eraseRegionToPixels({ x: 0.08, y: 0.76, width: 0.84, height: 0.18 }, 1920, 1080)).toEqual({ x: 152, y: 820, width: 1614, height: 196 });
+    });
+
+    test("越界选框夹到画面内且宽高至少 2px", () => {
+        expect(eraseRegionToPixels({ x: 0.9, y: 0.9, width: 0.5, height: 0.5 }, 100, 100)).toEqual({ x: 90, y: 90, width: 10, height: 10 });
+        expect(eraseRegionToPixels({ x: -0.1, y: -0.1, width: 0.01, height: 0.01 }, 100, 100)).toEqual({ x: 0, y: 0, width: 2, height: 2 });
+    });
+});
+
+describe("hasLocalVideoSource", () => {
+    test("内容地址或本地素材键任一存在即有源", () => {
+        expect(hasLocalVideoSource({ metadata: { content: "https://example.com/v.mp4" } })).toBe(true);
+        expect(hasLocalVideoSource({ metadata: { storageKey: "video:scope:abc" } })).toBe(true);
+        expect(hasLocalVideoSource({ metadata: { content: "", storageKey: "" } })).toBe(false);
+        expect(hasLocalVideoSource({ metadata: {} })).toBe(false);
+        expect(hasLocalVideoSource({})).toBe(false);
+    });
+});
+
+describe("eraseVideoRegion orchestration", () => {
+    const validVideoMp4 = isoBmff({ handler: "vide", samples: 1, mdatPayload: 48 });
+
+    test("用 delogo 处理选框并输出带视频轨道的 MP4", async () => {
+        const execCalls: string[][] = [];
+        const blob = await eraseVideoRegion(
+            { url: "https://example.com/v.mp4" },
+            { x: 152, y: 820, width: 1614, height: 196 },
+            undefined,
+            {
+                readSourceBlob: async () => new Blob([new Uint8Array([1, 2, 3])]),
+                leaseRunner: async (work) => work({
+                    filePrefix: "t-erase-",
+                    ffmpeg: {
+                        writeFile: async () => true,
+                        readFile: async () => validVideoMp4,
+                        exec: async (args: string[]) => {
+                            execCalls.push(args);
+                            return 0;
+                        },
+                        deleteFile: async () => true,
+                    } as never,
+                }),
+            },
+        );
+        expect(blob.type).toBe("video/mp4");
+        expect(execCalls).toHaveLength(1);
+        expect(execCalls[0]).toContain("delogo=x=152:y=820:w=1614:h=196:band=10");
+        expect(execCalls[0]).toContain("copy");
+    });
+
+    test("FFmpeg 失败时报本地擦除错误", async () => {
+        await expect(eraseVideoRegion(
+            { url: "https://example.com/v.mp4" },
+            { x: 0, y: 0, width: 10, height: 10 },
+            undefined,
+            {
+                readSourceBlob: async () => new Blob([new Uint8Array([1, 2, 3])]),
+                leaseRunner: async (work) => work({
+                    filePrefix: "t-erase-fail-",
+                    ffmpeg: {
+                        writeFile: async () => true,
+                        readFile: async () => validVideoMp4,
+                        exec: async () => 1,
+                        deleteFile: async () => true,
+                    } as never,
+                }),
+            },
+        )).rejects.toThrow(/本地擦除失败/);
+    });
+});
