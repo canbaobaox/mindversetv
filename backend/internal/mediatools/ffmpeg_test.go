@@ -71,6 +71,52 @@ func writeFakeFFmpegEncoderList(t *testing.T, encoders ...string) string {
 	return bin
 }
 
+func writeFakeFFmpegEncoderListWithProbe(t *testing.T, encoders []string, probeFail ...string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell encoder fixture; native bundle tested separately")
+	}
+	bin := filepath.Join(t.TempDir(), "ffmpeg")
+	var listing strings.Builder
+	listing.WriteString("#!/bin/sh\n")
+	listing.WriteString("case \"$*\" in\n")
+	listing.WriteString("  *\"-encoders\"*)\n")
+	for _, encoder := range encoders {
+		fmt.Fprintf(&listing, "    echo ' V..... %s           fake encoder'\n", encoder)
+	}
+	listing.WriteString("    ;;\n")
+	for _, encoder := range probeFail {
+		fmt.Fprintf(&listing, "  *%q*) exit 1 ;;\n", encoder)
+	}
+	listing.WriteString("  *) exit 0 ;;\n")
+	listing.WriteString("esac\n")
+	if err := os.WriteFile(bin, []byte(listing.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func TestPreferredH264EncoderFallsBackWhenHardwareProbeFails(t *testing.T) {
+	// h264_nvenc is listed but cannot open without a GPU: the probe fails,
+	// so the choice must fall back to libx264 instead of failing the encode.
+	bin := writeFakeFFmpegEncoderListWithProbe(t, []string{"libx264", "h264_nvenc"}, "h264_nvenc")
+	if got := PreferredH264Encoder(bin); got != "libx264" {
+		t.Fatalf("PreferredH264Encoder = %q, want %q", got, "libx264")
+	}
+	if args := PreferredH264VideoArgs(bin, "veryfast", "18", "6M", "10M"); !slices.Contains(args, "libx264") || slices.Contains(args, "h264_nvenc") {
+		t.Fatalf("fallback args = %v, want libx264 without h264_nvenc", args)
+	}
+
+	// No usable encoder at all when the only listed one fails its probe.
+	onlyNVENC := writeFakeFFmpegEncoderListWithProbe(t, []string{"h264_nvenc"}, "h264_nvenc")
+	if got := PreferredH264Encoder(onlyNVENC); got != "" {
+		t.Fatalf("PreferredH264Encoder = %q, want %q", got, "")
+	}
+	if SupportsH264Encode(onlyNVENC) {
+		t.Fatalf("SupportsH264Encode = true, want false")
+	}
+}
+
 func TestPreferredH264EncoderPrefersHardware(t *testing.T) {
 	cases := []struct {
 		name     string

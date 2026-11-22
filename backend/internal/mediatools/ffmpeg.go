@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	ffmpegEncodersCache sync.Map
-	ffmpegFiltersCache  sync.Map
+	ffmpegEncodersCache     sync.Map
+	ffmpegFiltersCache      sync.Map
+	ffmpegEncoderProbeCache sync.Map
 )
 
 // SupportsFFmpegEncoder reports whether bin advertises the named encoder.
@@ -28,12 +29,54 @@ func SupportsFFmpegFilter(bin, filter string) bool {
 	return strings.Contains(cachedFFmpegListing(&ffmpegFiltersCache, bin, "-filters"), " "+filter+" ")
 }
 
-// PreferredH264Encoder reports the best H.264 encoder the binary advertises:
-// hardware encoders first (NVENC, Quick Sync, AMF, VideoToolbox), software
-// libx264 last. Returns "" when no H.264 encoder is available.
+// probeH264Encoder verifies that bin can actually open the named encoder by
+// encoding a single frame from a generated test source. The -encoders listing
+// only proves the encoder is compiled in: without a GPU, hardware encoders
+// such as h264_nvenc are still listed but fail at open time, so listing alone
+// cannot choose them. Results are cached per binary like the listing itself.
+func probeH264Encoder(bin, encoder string) bool {
+	bin = strings.TrimSpace(bin)
+	if bin == "" || encoder == "" {
+		return false
+	}
+	key := bin + "\x00" + encoder
+	if info, err := os.Stat(bin); err == nil {
+		key = fmt.Sprintf("%s\x00%s\x00%d\x00%d", bin, encoder, info.Size(), info.ModTime().UnixNano())
+	}
+	if value, ok := ffmpegEncoderProbeCache.Load(key); ok {
+		return value.(bool)
+	}
+	ok := runH264EncoderProbe(bin, encoder)
+	ffmpegEncoderProbeCache.Store(key, ok)
+	return ok
+}
+
+func runH264EncoderProbe(bin, encoder string) bool {
+	tmpDir, err := os.MkdirTemp("", "beeftv-ffmpeg-probe-")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(tmpDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+		"-c:v", encoder, "-pix_fmt", "yuv420p",
+		"-frames:v", "1", "-f", "null", "-")
+	cmd.Dir = tmpDir
+	HideConsole(cmd)
+	return cmd.Run() == nil
+}
+
+// PreferredH264Encoder reports the best H.264 encoder the binary can actually
+// use: hardware encoders first (NVENC, Quick Sync, AMF, VideoToolbox), software
+// libx264 last. A listed encoder is verified with a one-frame test encode
+// first, because listing only proves it is compiled in — without a GPU it
+// still fails at open time. Returns "" when no H.264 encoder is available.
 func PreferredH264Encoder(bin string) string {
 	for _, encoder := range []string{"h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"} {
-		if SupportsFFmpegEncoder(bin, encoder) {
+		if SupportsFFmpegEncoder(bin, encoder) && probeH264Encoder(bin, encoder) {
 			return encoder
 		}
 	}

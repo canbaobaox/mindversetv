@@ -333,6 +333,13 @@
 - 局部修改（inpaint）未接：Seedance 上游虽有 edit（`omni_reference_task_type: "edit"`，见 `backend/internal/protocol/seedance_constraints.go` 的 `SeedanceOmniTaskType`），但站内客户端无 edit 入口，需真 Key 实测，留待以后；预置里不声明 inpaint。
 - 验证：后端新增 `TestMyxsaiMediaCreateBodyExtend`（读真实 package.json）：extend 发 `_quan_neng_mode: "extend"` + `video_url` + adaptive 画幅、顶层无平铺参数；`reference_to_video` 对照不发这两个参数。前端新增 `web/test/myxsai-preset-extend.test.ts`（3 个测试）：两个 Seedance 模型含 extend、其它视频模型不含、全部视频模型不含 inpaint。
 
+### FFmpeg 硬件编码回落修复
+
+- 根因：1db6ca1 的 `PreferredH264Encoder`（`backend/internal/mediatools/ffmpeg.go`）只查 `ffmpeg -encoders` 列表——本机 ffmpeg 8.1.2 的列表里有 `h264_nvenc`，但无 NVIDIA GPU 时运行时才失败（`Cannot load libcuda.so.1`，`-22 Invalid argument`），编码直接报错、不回落 CPU。“列表里有”不等于“能用”。
+- 修法：`PreferredH264Encoder` 对每个候选编码器先做一帧试编码验证（`nullsrc` 64x64 → `-c:v <编码器> -pix_fmt yuv420p -frames:v 1 -f null -`，5 秒超时，结果按二进制路径 + 大小 + 修改时间缓存），只返回能真正打开的编码器；探测顺序不变（nvenc → qsv → amf → videotoolbox → libx264），其它编码参数不动。无 GPU 的机器上硬件探针均失败、回落 libx264；`video_derive.go` 返回的编码器名随之变成 `libx264`，前端已有的“未检测到硬件编码器，本次用 CPU 编码完成”提示照常触发，不新增文案。
+- 回归测试：`ffmpeg_test.go` 新增 `TestPreferredH264EncoderFallsBackWhenHardwareProbeFails`（假 ffmpeg 列出 nvenc 但探针失败 → 选 libx264；只有 nvenc 且探针失败 → 无编码器）；`mediatools` 全量通过。
+- 验证（本机，无 GPU）：2a7005a 审计挂的 10 个测试（app 三分片 6 个 + operations 4 个）全部复跑通过，同族 handler 3 个原生历史测试也全部通过——operations：`TestMediaReviewUsesOwnedVersionedClipAndDoesNotExposeBytes`、`TestMediaReviewSelectsReferencedResourceBeforeInference`、`TestNativeMediaReadCheckVersionAndBounds`、`TestNativeMediaOverviewEvidenceUsesOneOwnedSnapshot`；app：`TestCanvasTimelineDeliverReplaysAndBindsAfterRender`、`TestCanvasRenderAtomicAdmissionReplayAndNativeOutput`、`TestReplacementNativePrepareFinishAndRecovery`、`TestReplacementNativeDisplayGeometryAndFractionalFPS`、`TestReplacementPrepareHonorsMinRefSecondsAxisBoundsAndCorruptLimits`、`TestTimelineSubtitleOnlyUpdateAndRenderKeepSavedPortraitOutput`；handler：`TestNativeHistoryRealDefaultHostCanvasScopeAndSDKDeterministicFailure`（78.6s）、`TestNativeHistoryRealDefaultHostRestartsAfterBudgetFailure`（99.0s）、`TestDefaultDurableHostDispatchesActualNativeMediaBytes`（64.1s）。`node scripts/structure-budget.mjs` 通过；`node scripts/deadcode-budget.mjs` 通过（521 项，与基线持平）；`git diff --check` 通过；`gofmt` 干净（`video_derive.go` 的一处对齐问题是 HEAD 已有，未动）。
+
 ### 仍需用户真 Key 实测（没 Key 验证不了）
 
 - 拿一次真实生图任务的提交响应与每次轮询响应的原始 JSON 全文，逐字段对照上文（重点：`result_urls` / `result_url` 是否如公开客户端所写、`code` 字段是否出现、`is_final` 与 `state` 是否同步变化）。
