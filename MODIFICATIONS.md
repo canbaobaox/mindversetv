@@ -294,3 +294,50 @@
 - `bun run typecheck`、`bun run lint`、`bun run build:desktop` 通过（仅已知的大 chunk 警告）；`node scripts/structure-budget.mjs` 通过；`node scripts/deadcode-budget.mjs` 通过（521 项，基线 524 项，下降 3 项）。
 - 后端：`providerpreset`、`workspace`、`beeftv`、`canvasworkflow`、`cmd/desktop`、`generation`、`handler`（含新余额接口）、`agentops`（提议 + storyboard）、`modelcatalog`、`app`（助手默认/视频能力/前缀）测试通过；`generation` 仅剩 2 个沙箱 UDP 屏蔽导致的 DNS 测试失败（`eee15af` 原始提交上 worktree 复现完全相同，与本次改动无关）；`assistantruntime` 仅剩 1 个代理子测试失败（基线复现，见上）；`outbound` 仅剩 1 个假 UDP DNS 测试失败（见上，同类环境问题）。`plugins` 全量在 umask 0022 下通过（`gotest-full2.log`：`ok internal/plugins 310.141s`）。`internal/app` 的全量在 `-timeout 30m` 下仍超时（1800.728 秒，超时瞬间只跑了 5 秒的单个测试，是累计超时不是挂起；此前两轮同样超时，本机 1.5 核跑不完 app 包，CI 才跑得完），以单个测试结果为准：该次全量里 6 个单个失败（`TestAgentModelCatalog*` 3 个、`TestPortraitQuoteManagedAdmission`、`TestPluginViewIncludesDocumentationForEveryOfficialProtocol`、ysdui 创建拒绝测试）已逐个修掉并重跑通过；`internal/handler` 全量里的 2 个模型配置测试失败（`TestWorkspaceModelConfigReturnsBuiltinBeefTVAndPersistenceMetadata`、`TestWorkspaceModelConfigGETRedactsBeefTVKey`）也已修掉并重跑通过（`TestWorkspaceModelConfig*` 全过）。`modelcatalog` / `operations` / `generation` 在生产代码改动（`isManagedChannelID`、`ValidatePortraitTaskQuote`、`estimateTarget`）后正在重跑回归，待补最终结果。
 - 新增/改动的测试：后端 `effective_myxsai_contract_test.go`（overlay 不覆盖插件协议）、`origin_test.go`（`IsManagedChannel` 认 myxsai）、`managed_credential_test.go`（`LookupBeefTVCredential` myxsai 优先 + beefTV 兜底）、`subtitle_erase_test.go`（擦除接受 myxsai）、`myxsai_account_test.go`（generation 层解析 + 上游调用；handler 层路由 + 信封 + 无 Key 失败）；前端 `model-service-presets.test.ts`（myxsai 预设第一位、候选协议回落、`isMyxsaiChannel`）、`channel-settings-pane.test.tsx`（merge 改认 myxsai + Key 进内存）、`seedance-catalog-capabilities.test.ts`、`workspace-model-config-persistence.test.ts`、`canvas-node-toolbar.test.ts`（擦除 channelId 改 myxsai）、`upscale-confirmation.browser.test.ts`（harness 渠道改 myxsai + 任务 channelId 断言）、`account-sidebar.browser.test.ts`（见上）。
+
+## 2026-11-22 v2.3.4：修梦由心生生图失败，加全选与单模型费用显示
+
+用户真机反馈：v2.3.2 插件替换版生图用不了，图片节点报“无法确认上次是否已扣费，可先到模型服务后台查看使用记录 / 重新生成可能会再扣一次，确认后创建新任务”；另要求选择模型加全选、每个模型显示费用。v2.3.3 只升了版本号，不再发版，本次直接发 v2.3.4。
+
+### 生图失败根因（已定位并修复）
+
+- 截图文案是 `web/src/lib/task-outcome.ts:501` 的 `failed + regenerate==="confirm" + reason==="result_unrecoverable"`。后端 `backend/internal/task/outcome.go:44,69`：任务状态已是 `Succeeded` 但结果物化 `FailedPermanent`，或恢复结论为 `unrecoverable`，就出这个原因——即任务提交成功、结果取不回。
+- 直接原因在 `plugin-packages/beeftv-plugin-myxsai/package.json` 的 `myxsai-media` provider 声明：`response.images` / `videos` 的 `$coalesce` 列表里根本没有 `result_url` / `result_urls`——而站方两个公开客户端（`lingkeai/ComfyUI-LingKe` 的 `lingke_client.py`、`wenyinos/ai-image-generator` 的 `lib/utils.js`）证实，成功结果地址只在顶层这两个字段里。任务成功后引擎提不到任何媒体 → 成功无结果 → 物化失败 → `result_unrecoverable`，与用户截图完全一致。
+- 同批修掉的三个关联缺陷（同一 provider 声明内）：
+  1. 完成判定只认 `state`、不认 `is_final`：站方成功当且仅当 `is_final=true` 且 `state=success/succeeded`（另一客户端明确把 `state=success` 但 `is_final≠true` 的情况降级为进行中）。现 `response.status` 用 `$if` 以 `is_final` 为准：非终态一律 `processing`（不用 `pending`：`parse()` 会把 pending + 有媒体的结果提前升成 succeeded，processing 不会升，终态门才不会漏）；`is_final` 缺失时沿用旧行为（只读 state）。
+  2. `code` 在 `errorPaths` 里且没有 `successCodes`：轮询/创建响应若带 `"code": 200`，`manifestError` 会按“数字 200 是失败值”的规则强制判失败。现加 `successCodes: [0, 200, "0", "200"]`（与 LingKe 的判定一致：0/200 为成功）。
+  3. 提交体可选参数平铺在顶层：站方两个公开客户端的提交体都是 `{model, prompt, params}`，`aspect_ratio` / `images` 等是 `params` 的成员；平铺会被站方忽略（画幅、时长、参考图不生效）。现包进 `params`；另 `duration` 为 0 时不发（`$omitEmpty` 对数字 0 不生效，改用 `$if` + `$gt` 守卫）。
+- 轮询地址与 taskId 取值经核对无问题：`GET /v1/media/status?task_id={{taskId}}`（task_id 写进 path 查询串），`$coalesce` 先读 `data.task_id`（站方返回 `{data:{task_id}}`）；`usage` 轮询终态的 `cost` 字段读进 `usage`。`plugin-packages/beeftv-plugin-myxsai/docs/interface.md` 已按新映射重写（旧版写着“结果地址字段名没验证过”“is_final 未消费”，已作废）。
+- 本地验证：新增 `backend/internal/protocol/myxsai_media_test.go`（回归测试，读真实 `package.json`、走与运行时相同的加载路径）：提交体带 `params` 且无平铺可选参数；`{code:0,data:{task_id}}` 解析出 taskId；7 组 LingKe 形状的轮询响应（进行中/未终态成功/单地址/数组地址/code:200/失败带错/data 包裹）全部按预期解析；轮询 URL 为 `/v1/media/status?task_id=task-123`。另核对了轮询循环契约（`backend/internal/generation/protocol.go:177-186`）：只有 `StatusSucceeded` 才收尾，中间结果里的媒体会被忽略，所以非终态的 `processing` 不会提前当成完成。
+
+### 选择模型加全选
+
+- 用户截图是宿主编辑器（`web/src/pages/settings/model-service-editor.tsx` 第二步），不是插件面板：筛选行加“全选（n 个）”按钮，n 为当前页签 + 搜索筛选下的可见模型数；点一下选中全部可见模型，已全选时变成“取消全选”（取消只移除可见的，不动其它页签已选的）；已选计数同步显示。走现有保存链路（`toggleModel` 同款 profile/protocol 补全逻辑，一次 `setDraft` 批量写 `draft.models` + `modelProfiles`，底部“保存并使用”原样保存）。
+- 插件面板（`plugin-packages/beeftv-plugin-myxsai/client/index.js`）原有“全选模型”按钮无视页签全选全部模型，已改成只选当前页签可见模型（`visibleIds`），文案同步显示个数；宿主与面板两处行为一致。
+
+### 每个模型显示费用
+
+- 价格数据源结论（2026-11-22 16:15–16:25 只读调查，无 Key、未登录）：价格源是模型广场用的公开接口 `GET https://api.lk888.ai/gongkai/moxingguangchang?domain=myxsai.com&type=all`（同源备用 `https://myxsai.com/houduan/gongkai/moxingguangchang`），免 Key 能调、但匿名时 144 个模型全部 `price_available: false`、`billing_mode: ""`、`price_min` 全空——价格只随网站登录态返回（SPA 请求头带加密登录 token；桌面端没有该 token）。旧 `https://myxsai.com/api/pricing` 已死（只返回 SPA HTML）。`GET /v1/skills/models` 与 `GET /v1/media/models` 无 Key 时 401，返回里是否带价格字段未验证。
+- 实现：价格字段只认已验证的广场字段名（`price_min` / `price_max` / `output_price_min` / `price_available` / `billing_mode`，取值 按次/按秒/按 token）；格式化按广场前端原样（数字最多 4 位小数 + `/次` / `/秒` / `/百万 token`，按 token 时分输入/输出两行），数值单位站方未说明——不加币种符号、不换算、不编造、不硬编码价格表。接口没给价格的模型显示“价格待确认”，不留空。
+- 链路：`web/src/lib/model-pricing.ts`（新，格式化 + 校验，`web/test/model-pricing.test.ts` 覆盖）；宿主编辑器每行显示 `formatMyxsaiModelPrice(item.pricing) ?? "价格待确认"`；`web/src/lib/channel-model-catalog.ts` 的 `ChannelModelCatalogItem` 加 `pricing` 字段并透传；后端 `backend/internal/modelcatalog/catalog_fetch.go`（`catalogPricing`）+ `types_route.go` 把上游 `/v1/models` 条目里平铺的广场价格字段拼进 `pricing`（`price_available: false` 或无字段时不拼，`catalog_fetch_test.go` 新增 `TestParseChannelModelCatalogMyxsaiPricing`）；插件面板 `client/presets.js` 的 `fetchMyxsaiModelsByType` 从 `/v1/media/models` 条目里同样抓取（`extractMyxsaiPrice` / `formatMyxsaiPrice`），静态预置模型并进在线同名模型的价格，面板每行同样显示价格或“价格待确认”。
+
+### 服务商列表测试修复（v2.3.3 quality 挂点）
+
+- `web/test/service-credentials.browser.test.ts:109` 期望侧边栏 `.model-service-provider` 为 4 项、实际 5 项。核对结论：5 项是产品逻辑——`standardServicePresets()`（`web/src/lib/model-service-presets.ts:60-62`）返回 `[myxsai, 第三方模型服务, OpenAI, Google Gemini, 火山方舟]`，文件注释写明“梦由心生（自家渠道，置顶）+ 通用与直连入口”；测试注释是插件替换前的旧期望。修法：测试期望改成 5，注释同步。87360b4 时 quality 全绿是因为那次提交只改了 `MODIFICATIONS.md`、各分片被跳过，不是测试不稳定。
+
+### 仍需用户真 Key 实测（没 Key 验证不了）
+
+- 拿一次真实生图任务的提交响应与每次轮询响应的原始 JSON 全文，逐字段对照上文（重点：`result_urls` / `result_url` 是否如公开客户端所写、`code` 字段是否出现、`is_final` 与 `state` 是否同步变化）。
+- `/v1/media/models` 与 `/v1/skills/models` 带 Key 后返回里是否含价格字段（决定宿主编辑器与插件面板的价格是否能真正显示出来，还是继续“价格待确认”）；登录后调 `GET /gongkai/moxingguangchang` 确认 `price_min` 是否返回及数值单位（算力点还是人民币）。
+- `images` 参考图是否被接受、接受 URL 还是 base64；`aspect_ratio` / `resolution` / `duration` 在 `params` 里的取值范围与默认值；另一轮询端点 `GET /v1/skills/task-status?task_id=` 与 `/v1/media/status` 的响应是否相同。
+- `/v1/skills/balance` 返回字段、充值/用量页准确 URL、音频 6 个模型 ID（同 v2.3.3 遗留）。
+
+### 验证
+
+- 生图映射回归测试 `backend/internal/protocol/myxsai_media_test.go`（新）：4 个测试全过（提交体 `params`、创建解析、7 组轮询响应、轮询 URL）；`backend/internal/modelcatalog` 价格透传测试 `TestParseChannelModelCatalogMyxsaiPricing` 通过；前端 `web/test/myxsai-model-pricing.test.ts`（新）3 个测试通过。
+- `bun run lint`、`bun run typecheck` 通过；`bun run build` 通过（仅已知的大 chunk 警告）。
+- 前端 4 个 CI 分片（`BEEFTV_TEST_SHARD=N/4`，本地重跑）：分片 1 通过（870 + 各隔离文件）；分片 2 通过（共享 954 + 各隔离文件，重跑前因新文件误用被禁路径名 `src/lib/model-pricing.ts` 挂 1 个，改名 `myxsai-model-pricing.ts` 后通过）；分片 3 通过（共享 839 + 各隔离文件，`canvas-archive-sqlite-restore` 3 个需 Go 在 PATH，补上后通过）；分片 4 除 1 个已证实 pre-existing 的失败外全过——`assistant-outputs.browser.test.ts:73` 下载文件名断言（期望 `成片2.mp4`、实际 `download`，2fba2a6 审计时已在基线 worktree 复现，与本次改动无关）。
+- 后端 CI `packages` 分片（除 `internal/app` 外全包，本地跑 23 分钟）：除 2 个已知环境失败外全过——`internal/outbound` 的 `TestManagedPublicHTTPSBlocksDNSRebindingAtDirectDial`（沙箱禁 UDP，假 DNS 服务器起不来；基线同 fail）、`internal/plugins` 的 symlink 权限测试（shell umask 0007 下失败，umask 0022 重跑后 `ok 525.967s`）；`internal/generation` 仅剩 2 个已知 UDP DNS 测试失败（基线同 fail）；`internal/modelcatalog`、`internal/protocol` 全过。`internal/operations` 4 个媒体测试（`TestMediaReview*` 2 个、`TestNativeMedia*` 2 个）在干净 1db6ca1 基线 worktree 上同样失败（`媒体处理失败或超时`，输出里未见编码器名），与本次改动无关（与下述 app 失败同属原生媒体族，疑似 1db6ca1 的 FFmpeg GPU 优先改动所致，待主线另查）；`internal/handler` 全包在本次并行重跑中触到 Go 默认 10 分钟超时（当时与 plugins 重跑及其它会话的测试抢 1.5 核；已单独重跑验证，见下行）。
+- 后端 `internal/app` 三个 CI 分片（本地）：分片 1 挂 2 个、分片 2 挂 3 个、分片 3 挂 1 个，6 个失败全部在干净 1db6ca1 基线 worktree 上复现、与本次改动无关——根因是 1db6ca1 的 FFmpeg GPU 优先改动在本机无 GPU 时调 `h264_nvenc` 失败（`ffmpeg 渲染失败：-22 (Invalid argument)`，`[vost#0:0/h264_nvenc …] Terminating thread`），未回落 CPU：分片 1 `TestCanvasTimelineDeliverReplaysAndBindsAfterRender`、`TestCanvasRenderAtomicAdmissionReplayAndNativeOutput`；分片 2 `TestReplacementNativePrepareFinishAndRecovery`、`TestReplacementNativeDisplayGeometryAndFractionalFPS`、`TestReplacementPrepareHonorsMinRefSecondsAxisBoundsAndCorruptLimits`；分片 3 `TestTimelineSubtitleOnlyUpdateAndRenderKeepSavedPortraitOutput`。以上 6 个加 operations 的 4 个共 10 个失败都已基线验证，建议主线另查 1db6ca1 的 GPU 回落逻辑（本机无 GPU 时应回落 CPU 编码而不是直接失败）；CI 的 Windows/macOS runner 有视频工具链，未必复现。
+- `internal/handler` 单独重跑（umask 0022）：600.436s 触到 Go 默认 10 分钟超时（累计超时，1.5 核跑不完；同 2fba2a6 审计的 app 包情况）；命名失败 3 个，全部在干净 1db6ca1 基线 worktree 上复现、与本次改动无关（原生媒体/宿主族）：`TestNativeHistoryRealDefaultHostCanvasScopeAndSDKDeterministicFailure`、`TestNativeHistoryRealDefaultHostRestartsAfterBudgetFailure`、`TestDefaultDurableHostDispatchesActualNativeMediaBytes`（各约 10 秒，均似在等原生媒体宿主响应）。
+- `node scripts/structure-budget.mjs` 通过；`node scripts/deadcode-budget.mjs` 通过（521 项，与基线持平）；`./scripts/audit-public-docs.sh` 通过（45 个文件）；`git diff --check` 通过；`gofmt` 干净。

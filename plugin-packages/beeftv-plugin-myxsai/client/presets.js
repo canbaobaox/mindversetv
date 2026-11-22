@@ -429,15 +429,62 @@ function normalizeTypedModelEntry(entry, type) {
   const displayName = typeof entry === "object" && entry && typeof entry.displayName === "string" && entry.displayName.trim()
     ? entry.displayName.trim()
     : id;
+  const price = extractMyxsaiPrice(entry);
   const profile = {
     model: id,
     displayName,
     capability,
+    ...(price ? { price } : {}),
     ...(TYPED_MODEL_PROTOCOL[type] ? { protocol: TYPED_MODEL_PROTOCOL[type] } : {}),
     ...(TYPED_MODEL_ENDPOINT[type] ? { endpoint: TYPED_MODEL_ENDPOINT[type] } : {}),
     ...(TYPED_MODEL_CAPABILITY_CONFIG[type] ? { capabilityConfig: structuredClone(TYPED_MODEL_CAPABILITY_CONFIG[type]) } : {}),
   };
   return profile;
+}
+
+// 梦由心生价格：字段名以模型广场公开接口 /gongkai/moxingguangchang 的实测
+// 返回为准（price_min / price_max / output_price_min / price_available /
+// billing_mode）。数值单位站方未说明，不加币种符号、不换算；接口没给价格
+// （price_available 为 false，或 price_min 不是数字）时返回 null，调用方
+// 显示“价格待确认”。/v1/media/models 是否带这些字段尚未用真 Key 验证过。
+export function extractMyxsaiPrice(entry) {
+  const source = entry && typeof entry === "object"
+    ? (entry.price && typeof entry.price === "object" ? entry.price : entry.pricing && typeof entry.pricing === "object" ? entry.pricing : entry)
+    : null;
+  if (!source) return null;
+  if (source.price_available === false) return null;
+  const priceMin = typeof source.price_min === "number" && Number.isFinite(source.price_min) && source.price_min >= 0 ? source.price_min : null;
+  if (priceMin === null) return null;
+  const priceMax = typeof source.price_max === "number" && Number.isFinite(source.price_max) && source.price_max >= 0 ? source.price_max : undefined;
+  const outputPriceMin = typeof source.output_price_min === "number" && Number.isFinite(source.output_price_min) && source.output_price_min >= 0 ? source.output_price_min : undefined;
+  const billingMode = typeof source.billing_mode === "string" && source.billing_mode.trim() ? source.billing_mode.trim() : undefined;
+  return {
+    priceMin,
+    ...(priceMax !== undefined ? { priceMax } : {}),
+    ...(outputPriceMin !== undefined ? { outputPriceMin } : {}),
+    ...(billingMode ? { billingMode } : {}),
+  };
+}
+
+function formatPriceNumber(value) {
+  return String(Number(value.toFixed(4)));
+}
+
+export function formatMyxsaiPrice(value) {
+  const price = value && typeof value === "object" && "priceMin" in value ? value : extractMyxsaiPrice(value);
+  if (!price) return null;
+  const amount = formatPriceNumber(price.priceMin);
+  switch (price.billingMode) {
+    case "按次":
+      return `${amount}/次`;
+    case "按秒":
+      return `${amount}/秒`;
+    case "按token":
+      if (price.outputPriceMin !== undefined) return `输入 ${amount}/百万 token，输出 ${formatPriceNumber(price.outputPriceMin)}/百万 token`;
+      return `${amount}/百万 token`;
+    default:
+      return amount;
+  }
 }
 
 function extractTypedModelList(data) {

@@ -5,6 +5,7 @@ import { isBeefTVEndpoint } from "@/lib/beeftv-video-contracts";
 import { beefTVImageContract } from "@/lib/beeftv-image-contracts";
 import { sanitizeVideoPriceQuote, seedancePortraitModel, type VideoPriceQuote } from "@/lib/seedance-portrait";
 import { sanitizeMediaCapabilities, type MediaCapabilities } from "@/lib/media-capabilities";
+import { sanitizeMyxsaiModelPrice, type MyxsaiModelPrice } from "@/lib/myxsai-model-pricing";
 
 export type ChannelModelCatalogOption = { value: string; label?: string };
 
@@ -31,6 +32,9 @@ export type ChannelModelCatalogItem = {
     videoCapabilities?: VideoCapabilityConfig;
     videoCapabilitiesVersion?: string;
     videoPricing?: VideoPriceQuote | null;
+    // 梦由心生价格（广场公开接口的 price_min 等字段原样透传）；接口没给时为 null，
+    // 调用方显示“价格待确认”。不做持久化，每次读目录时重新拉取。
+    pricing?: MyxsaiModelPrice | null;
     mediaCapabilities?: MediaCapabilities;
     mediaCapabilitiesVersion?: string;
 };
@@ -64,6 +68,9 @@ export function sanitizeChannelModelCatalogItem(value: unknown): ChannelModelCat
         id,
         displayName: stringValue(record.displayName),
         ...(record.videoPricing !== undefined || seedancePortraitModel(id) ? { videoPricing: sanitizeVideoPriceQuote(record.videoPricing) } : {}),
+        // pricing 可能是后端拼好的 pricing 对象，也可能是平铺在模型记录上的
+        // price_min / billing_mode 等字段（插件直接拉到的目录就这样）。
+        pricing: sanitizeMyxsaiModelPrice(record.pricing ?? record),
         modelType: ["text", "image", "video", "audio"].includes(modelType) ? (modelType as ChannelModelCatalogItem["modelType"]) : undefined,
         supportedEndpointTypes: stringArray(record.supportedEndpointTypes),
         ...(imageCapabilities && stringValue(record.imageCapabilitiesVersion) ? { imageCapabilities, imageCapabilitiesVersion: stringValue(record.imageCapabilitiesVersion) } : {}),
@@ -360,6 +367,7 @@ function compactCatalogItem(item: ChannelModelCatalogItem): ChannelModelCatalogI
         ...(item.maxImages !== undefined ? { maxImages: item.maxImages } : {}),
         ...(item.imageCapabilities ? { imageCapabilities: item.imageCapabilities, imageCapabilitiesVersion: item.imageCapabilitiesVersion } : {}),
         ...(item.videoCapabilities ? { videoCapabilities: item.videoCapabilities, videoCapabilitiesVersion: item.videoCapabilitiesVersion ?? "" } : {}),
+        ...(item.pricing ? { pricing: item.pricing } : {}),
         ...catalogMediaFields(item as Record<string, unknown>),
     };
 }

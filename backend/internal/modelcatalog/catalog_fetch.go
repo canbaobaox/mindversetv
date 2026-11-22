@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 
@@ -49,8 +50,16 @@ type catalogPayloadItem struct {
 	VideoCapabilities        json.RawMessage          `json:"video_capabilities"`
 	VideoCapabilitiesVersion string                   `json:"video_capabilities_version"`
 	VideoPricing             json.RawMessage          `json:"video_pricing"`
-	MediaCapabilities        json.RawMessage          `json:"media_capabilities"`
-	MediaCapabilitiesVersion string                   `json:"media_capabilities_version"`
+	// 梦由心生价格：字段名以模型广场公开接口 /gongkai/moxingguangchang 的实测
+	// 返回为准（price_min / price_max / output_price_min / price_available /
+	// billing_mode）。上游没给时保持空，前端显示“价格待确认”。
+	PriceMin                 *float64        `json:"price_min"`
+	PriceMax                 *float64        `json:"price_max"`
+	OutputPriceMin           *float64        `json:"output_price_min"`
+	PriceAvailable           *bool           `json:"price_available"`
+	BillingMode              string          `json:"billing_mode"`
+	MediaCapabilities        json.RawMessage `json:"media_capabilities"`
+	MediaCapabilitiesVersion string          `json:"media_capabilities_version"`
 }
 
 type catalogPayloadParameters struct {
@@ -171,6 +180,7 @@ func ParseChannelModelCatalog(data []byte, apiFormat string) ([]ChannelModelCata
 			ImageCapabilities: item.ImageCapabilities,
 			VideoCapabilities: item.VideoCapabilities,
 			VideoPricing:      item.VideoPricing,
+			Pricing:           catalogPricing(item),
 			MediaCapabilities: item.MediaCapabilities,
 		}
 		if version := strings.TrimSpace(item.ImageCapabilitiesVersion); version != "" || len(item.ImageCapabilities) > 0 {
@@ -191,6 +201,33 @@ func ParseChannelModelCatalog(data []byte, apiFormat string) ([]ChannelModelCata
 		return catalog[left].ID < catalog[right].ID
 	})
 	return catalog, nil
+}
+
+// catalogPricing 把上游模型条目里平铺的梦由心生价格字段拼成 pricing 对象。
+// 字段名以模型广场公开接口为准；没给价格（price_min 缺失/非法，或
+// price_available 明确为 false）时返回 nil，前端显示“价格待确认”。
+func catalogPricing(item catalogPayloadItem) json.RawMessage {
+	if item.PriceMin == nil || math.IsNaN(*item.PriceMin) || math.IsInf(*item.PriceMin, 0) || *item.PriceMin < 0 {
+		return nil
+	}
+	if item.PriceAvailable != nil && !*item.PriceAvailable {
+		return nil
+	}
+	pricing := map[string]any{"price_min": *item.PriceMin}
+	if item.PriceMax != nil && !math.IsNaN(*item.PriceMax) && !math.IsInf(*item.PriceMax, 0) && *item.PriceMax >= 0 {
+		pricing["price_max"] = *item.PriceMax
+	}
+	if item.OutputPriceMin != nil && !math.IsNaN(*item.OutputPriceMin) && !math.IsInf(*item.OutputPriceMin, 0) && *item.OutputPriceMin >= 0 {
+		pricing["output_price_min"] = *item.OutputPriceMin
+	}
+	if mode := strings.TrimSpace(item.BillingMode); mode != "" {
+		pricing["billing_mode"] = mode
+	}
+	raw, err := json.Marshal(pricing)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func CatalogModelIDs(items []ChannelModelCatalogItem) []string {

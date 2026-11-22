@@ -12,6 +12,7 @@ import {
   MYXSAI_PRESET_MODELS,
   buildMyxsaiModelChannel,
   fetchMyxsaiModelsByType,
+  formatMyxsaiPrice,
   upgradeMyxsaiModelProfile,
 } from "./presets.js";
 
@@ -143,12 +144,26 @@ function createMyxsaiSettingsPanel(host) {
 
     const allModels = React.useMemo(() => {
       const staticIds = new Set(MYXSAI_PRESET_MODELS.map((item) => item.model));
-      return [...MYXSAI_PRESET_MODELS, ...fetchedProfiles.filter((item) => !staticIds.has(item.model))];
+      const fetchedById = new Map(fetchedProfiles.map((item) => [item.model, item]));
+      return [
+        // 静态预置模型本身不带价格；在线拉取到的同名模型若带价格，把价格并进来。
+        ...MYXSAI_PRESET_MODELS.map((item) => {
+          const fetched = fetchedById.get(item.model);
+          return fetched?.price ? { ...item, price: fetched.price } : item;
+        }),
+        ...fetchedProfiles.filter((item) => !staticIds.has(item.model)),
+      ];
     }, [fetchedProfiles]);
 
     const visibleModels = filter === "all"
       ? allModels
       : allModels.filter((item) => item.capability === filter);
+
+    // 全选只针对当前页签下可见的模型，不无视页签全选全部模型。
+    const visibleIds = visibleModels.map((item) => item.model);
+    const allVisibleSelected =
+      visibleIds.length > 0 &&
+      visibleIds.every((id) => selectedModels.includes(id));
 
     const toggleModel = (modelId) => {
       setSelectedModels((prev) =>
@@ -500,10 +515,10 @@ function createMyxsaiSettingsPanel(host) {
             {
               type: "button",
               onClick: () =>
-                setSelectedModels(
-                  selectedModels.length === allModels.length
-                    ? []
-                    : allModels.map((item) => item.model),
+                setSelectedModels((prev) =>
+                  allVisibleSelected
+                    ? prev.filter((id) => !visibleIds.includes(id))
+                    : [...new Set([...prev, ...visibleIds])],
                 ),
               style: {
                 border: "none",
@@ -513,7 +528,9 @@ function createMyxsaiSettingsPanel(host) {
                 cursor: "pointer",
               },
             },
-            selectedModels.length === allModels.length ? "取消全选" : "全选模型",
+            allVisibleSelected
+              ? "取消全选"
+              : `全选模型（${visibleIds.length} 个）`,
           ),
         ),
         h(
@@ -600,6 +617,11 @@ function createMyxsaiSettingsPanel(host) {
                     },
                   },
                   `${item.model} · ${item.endpoint || item.protocol || ""}`,
+                ),
+                h(
+                  "div",
+                  { style: { fontSize: "11px", marginTop: "2px" } },
+                  formatMyxsaiPrice(item.price) ?? "价格待确认",
                 ),
                 isFetched
                   ? h(

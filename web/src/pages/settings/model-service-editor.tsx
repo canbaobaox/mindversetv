@@ -14,6 +14,7 @@ import { normalizeChannelBaseUrl } from "@/lib/channel-url";
 import { builtinProtocolsAvailable, getBuiltinPresetsVersion, livePartnerSyncIssues, markPartnersNoticed, subscribeBuiltinPresets } from "@/lib/builtin-service-presets";
 import { CAPABILITY_LABELS, MODEL_SERVICE_PRESETS, createPluginServiceChannel, createServicePresetChannel, createVendorPresetChannel, isBuiltinPresetService, isTopazUpscaleChannel, partnerServicePresets, pluginServices, presetCatalogFor, presetKeysUrl, presetModelCount, presetPluginId, presetPromoText, builtinPresetDescription, builtinPresetIntro, serviceConnectionError, serviceModelProfile, servicePresetFor, standardServicePresets, vendorPresetFor, vendorPresets, type ModelServicePresetId, type VendorPreset } from "@/lib/model-service-presets";
 import { capabilityForAssignedProtocol, hasUserModelCapability } from "@/lib/model-capabilities";
+import { formatMyxsaiModelPrice } from "@/lib/myxsai-model-pricing";
 import { serviceCredentialGuide } from "@/lib/service-credentials";
 import type { ModelProtocolDefinition } from "@/lib/model-protocols";
 import { seedancePortraitLabel } from "@/lib/seedance-portrait";
@@ -384,6 +385,26 @@ export function ModelServiceEditor({ initial, onClose, onSave }: { initial?: Mod
         const profile = serviceModelProfile(draft, item, protocols);
         return `${item.id} ${seedancePortraitLabel(item.id) || item.displayName || ""}`.toLowerCase().includes(query.toLowerCase()) && (filter === "all" || profile.capability === filter);
     });
+    const visibleIds = visibleModels.map((item) => item.id);
+    const selectedVisibleCount = visibleIds.filter((id) => draft.models.includes(id)).length;
+    const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+    // 全选只针对当前页签 + 搜索筛选出的可见模型，不无视筛选全选整个目录；
+    // 取消全选也只移除可见的，已选的其它页签模型不受影响。
+    const toggleSelectAllVisible = () => {
+        if (visibleIds.length === 0) return;
+        if (allVisibleSelected) {
+            const visibleSet = new Set(visibleIds);
+            setDraft((current) => ({ ...current, models: current.models.filter((id) => !visibleSet.has(id)), modelProfiles: (current.modelProfiles || []).filter((p) => !visibleSet.has(p.model)) }));
+        } else {
+            const nextProfiles = visibleModels.map((item) => withSiblingProtocol(draft, serviceModelProfile(draft, item, protocols)));
+            setDraft((current) => ({ ...current, models: [...new Set([...current.models, ...visibleIds])], modelProfiles: [...(current.modelProfiles || []).filter((p) => !visibleIds.includes(p.model)), ...nextProfiles] }));
+            if (nextProfiles.some((profile) => !profile.protocol)) {
+                setNotice("请在高级模型设置中，按服务商文档选择接口格式。视频接口的地址和格式可能不同。");
+                setEditingCapabilities(true);
+            }
+        }
+        setError("");
+    };
     if (isTopazUpscaleChannel(draft)) return <AppModal open centered width={520} title="fal · Topaz 专用超分" footer={null} closable={!saving} keyboard={!saving} mask={{ closable: false }} onCancel={onClose}>
         <Form layout="vertical" requiredMark={false} disabled={saving} className="pt-2" onFinish={() => void save()}>
             <p className="mb-4 text-sm text-foreground/65">从图片或视频节点上方的「AI超分」使用。</p>
@@ -517,14 +538,14 @@ export function ModelServiceEditor({ initial, onClose, onSave }: { initial?: Mod
             </div> : <div className="model-service-models">
                 <div className="model-service-catalog-header"><div><h3>选择你要使用的模型</h3><p>{draft.name || "我的模型服务"} · {catalogRead ? "目录已读取" : "支持手动添加模型"}</p></div><Button icon={<Search size={14} />} loading={busy} disabled={protocolLoading} onClick={() => void fetchModels()}>读取模型</Button></div>
                 <Input aria-label="搜索模型" prefix={<Search size={16} />} placeholder="搜索模型名称" value={query} onChange={(event) => setQuery(event.target.value)} allowClear />
-                <div className="model-service-filter"><Segmented value={filter} onChange={(value) => setFilter(String(value))} options={[{ label: "全部", value: "all" }, ...Object.entries(CAPABILITY_LABELS).map(([value, label]) => ({ value, label }))]} /><span>已选 {draft.models.length} 个</span></div>
+                <div className="model-service-filter"><Segmented value={filter} onChange={(value) => setFilter(String(value))} options={[{ label: "全部", value: "all" }, ...Object.entries(CAPABILITY_LABELS).map(([value, label]) => ({ value, label }))]} /><span>已选 {draft.models.length} 个</span><Button type="text" size="small" disabled={busy || visibleModels.length === 0} onClick={toggleSelectAllVisible}>{allVisibleSelected ? "取消全选" : `全选（${visibleModels.length} 个）`}</Button></div>
                 <div className="model-service-catalog">
                     {protocolLoading ? <Spin /> : visibleModels.length ? visibleModels.map((item) => {
                         const profile = serviceModelProfile(draft, item, protocols);
                         const receipt = currentModelConnectionReceipt(receipts, draft, item.id);
                         const displayName = seedancePortraitLabel(item.id) || item.displayName || item.id;
                         const isManualItem = !sourceCatalogIds.has(item.id);
-                        return <label key={item.id} className="model-service-model"><Checkbox disabled={busy} checked={draft.models.includes(item.id)} onChange={(event) => toggleModel(item.id, event.target.checked)} /><span><strong>{displayName}</strong>{displayName !== item.id && <small>{item.id}</small>}</span><span className="model-service-kind-wrap" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}><Select aria-label={`${displayName} 模型类型`} className="model-service-kind" size="small" variant="borderless" popupMatchSelectWidth={false} classNames={{ popup: { root: "model-service-type-select-popup" } }} disabled={busy} value={profile.capability} options={Object.entries(CAPABILITY_LABELS).map(([value, label]) => ({ value, label }))} onChange={(nextCapability) => changeModelCapability(item.id, nextCapability)} /></span><small title={receipt?.detail}>{receipt ? receipt.success ? "测试通过" : "测试失败" : "未测试"}</small>{isManualItem && <span className="model-service-row-actions" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}><button type="button" className="model-service-icon-btn" aria-label={`修改模型 ${item.id}`} title="修改模型 ID" disabled={busy} onClick={() => startEditManual(item.id)}><Pencil size={13} /></button><button type="button" className="model-service-icon-btn is-danger" aria-label={`删除模型 ${item.id}`} title="删除模型" disabled={busy} onClick={() => removeManualModel(item.id)}><Trash2 size={13} /></button></span>}</label>;
+                        return <label key={item.id} className="model-service-model"><Checkbox disabled={busy} checked={draft.models.includes(item.id)} onChange={(event) => toggleModel(item.id, event.target.checked)} /><span><strong>{displayName}</strong>{displayName !== item.id && <small>{item.id}</small>}</span><span className="model-service-kind-wrap" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}><Select aria-label={`${displayName} 模型类型`} className="model-service-kind" size="small" variant="borderless" popupMatchSelectWidth={false} classNames={{ popup: { root: "model-service-type-select-popup" } }} disabled={busy} value={profile.capability} options={Object.entries(CAPABILITY_LABELS).map(([value, label]) => ({ value, label }))} onChange={(nextCapability) => changeModelCapability(item.id, nextCapability)} /></span><small title={receipt?.detail}>{receipt ? receipt.success ? "测试通过" : "测试失败" : "未测试"}</small><small>{formatMyxsaiModelPrice(item.pricing) ?? "价格待确认"}</small>{isManualItem && <span className="model-service-row-actions" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}><button type="button" className="model-service-icon-btn" aria-label={`修改模型 ${item.id}`} title="修改模型 ID" disabled={busy} onClick={() => startEditManual(item.id)}><Pencil size={13} /></button><button type="button" className="model-service-icon-btn is-danger" aria-label={`删除模型 ${item.id}`} title="删除模型" disabled={busy} onClick={() => removeManualModel(item.id)}><Trash2 size={13} /></button></span>}</label>;
                     }) : <div className="model-service-empty"><Search size={23} /><strong>{query ? "没有找到匹配的模型" : "添加你的第一个模型"}</strong><p>{query ? "换个关键词，或在下方手动添加。" : "读取服务商的模型目录，或填写准确的模型 ID。"}</p></div>}
                 </div>
                 <div className={`model-service-manual${editingManualId !== null ? " is-editing" : ""}`}><Input aria-label="模型 ID" placeholder={editingManualId !== null ? "修改模型 ID" : "手动输入模型 ID"} value={manualName} disabled={busy} onChange={(event) => setManualName(event.target.value)} onPressEnter={submitManual} /><Select aria-label="模型类型" placeholder="选择类型" value={manualCapability} disabled={busy} popupMatchSelectWidth={false} classNames={{ popup: { root: "model-service-type-select-popup" } }} onChange={setManualCapability} options={Object.entries(CAPABILITY_LABELS).map(([value, label]) => ({ value, label }))} /><Button type={editingManualId !== null ? "primary" : "default"} disabled={busy || protocolLoading || !manualName.trim()} onClick={submitManual}>{editingManualId !== null ? "保存修改" : "添加"}</Button>{editingManualId !== null && <Button disabled={busy} onClick={cancelEditManual}>取消</Button>}</div>

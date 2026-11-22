@@ -104,9 +104,10 @@ test("vendor shortcuts are discoverable and async address details do not shift t
         for (const viewport of [{ width: 1000, height: 560 }, { width: 390, height: 650 }, { width: 1120, height: 900 }]) {
             await page.setViewportSize(viewport);
             const primary = sidebar.locator(".model-service-provider");
-            // MindVerseTV 服务商列表只有 4 项（第三方模型服务、OpenAI、Google Gemini、
-            // 火山方舟）；上游的合作伙伴预设（ll2、银盛等）已剔除，不再占行。
-            expect(await primary.count()).toBe(4);
+            // MindVerseTV 服务商列表有 5 项：梦由心生（自家渠道，置顶）、
+            // 第三方模型服务、OpenAI、Google Gemini、火山方舟；上游的合作
+            // 伙伴预设（ll2、银盛等）已剔除，不再占行。
+            expect(await primary.count()).toBe(5);
             const clippedRows = await primary.evaluateAll((rows) => {
                 const body = rows[0].closest(".model-service-body")!.getBoundingClientRect();
                 return rows.filter((row) => {

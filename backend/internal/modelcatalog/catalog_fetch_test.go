@@ -2,6 +2,7 @@ package modelcatalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -22,6 +23,41 @@ func TestParseChannelModelCatalogOpenAIAndGemini(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != "gemini-pro" {
 		t.Fatalf("gemini catalog = %#v", items)
+	}
+}
+
+// 梦由心生价格透传：上游条目平铺的广场价格字段（price_min 等）拼进 pricing；
+// 没给价格（price_available 为 false，或根本没字段）时 pricing 为空，
+// 前端显示“价格待确认”，不编造价格。
+func TestParseChannelModelCatalogMyxsaiPricing(t *testing.T) {
+	body := []byte(`{"data":[
+		{"id":"doubao-seedream-5-5-261028","model_type":"image","price_min":0.05,"price_max":0.1,"output_price_min":0.2,"price_available":true,"billing_mode":"按次"},
+		{"id":"no-price-model","model_type":"image","price_available":false,"billing_mode":""},
+		{"id":"plain-model","model_type":"text"}
+	]}`)
+	items, err := ParseChannelModelCatalog(body, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("catalog = %#v", items)
+	}
+	priced := items[0]
+	if len(priced.Pricing) == 0 {
+		t.Fatalf("priced model has no pricing: %#v", priced)
+	}
+	var pricing map[string]any
+	if err := json.Unmarshal(priced.Pricing, &pricing); err != nil {
+		t.Fatal(err)
+	}
+	if pricing["price_min"] != 0.05 || pricing["price_max"] != 0.1 || pricing["output_price_min"] != 0.2 || pricing["billing_mode"] != "按次" {
+		t.Fatalf("pricing = %#v", pricing)
+	}
+	if len(items[1].Pricing) != 0 {
+		t.Fatalf("price_available=false must not produce pricing: %#v", items[1])
+	}
+	if len(items[2].Pricing) != 0 {
+		t.Fatalf("model without price fields must not produce pricing: %#v", items[2])
 	}
 }
 

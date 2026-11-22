@@ -34,41 +34,54 @@
           ],
           "create": {
             "body": {
-              "aspect_ratio": {
-                "$omitEmpty": {
-                  "$ref": "request.aspectRatio"
-                }
-              },
-              "duration": {
-                "$omitEmpty": {
-                  "$ref": "request.duration"
-                }
-              },
-              "images": {
-                "$omitEmpty": {
-                  "$map": {
-                    "as": "media",
-                    "from": {
-                      "$sortByOrder": {
-                        "$ref": "request.images"
-                      }
-                    },
-                    "in": {
-                      "$ref": "media.value"
-                    }
-                  }
-                }
-              },
               "model": {
                 "$ref": "request.model"
               },
+              "params": {
+                "aspect_ratio": {
+                  "$omitEmpty": {
+                    "$ref": "request.aspectRatio"
+                  }
+                },
+                "duration": {
+                  "$if": {
+                    "condition": {
+                      "$gt": [
+                        {
+                          "$ref": "request.duration"
+                        },
+                        0
+                      ]
+                    },
+                    "else": null,
+                    "then": {
+                      "$ref": "request.duration"
+                    }
+                  }
+                },
+                "images": {
+                  "$omitEmpty": {
+                    "$map": {
+                      "as": "media",
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "in": {
+                        "$ref": "media.value"
+                      }
+                    }
+                  }
+                },
+                "resolution": {
+                  "$omitEmpty": {
+                    "$ref": "request.resolution"
+                  }
+                }
+              },
               "prompt": {
                 "$ref": "request.prompt"
-              },
-              "resolution": {
-                "$omitEmpty": {
-                  "$ref": "request.resolution"
-                }
               }
             },
             "contentType": "application/json",
@@ -143,6 +156,18 @@
             "images": {
               "$coalesce": [
                 {
+                  "$ref": "response.result_urls"
+                },
+                {
+                  "$ref": "response.result_url"
+                },
+                {
+                  "$ref": "response.data.result_urls"
+                },
+                {
+                  "$ref": "response.data.result_url"
+                },
+                {
                   "$ref": "response.data.image_url"
                 },
                 {
@@ -174,10 +199,16 @@
                   "$ref": "response.error.message"
                 },
                 {
+                  "$ref": "response.data.error"
+                },
+                {
                   "$ref": "response.error_code"
                 },
                 {
                   "$ref": "response.message"
+                },
+                {
+                  "$ref": "response.data.message"
                 },
                 {
                   "$ref": "response.data.fail_reason"
@@ -186,16 +217,44 @@
             },
             "resultEphemeral": true,
             "status": {
-              "$coalesce": [
-                {
-                  "$ref": "response.state"
+              "$if": {
+                "condition": {
+                  "$coalesce": [
+                    {
+                      "$ref": "response.is_final"
+                    },
+                    {
+                      "$ref": "response.data.is_final"
+                    },
+                    true
+                  ]
                 },
-                {
-                  "$ref": "response.status"
-                },
-                "pending"
-              ]
+                "else": "processing",
+                "then": {
+                  "$coalesce": [
+                    {
+                      "$ref": "response.state"
+                    },
+                    {
+                      "$ref": "response.data.state"
+                    },
+                    {
+                      "$ref": "response.status"
+                    },
+                    {
+                      "$ref": "response.data.status"
+                    },
+                    "pending"
+                  ]
+                }
+              }
             },
+            "successCodes": [
+              0,
+              200,
+              "0",
+              "200"
+            ],
             "taskId": {
               "$coalesce": [
                 {
@@ -218,6 +277,9 @@
             "usage": {
               "$coalesce": [
                 {
+                  "$ref": "response.cost"
+                },
+                {
                   "$ref": "response.data.usage"
                 },
                 {
@@ -227,6 +289,18 @@
             },
             "videos": {
               "$coalesce": [
+                {
+                  "$ref": "response.result_urls"
+                },
+                {
+                  "$ref": "response.result_url"
+                },
+                {
+                  "$ref": "response.data.result_urls"
+                },
+                {
+                  "$ref": "response.data.result_url"
+                },
                 {
                   "$ref": "response.data.video_url"
                 },

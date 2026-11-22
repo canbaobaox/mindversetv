@@ -21,14 +21,21 @@
 {
   "model": { "$ref": "request.model" },
   "prompt": { "$ref": "request.prompt" },
-  "images": { "$omitEmpty": { "$map": "request.images -> media.value" } },
-  "aspect_ratio": { "$omitEmpty": "request.aspectRatio" },
-  "resolution": { "$omitEmpty": "request.resolution" },
-  "duration": { "$omitEmpty": "request.duration" }
+  "params": {
+    "images": { "$omitEmpty": { "$map": "request.images -> media.value" } },
+    "aspect_ratio": { "$omitEmpty": "request.aspectRatio" },
+    "resolution": { "$omitEmpty": "request.resolution" },
+    "duration": { "$if": "request.duration > 0 才发送" }
+  }
 }
 ```
 
-提交成功返回 `{ data: { task_id } }`（已确认）。`aspect_ratio` / `resolution` / `duration` / `images` 为空时不发送。
+提交成功返回 `{ data: { task_id } }`（已确认）。可选参数必须包在 `params` 里——
+站方两个公开客户端（lingkeai/ComfyUI-LingKe `lingke_client.py`、
+wenyinos/ai-image-generator `lib/utils.js`）提交体都是
+`{model, prompt, params}`，`aspect_ratio` / `images` 是 `params` 的成员；
+之前平铺在顶层的写法会被站方忽略（画幅、时长、参考图不生效）。
+`duration` 为 0 时不发（`$omitEmpty` 对数字 0 不生效，改用 `$if` + `$gt` 守卫）。
 
 ### 轮询（poll）
 
@@ -37,19 +44,28 @@
 而 `query` 字段的模板字符串会被原样发送），所以 task_id 必须写在 path 的查询串里，
 不能写进 `query` 字段。
 
-轮询返回 `{ is_final, state, error, error_code }`（已确认字段名，未确认 `state` 取值）。
-`response.status` 取 `$coalesce[response.state, response.status, "pending"]`，再经
-`normalizeStatus`（`backend/internal/protocol/builtin_helpers.go:192-210`）归一化：
-`succeeded/success/completed/done -> succeeded`，`failed/error/expired -> failed`，
-未知取值 -> pending。`is_final` 没有对应的 ManifestResponse 字段，本插件未消费它。
+轮询返回顶层 `{ is_final, state, error, error_code }`（公开客户端证实）。
+`response.status` 用 `$if` 以 `is_final` 为准：`is_final` 为 false 时一律
+`processing`（`state` 单独不可信——另一客户端明确把 `state=success` 但
+`is_final≠true` 的情况降级为进行中）；`is_final` 为 true（或字段缺失时
+沿用旧行为）才读 `state`，再经 `normalizeStatus`
+（`backend/internal/protocol/builtin_helpers.go:192-210`）归一化。
+`state` 已证实的取值：`success` / `succeeded`（成功）、`failed`（失败）、
+`running` / `pending`（进行中）。另有 `successCodes: [0, 200, "0", "200"]`：
+站方用 HTTP 200 + `code` 字段表示业务状态，`code=200` 是成功码，不能当成
+错误（否则每次轮询都会被 `manifestError` 误判失败）。
 
-### 结果地址（未验证，按最可能字段映射）
+### 结果地址（已按公开客户端对齐，仍需真 Key 实测收尾）
 
-`images` / `videos` 均按以下顺序 `$coalesce` 提取：
+成功结果地址在**顶层**：`result_urls`（数组，优先）或 `result_url`（单个）。
+`images` / `videos` 按以下顺序 `$coalesce` 提取：`response.result_urls` →
+`response.result_url` → `response.data.result_urls` → `response.data.result_url` →
 `response.data.image_url`（或 `video_url`）→ `response.image_url`（或 `video_url`）→
-`response.data.content.image_url`（或 `video_url`）→ `response.data.url` → `response.url` →
-`response.data.images`（或 `videos`）→ `response.images`（或 `videos`）。
-成功结果地址的真实字段名没有真 Key 验证过，需实测后收紧。
+`response.data.content.image_url`（或 `video_url`）→ `response.data.url` →
+`response.url` → `response.data.images`（或 `videos`）→ `response.images`（或 `videos`）。
+旧映射漏掉了 `result_url` / `result_urls`，任务成功后也取不到地址，是
+2026-11-22 用户真机生图失败（`result_unrecoverable`）的直接原因。轮询终态
+的 `cost` 字段读进 `usage`（扣费确认只能从终态响应里取）。
 
 ### 轮询间隔
 
@@ -84,9 +100,12 @@
 
 ## 需真 Key 实测清单
 
-1. 成功结果地址字段名（`response.data` 里到底是 `image_url` / `video_url` / `url` / `content.*` 还是数组）。
-2. 轮询 `state` 的实际取值（如 `succeeded` / `completed` / `processing` / `failed` 之外的值），以及 `is_final=true` 时是否一定代表成功。
-3. `images` 参考图是否被接受、接受 URL 还是 base64、字段名是不是 `images`。
-4. `GET /v1/media/models?type=...` 是否存在、返回体形状、音频类型是否返回模型。
-5. `aspect_ratio` / `resolution` / `duration` 是否被接受、取值范围与默认值。
-6. 实际轮询间隔是否为 5 秒；取消接口是否存在（本插件未声明 cancel，未编造）。
+1. 拿一次真实生图任务的提交响应与每次轮询响应的原始 JSON 全文，逐字段对照
+   上文（重点：`result_urls` / `result_url` 是否如公开客户端所写、`code`
+   字段是否出现、`is_final` 与 `state` 是否同步变化）。
+2. `images` 参考图是否被接受、接受 URL 还是 base64、字段名是不是 `images`。
+3. `GET /v1/media/models?type=...` 是否存在、返回体形状、音频类型是否返回模型。
+4. `aspect_ratio` / `resolution` / `duration` 在 `params` 里的取值范围与默认值。
+5. 实际轮询间隔是否为 5 秒；取消接口是否存在（本插件未声明 cancel，未编造）。
+6. 另一轮询端点 `GET /v1/skills/task-status?task_id=` 与 `/v1/media/status`
+   的响应是否相同（公开客户端两边都在用；本插件用前者）。
