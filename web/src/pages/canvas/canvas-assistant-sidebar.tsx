@@ -19,6 +19,7 @@ import { CanvasAssistantComposer } from "./canvas-assistant-composer";
 import { CanvasAssistantReply, CanvasAssistantTurnView, CanvasAssistantUserMessage } from "./canvas-assistant-turn";
 import { AssistantReasoning } from "@/components/ai/message-reasoning";
 import { usePluginSlot } from "@/lib/plugins/slot-registry";
+import { getSidebarSidePanelEntries } from "@/lib/plugins/plugin-side-panels";
 import { ASSISTANT_LIVE_TURN_KEY, ASSISTANT_MAX_WIDTH, ASSISTANT_MIN_WIDTH, type CanvasAssistantController } from "./use-canvas-assistant";
 import { isAssistantProviderUnreadyReason } from "./canvas-assistant-recovery";
 import "./canvas-assistant-sidebar.css";
@@ -223,7 +224,9 @@ export function CanvasAssistantSidebar(props: Props) {
           })
         : [{ key: "empty", label: "还没有别的对话", disabled: true }];
 
-    const sidePanelEntries = usePluginSlot("canvas.sidePanel");
+    // dockButton 的面板走画布底部 Dock 开关 + 浮动面板，不进这里的页签，
+    // 否则同一块板子在侧栏和浮动面板里同时挂载、抢同一份保存。
+    const sidePanelEntries = getSidebarSidePanelEntries(usePluginSlot("canvas.sidePanel"));
     const [activeSidePanelId, setActiveSidePanelId] = useState<string>("assistant");
     const activePluginPanel = sidePanelEntries.find((entry) => entry.payload.id === activeSidePanelId);
     const ActivePluginPanelComp = activePluginPanel?.payload.component;

@@ -26,6 +26,7 @@ import {
     onPluginEvent,
 } from "../src/lib/plugins/plugin-events";
 import { createBeefTVPluginHost } from "../src/lib/plugins/plugin-host-runtime";
+import { getDockSidePanelEntries, getSidebarSidePanelEntries } from "../src/lib/plugins/plugin-side-panels";
 import {
     clearAllPluginContributions,
     contributeSlot,
@@ -312,6 +313,40 @@ describe("plugin host slots, events, and lifecycle", () => {
         expect(getPluginSlotEntries("canvas.contextMenu").some((e) => e.pluginId === pluginId)).toBe(false);
         expect(getPluginSlotEntries("project.view").some((e) => e.pluginId === pluginId)).toBe(false);
         expect(getPluginSlotEntries("pluginCenter.section").some((e) => e.pluginId === pluginId)).toBe(false);
+    });
+
+    test("dockButton 的画布侧栏只进画布 Dock，不进助手侧栏", () => {
+        const pluginId = "dock-panel-probe-plugin";
+        usePluginStore.getState().ensurePlugin({
+            id: pluginId,
+            name: "Dock 面板测试插件",
+            version: "1.0.0",
+            description: "测试 dockButton 侧栏",
+            permissions: [],
+            contributes: {},
+        });
+        usePluginStore.getState().setEnabled(pluginId, true);
+
+        const host = createBeefTVPluginHost(pluginId);
+        host.contribute("canvas.sidePanel", {
+            id: "probe-dock-panel",
+            title: "测试面板",
+            dockButton: true,
+            component: DummyComponent,
+        });
+        host.contribute("canvas.sidePanel", {
+            id: "probe-sidebar-panel",
+            title: "侧栏面板",
+            component: DummyComponent,
+        });
+
+        const entries = getPluginSlotEntries("canvas.sidePanel").filter((entry) => entry.pluginId === pluginId);
+        expect(entries).toHaveLength(2);
+        expect(getDockSidePanelEntries(entries).map((entry) => entry.payload.id)).toEqual(["probe-dock-panel"]);
+        expect(getSidebarSidePanelEntries(entries).map((entry) => entry.payload.id)).toEqual(["probe-sidebar-panel"]);
+
+        usePluginStore.getState().setEnabled(pluginId, false);
+        expect(getPluginSlotEntries("canvas.sidePanel").some((entry) => entry.pluginId === pluginId)).toBe(false);
     });
 
     test("runGenerationBeforeSubmitHooks transforms payload and records plugin attribution", async () => {

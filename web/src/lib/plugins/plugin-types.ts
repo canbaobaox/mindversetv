@@ -453,6 +453,12 @@ export type PluginCanvasSidePanelContribution = {
     title: string;
     icon?: ReactNode;
     order?: number;
+    /**
+     * 画布 Dock 开关：为 true 时宿主不在创作助手侧栏里给它开页签，
+     * 而是在画布底部 Dock 上放一个同名开关按钮，点开在画布内浮出面板、再点隐藏。
+     * 用于提示词连线板这类需要在画布边上边看边用的面板。
+     */
+    dockButton?: boolean;
     component: ComponentType<PluginCanvasSidePanelProps>;
 };
 

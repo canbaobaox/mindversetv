@@ -1,6 +1,7 @@
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 
 import { CanvasActiveTaskPanel } from "@/components/canvas/canvas-active-task-panel";
+import { CanvasDockPanel } from "@/components/canvas/canvas-dock-panel";
 import { CanvasFileDropOverlay } from "@/components/canvas/canvas-file-drop-overlay";
 import { CanvasFocusModeBar } from "@/components/canvas/canvas-focus-mode-bar";
 import { CanvasLeaferGraphicsLayer } from "@/components/canvas/canvas-leafer-graphics-layer";
@@ -14,6 +15,8 @@ import type { Asset } from "@/stores/use-asset-store";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasWorkspaceMode } from "@/types/canvas";
+import { getDockSidePanelEntries } from "@/lib/plugins/plugin-side-panels";
+import { usePluginSlot } from "@/lib/plugins/slot-registry";
 import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { CanvasProjectStageOverlays } from "./canvas-project-overlays";
 import { CanvasProjectWorldLayers } from "./canvas-project-world-layers";
@@ -96,6 +99,11 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         actions,
     } = props;
     const { containerRef, viewport } = viewportState;
+    // 画布 Dock 上的插件面板开关（dockButton 的 canvas.sidePanel 贡献，如提示词连线板）：
+    // 点 Dock 按钮在画布内浮出面板，再点隐藏；面板内容就是插件的侧栏组件。
+    const dockPanelEntries = getDockSidePanelEntries(usePluginSlot("canvas.sidePanel"));
+    const [activeDockPanelId, setActiveDockPanelId] = useState<string | null>(null);
+    const activeDockPanel = dockPanelEntries.find((entry) => entry.payload.id === activeDockPanelId) ?? null;
     const { fitCanvasContent, handleCanvasDoubleClick, handleViewportChange, handleViewportPreviewChange, screenToCanvas, zoomCanvasIn, zoomCanvasOut } = viewportController;
     const { nodes } = document;
     const selectedNodeIds = pageUi((state) => state.selectedNodeIds);
@@ -465,6 +473,19 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                             onOpenProjectCharacters={() => timelineAssetInsert.openProjectAssets("character")}
                             onOpenGenerationHistory={() => setGenerationHistoryOpen(true)}
                             shortcutRequestNonce={shortcutRequestNonce}
+                            dockPanels={dockPanelEntries.map((entry) => ({ id: entry.payload.id, title: entry.payload.title, icon: entry.payload.icon }))}
+                            activeDockPanelId={activeDockPanelId}
+                            onToggleDockPanel={(id) => setActiveDockPanelId((current) => (current === id ? null : id))}
+                        />
+                    ) : null}
+                    {activeDockPanel ? (
+                        <CanvasDockPanel
+                            title={activeDockPanel.payload.title}
+                            onClose={() => setActiveDockPanelId(null)}
+                            component={activeDockPanel.payload.component}
+                            projectId={projectId}
+                            canvasId={projectId}
+                            selectedNodeIds={[...selectedNodeIds]}
                         />
                     ) : null}
                 </div>

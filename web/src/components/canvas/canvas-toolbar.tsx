@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { Hand, MousePointer2, ScanFace } from "lucide-react";
+import { Blocks, Hand, MousePointer2, ScanFace } from "lucide-react";
 
 import { FloatingDock, type FloatingDockCommand } from "@/components/ui/aceternity/floating-dock";
 import { SpotlightSurface } from "@/components/ui/aceternity/spotlight-surface";
@@ -18,6 +18,30 @@ import { canvasThemes, type CanvasBackgroundMode, type CanvasTheme } from "@/lib
 import { defaultToolbarPrefs, readToolbarPrefs, resolveToolbarEntries, type ToolContext, type ToolbarHandlers, type ToolbarPrefs } from "@/lib/canvas/tool-registry";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import type { CanvasNodeTypeId, CanvasToolMode, CanvasWorkspaceMode } from "@/types/canvas";
+
+/** 画布 Dock 上的插件面板开关：由插件的 canvas.sidePanel（dockButton）贡献而来。 */
+export type CanvasDockPanelEntry = {
+    id: string;
+    title: string;
+    icon?: ReactNode;
+};
+
+/** 画布 Dock 上的插件面板开关按钮：点开在画布内浮出面板，再点隐藏。 */
+export function createDockPanelCommand(
+    panel: CanvasDockPanelEntry,
+    active: boolean,
+    onToggle: (id: string) => void,
+): FloatingDockCommand {
+    return {
+        kind: "command",
+        id: `tool-dock-panel-${panel.id}`,
+        label: panel.title,
+        icon: panel.icon ?? <Blocks aria-hidden="true" />,
+        active,
+        expands: true,
+        onClick: () => onToggle(panel.id),
+    };
+}
 
 export function CanvasToolbar({
     selectedCount,
@@ -63,6 +87,9 @@ export function CanvasToolbar({
     onOpenProjectCharacters,
     onOpenGenerationHistory,
     shortcutRequestNonce,
+    dockPanels,
+    activeDockPanelId,
+    onToggleDockPanel,
 }: {
     selectedCount: number;
     /** 兼容 LibTV 视觉基线时，仅显示原版底部 Dock 的核心入口。 */
@@ -108,6 +135,10 @@ export function CanvasToolbar({
     onOpenProjectCharacters: () => void;
     onOpenGenerationHistory: () => void;
     shortcutRequestNonce: number;
+    /** 画布 Dock 上的插件面板开关（插件 canvas.sidePanel 的 dockButton 贡献）。 */
+    dockPanels?: CanvasDockPanelEntry[];
+    activeDockPanelId?: string | null;
+    onToggleDockPanel?: (id: string) => void;
 }) {
     const rootRef = useRef<HTMLDivElement>(null);
     // Keep the overlay-layer contract for focus ordering; the dedicated CSS
@@ -284,6 +315,8 @@ export function CanvasToolbar({
         } : item);
     const items = [
         ...mainItemsWithCanvasMode,
+        // 插件面板开关（dockButton 的 canvas.sidePanel 贡献）：点开在画布内浮出面板，再点隐藏。
+        ...(dockPanels ?? []).map((panel) => createDockPanelCommand(panel, activeDockPanelId === panel.id, (id) => onToggleDockPanel?.(id))),
         ...(libtvChrome ? [
             {
                 id: "tool-portrait-studio",
