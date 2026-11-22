@@ -45,7 +45,13 @@ func (s *Service) componentOptions(platform, variant string) (depthruntime.Ensur
 			manifestURL = defaultWindowsManifestURL
 			name = "depth-runtime-manifest.v2.json"
 		}
-		mirrors = []string{componentR2Base + name, componentGHBase + name}
+		if platform == "windows-amd64" {
+			// 自建清单只用我们自己的 Release 单源；上游镜像的清单是上游密钥签的，
+			// 用我们的公钥验不过，列进去只会白白浪费一次拉取。
+			mirrors = nil
+		} else {
+			mirrors = []string{componentR2Base + name, componentGHBase + name}
+		}
 	}
 	var publicKey ed25519.PublicKey
 	var fallback *depthruntime.Manifest

@@ -52,12 +52,23 @@ func (w *taskWorkerCoordinator) processNextTask() error {
 func (w *taskWorkerCoordinator) executeClaimed(session taskruntime.Session) taskruntime.Outcome {
 	s := w.service
 	return localtask.ExecuteClaimedTask(localtask.WorkerExecuteDeps{
-		Repo:              s.repo,
-		Terminal:          s.terminalCoordinator(),
-		Log:               s.log,
-		RunTimeline:       w.processTimelineTranscription,
-		RunRender:         w.processTimelineRender,
-		RunDepth:          w.processDepthCapture,
+		Repo:        s.repo,
+		Terminal:    s.terminalCoordinator(),
+		Log:         s.log,
+		RunTimeline: w.processTimelineTranscription,
+		RunRender:   w.processTimelineRender,
+		RunDepth:    w.processDepthCapture,
+		RunVideoEraseVSR: localtask.VideoEraseVSRRunner(localtask.VideoEraseVSRDeps{
+			DataDir:  s.dataDir,
+			Media:    depthMedia{svc: s},
+			Repo:     s.repo,
+			Progress: w.progress,
+			FailTask: w.failTimelineTask,
+			Deliver:  s.DeliverSucceededTask,
+			LogError: func(userID, taskID, message, detail string) {
+				_ = s.log(userID, taskID, "error", message, detail)
+			},
+		}),
 		RunCanvasMedia:    w.processCanvasMedia,
 		BeginRouteAttempt: s.beginTaskRouteAttempt,
 		ExecuteRoute: func(ctx context.Context, task *model.Task, attempt *model.RouteAttempt) (localtask.RouteExecutionResult, error) {

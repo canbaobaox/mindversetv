@@ -391,3 +391,30 @@
 
 - 逐项核对（插件仓库未动，只审计）：① 滚动——插件 v0.3.0（`09a6b30`）的 `.mv-prompt-board` 已有 `height:100%;overflow-y:auto`（`client/index.js:1566`）；宿主页面链（`router.tsx` 的 `PluginHostPageRoute` 直接渲染、无包裹层；`app-top-nav.tsx` 的 `h-dvh flex-col overflow-hidden` → `flex-1 min-h-0 overflow-hidden`）与浮动面板（`canvas-dock-panel.tsx:41,54` 的 `absolute top-4 bottom-24` + 内容区 `min-h-0 flex-1 overflow-y-auto`）都给了确定高度，`height:100%` 能解析、内滚动成立，无 overflow-hidden 链盖掉的问题。② 工具栏按钮——插件以 `canvas.sidePanel {id:"prompt-board", dockButton:true}` 贡献（`client/index.js:2084-2091`）；宿主 `getDockSidePanelEntries` 只认 `dockButton===true`（`web/src/lib/plugins/plugin-side-panels.ts`），`canvas-project-stage.tsx:102-106,476-488` 持 `activeDockPanelId` 开关、`canvas-toolbar.tsx:318-319` 渲染开关按钮，再点隐藏、Esc/X 关闭；面板 440px 宽。③ 发送到画布——面板模式下宿主传 `selectedNodeIds`，插件 `pickSendTargets`（`client/index.js:1620`）优先选中同类节点、选中不匹配时警告并回落全部同类节点、0 个新建、1 个配置、多个弹选择器（`1885-1905`），逻辑完整。
 - 分清两种情况：**“用户那边还没做”**——按钮与滚动修复要求宿主 ≥ v2.3.4（含 `ba8b2f4`）**且**插件已重载到 v0.3.0（插件中心重载）；用户未确认是否双击安装了 v2.3.4，插件重载状态也未知，旧版上两项要求都不存在；**“代码本身有缺口”**——本次审计未发现，宿主侧无顺手可修的缺口。唯一已知的既存风险（非 v0.3.0 新引入）：全新画布 `revision < 1` 时发送会报“读取画布版本失败，请重试”（`client/index.js:1880`），需真机确认是否影响。
+
+## 2026-11-22 v2.3.6（未发版）：深度捕捉自建签名清单（CPU 档）
+
+- 根因：Windows 深度组件下载要验 Ed25519 签名，公钥 `depthWindowsManifestPublicKeyBase64`（`backend/internal/app/depth_adapter.go:19`）只在签名版构建时经 ldflags 注入；我们的 `desktop-installers.yml` 从未注入，于是 `ErrWindowsKey`，组件下不下来。公钥在公开渠道查不到。
+- 修法：自建签名清单，不再用上游的清单与密钥。
+  - 密钥：与更新器共用同一对 Ed25519 密钥（上游设计如此；`cmd/update-release` 的 `gen-key / sign-depth / verify-depth / public-key` 全是现成的）。仓库变量 `BEEFTV_UPDATER_PUBLIC_KEY`（base64 公钥）+ secret `BEEFTV_UPDATER_PRIVATE_KEY`（base64 私钥）需在 fork 里建好，建之前先查是否已有（已有则复用同一对，勿重复生成）。私钥绝不进仓库。
+  - 注入：`print-ldflags` 只注入更新器的两个变量，不含深度公钥；`desktop-installers.yml` 的 Windows 构建步骤补 `BEEFTV_EXTRA_LDFLAGS: -X infinite-canvas/backend/internal/app.depthWindowsManifestPublicKeyBase64=${{ vars.BEEFTV_UPDATER_PUBLIC_KEY }}`（与上游 `release-desktop.yml:441` 同款写法）。
+  - 运行时：不直接镜像上游的 zip（Part A §4 原则上允许无偿分发二进制，但 zip 内 22,343 个文件无法逐个核对许可证，且内含 GPL-3.0 FFmpeg，整包镜像要背源码提供义务）。改走现有构建脚本 `scripts/build-depth-runtime-windows.ps1` 从源码打包（`tools/depth-capture` 已在仓库；torch 等从 PyPI 现取；VDA 源码 pin 死 commit 并校验 HEAD；FFmpeg 收据进 `bin/`），经改版的 `release-depth-runtime.yml`（只编 CPU）签名后发到我们自己的 Release `depth-runtime-v2`。
+  - 清单地址：`backend/internal/depthcapture/types.go` 的 `defaultWindowsManifestURL` 改到我们自己的 Release；镜像列表留空（单源；上游镜像的清单是上游密钥签的，用我们的公钥验不过）。模型文件第二源走 HuggingFace 官方地址（Apache-2.0，sha 已核对一致）。
+  - 清单准备脚本 `scripts/prepare-depth-manifest.py`：基地址改我们自己的 Release，加 `--cpu-only`，去掉 CNB。
+- CPU-only 回落（清单里没有 `windows-amd64/cuda`，N 卡机器原有代码会硬失败）：`depthruntime` 新增哨兵错 `ErrVariantUnavailable`（`loadArtifacts` 取不到 Windows variant 时返回）；`capture.go` 的 CUDA 探测闭包把它按 `ErrCUDADevice` 处理，走已有 CPU 回落；`components.go` 的 `ComponentStatus` 遇此错且 variant=cuda 时改选 cpu 重算下载计划。N 卡机器全程只装 CPU 包，不重复下载。磁盘占用：下载 857MB，解压后 3.8GB。
+- 验签算法（已定位）：Ed25519，`backend/internal/depthruntime/manifest_verify.go`——信封 `{"payload": base64(清单JSON), "signature": base64(64字节签名)}`，`ed25519.Verify(公钥, payload, 签名)`，要求 `version == 2` 且 `Runtimes` 非空。验签逻辑本身未动。
+- 发版顺序：密钥变量+secret → 跑 `release-depth-runtime.yml`（CPU）→ 下载签名清单本地再验 → 再发桌面安装包。CUDA 档以后要做时：清单加三段、去掉 `--cpu-only`、改回双 variant，代码侧回落逻辑不用动。
+- 方案全文：`~/workspace/goals/ai/hidden_files/depth-selfbuilt-manifest-plan-2026-11-22.md`。
+
+## 2026-11-22 v2.3.6（未发版）：本地 VSR 去字幕/去水印（AI 自动检测）
+
+- 背景：去字幕/去水印/隐私打码原来走 BeefTV 云端接口，myxsai 没有对应端点，按钮点了没反应；本地只有 FFmpeg delogo 固定选框兜底（非 AI）。用户 2026-11-22 拍板：开源项目哪个好用就接哪个，不用他再决策；先接 VSR，深度捕捉第二批。
+- 选型：VSR（YaoFANGUK/video-subtitle-remover，Apache-2.0，13,866 星）。LICENSE 全文已核对：与 apache.org canonical Apache 2.0 文本只差一个首行空行，无商业使用限制、无附加条款（“商业使用需许可”是二级评测的错误说法）；再分发义务是随包带 LICENSE + 署名。STTN 权重 MIT、LaMa Apache-2.0、PaddleOCR Apache-2.0；**ProPainter 权重非商业许可，不接**（打的包里直接删掉）。
+- 接法：Go 后端 sidecar（`backend/internal/videosr/`），照抄深度捕捉的任务链：`POST /vsr-erases` → 本地任务 `video_erase_vsr` → exec 调便携 Python 跑 `resources/backend/main.py -i … -o … --inpaint-mode sttn-auto|lama [-c …]` → tqdm 进度进 `Task.Progress` → 输出视频导入素材库 → 画布子节点回填。只开 `sttn-auto`（默认，PaddleOCR 自动定位）与 `lama`；`propainter`/`opencv` 不开。
+- 布局合同（1.1.1 directml 包实测，QPT 打包把仓库根目录拷为 `resources/`）：包根 `Python/python.exe` + `resources/backend/main.py`，入口是 `<包目录>/Python/python.exe resources/backend/main.py`。Go 侧 `Installed`/`installArchive` 按此校验。
+- 分发：不随安装包（CPU 包 731MB 起步）。新增 workflow `.github/workflows/build-vsr-cpu.yml`（仅手动 dispatch）：拉 VSR@v1.4.0 源码 → windows-2022 上跑上游 QPT CPU 打包 → 删 ProPainter 权重 → 重打 zip → 发本仓库 Release `vsr-cpu-v1.4.0`（不可变 tag，已存在则失败）并记 sha256；Go 侧钉死该 URL + sha256。**该 Release 目前还不存在**：`defaultArtifact` 的 URL/Size/SHA256 为空，`Ensure` 会以 `ErrNotPublished` 明确失败（“VSR 组件尚未发布”），不静默、不猜地址；等评审后派发构建再填。
+- 前端：对话框本地区新增引擎选择，默认“AI 自动检测（VSR）”，备选“按选框快速擦除（delogo）”；`eraseMethod=auto` 不传 `-c`（全帧 OCR 自动找），`custom` 传框选区域换算的像素坐标；子节点任务进度/下载进度/失败原因原样展示，本地处理不扣费。
+- 许可证署名：`licenses/vsr-license.txt`（Apache-2.0 全文，sha256 `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`）；打的 CPU 包内自带 `resources/LICENSE`。
+- Linux CLI 实测（2026-11-22，VSR 1.4.0 源码）：`--help` 合同与方案一致；lama + `-c` 2 秒片段完整跑通（退出 0，273 秒，输出 640×360、音轨保留，字幕区亮像素 5.9%→0.0%）；完成行实测为 `[Complete] Subtitles removed. Output saved to: …`（英文）/`[完成] 字幕移除成功, 文件已保存到 …`（中文，见 en.ini:92/ch.ini:92），`FinishedOutput` 已按实测改。sttn-auto 6 秒片段在本机 1.5 核 CPU 上 35 分钟未跑完（第一批 50 帧推理中），CPU 档很慢，对话框需明示等待时间，Windows 真机验收仍待补。
+- 未核实：CPU 档在 Windows 上的实际速度；我们自打的 CPU 包最终体积（去 ProPainter 后）；官方 Setup.exe 静默安装可行性（备选，不阻塞主线）；1.4.0 打包布局是否与 1.1.1 一致（待第一次 CI 打包核对）；Windows 真机验收待用户机器。
+- 方案全文：`~/workspace/goals/ai/hidden_files/vsr-integration-plan-2026-11-22.md`。

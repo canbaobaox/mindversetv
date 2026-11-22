@@ -28,12 +28,13 @@ import { getMediaBlob, resolveMediaUrl, uploadMediaFile } from "@/services/file-
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { persistCanvasDocument } from "@/services/local-workspace-repository";
 import { queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
-import type { VideoSubtitleEraseLocalOptions } from "@/services/api/video-subtitle-erase";
+import type { VideoSubtitleEraseLocalOptions, VideoSubtitleEraseVSROptions } from "@/services/api/video-subtitle-erase";
 import { getResourcePlaybackBlob, ownedResourceIdFromMediaRef, resourceStorageKey } from "@/services/api/resources";
 import { canvasNodeDiagnosticContext } from "@/services/diagnostics/canvas-media-diagnostics";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 import { canDeriveNodeViaBackend, deriveNodeSeparatedAudioViaBackend, deriveNodeVideoFramesViaBackend } from "@/services/video-resource-derive";
-import { assertLocalExecutorSession, beginLocalExecutorSession, isLocalExecutorSessionStop, isUncertainLocalExecutorSubmit, localExecutorFrozenInputKey, localExecutorIntentAfterError, nextLocalExecutorClientOperationId, runOwnedDepthCapture } from "@/lib/plugins/builtin/editor/local-executor-session";
+import { attachOwnedVideoEraseVSRResult, vsrEraseTaskMetadata } from "@/lib/canvas/canvas-vsr-erase";
+import { assertLocalExecutorSession, beginLocalExecutorSession, isLocalExecutorSessionStop, isUncertainLocalExecutorSubmit, localExecutorFrozenInputKey, localExecutorIntentAfterError, nextLocalExecutorClientOperationId, runOwnedDepthCapture, runOwnedVideoEraseVSR } from "@/lib/plugins/builtin/editor/local-executor-session";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import type { StartCanvasUploadStatus } from "./use-canvas-upload";
 import type { CanvasPageUiStoreHook } from "@/stores/canvas/use-canvas-page-ui-store";
@@ -201,6 +202,99 @@ export function useCanvasVideoTools({
             } : item));
         }
     }, [beginMediaOperation, message, pageUi, projectId, persistMediaNodes, setConnections, setNodes]);
+
+    const submitVideoSubtitleEraseVSR = useCallback(async (node: CanvasNodeData, options: VideoSubtitleEraseVSROptions) => {
+        if (!hasLocalVideoSource(node)) {
+            message.warning("视频节点为空，无法本地处理");
+            return;
+        }
+        const resourceId = ownedResourceIdFromMediaRef(node.metadata?.storageKey, node.metadata?.content);
+        if (!resourceId) {
+            message.error("请先等待视频保存到本地资源库，再进行本地 AI 擦除");
+            return;
+        }
+        const label = options.eraseType === "watermark" ? "去水印" : "去字幕";
+        const originalProjectId = projectId;
+        const frozenInputKey = localExecutorFrozenInputKey([
+            "video_erase_vsr", originalProjectId, resourceId, options.eraseType, options.eraseMethod,
+            options.eraseMethod === "custom" ? JSON.stringify(options.region) : "auto",
+        ]);
+        const clientOperationId = nextLocalExecutorClientOperationId(null, frozenInputKey);
+        const childId = nanoid();
+        const connection = { id: nanoid(), fromNodeId: node.id, toNodeId: childId };
+        const size = fitNodeSize(node.metadata?.naturalWidth || node.width, node.metadata?.naturalHeight || node.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+        const pendingChild: CanvasNodeData = {
+            id: childId, type: CanvasNodeType.Video, title: `${node.title || "视频"} · ${label}`,
+            position: { x: node.position.x + node.width + 96, y: node.position.y }, width: size.width, height: size.height,
+            metadata: mediaResultMetadata("derived", {
+                status: NODE_STATUS_LOADING, processingLabel: "检查 VSR 组件", taskStage: "检查 VSR 组件", taskProgress: 0,
+                prompt: `从「${node.title || "视频"}」本地 AI ${label}`,
+                generatedFromNodeId: node.id, videoSubtitleEraseSourceNodeId: node.id, videoSmartEraseType: options.eraseType,
+                taskClientOperationId: clientOperationId, taskClientOperationInput: frozenInputKey,
+            }),
+        };
+        nodesRef.current = [...nodesRef.current, pendingChild];
+        connectionsRef.current = [...connectionsRef.current, connection];
+        setNodes(nodesRef.current);
+        setConnections((current) => [...current, connection]);
+        pageUi.getState().setSelectedNodeIds(new Set([childId]));
+        pageUi.getState().setSelectedConnectionId(null);
+        const observer = startGenerationRequest
+            ? startGenerationRequest(childId, childId, childId, new AbortController())
+            : new AbortController();
+        depthObserversRef.current.add(observer);
+        let submittedTaskId: string | undefined;
+        try {
+            const session = beginLocalExecutorSession(originalProjectId, { controller: observer, getLiveProjectId: () => projectIdRef.current });
+            await persistCanvasDocument(originalProjectId, { nodes: nodesRef.current, connections: connectionsRef.current });
+            assertLocalExecutorSession(session);
+            if (!nodesRef.current.some(item => item.id === childId && item.metadata?.taskClientOperationId === clientOperationId)) return;
+            const { task } = await runOwnedVideoEraseVSR({
+                session, projectId: originalProjectId, resourceId, nodeId: childId, clientOperationId,
+                eraseType: options.eraseType, inpaintMode: "sttn-auto",
+                region: options.eraseMethod === "custom" ? options.region : undefined,
+                onCreated: async (created) => {
+                    submittedTaskId = created.id;
+                    nodesRef.current = nodesRef.current.map(item => item.id === childId && item.metadata?.taskClientOperationId === clientOperationId ? { ...item, metadata: { ...item.metadata, taskId: created.id, taskStatus: created.status, taskClientOperationId: created.clientOperationId || clientOperationId } } : item);
+                    setNodes(nodesRef.current);
+                    await persistCanvasDocument(originalProjectId, { nodes: nodesRef.current, connections: connectionsRef.current });
+                },
+                onTaskUpdate: (next) => {
+                    setNodes((current) => {
+                        let changed = false;
+                        const mapped = current.map((item) => {
+                            if (item.id !== childId || item.metadata?.taskId !== next.id) return item;
+                            const nextMetadata = { ...item.metadata, ...vsrEraseTaskMetadata(next) };
+                            if (equalSerializedValue(item.metadata, nextMetadata)) return item;
+                            changed = true;
+                            return { ...item, metadata: nextMetadata };
+                        });
+                        return changed ? mapped : current;
+                    });
+                },
+            });
+            const target = nodesRef.current.find(item => item.id === childId);
+            if (target?.metadata?.taskId === task.id) await attachOwnedVideoEraseVSRResult({ node: target, task, session, nodesRef, setNodes });
+        } catch (error) {
+            if (isLocalExecutorSessionStop(error)) return;
+            const details = error instanceof Error ? error.message : `视频本地 AI ${label}失败`;
+            const intent = localExecutorIntentAfterError({ clientOperationId, submittedTaskId, frozenInputKey }, error);
+            const uncertain = isUncertainLocalExecutorSubmit(error, submittedTaskId);
+            setNodes((current) => current.map((item) => item.id === childId && item.metadata?.taskClientOperationId === clientOperationId ? {
+                ...item,
+                metadata: {
+                    ...item.metadata, status: NODE_STATUS_ERROR, taskId: submittedTaskId,
+                    taskClientOperationId: intent.clientOperationId, taskClientOperationInput: frozenInputKey, taskClientOperationTerminal: intent.terminal,
+                    taskOutcome: uncertain ? submissionUnknownTaskOutcome() : undefined,
+                    errorDetails: details,
+                },
+            } : item));
+            message.error(details);
+        } finally {
+            depthObserversRef.current.delete(observer);
+            finishGenerationRequest?.(childId, observer);
+        }
+    }, [connectionsRef, depthObserversRef, finishGenerationRequest, message, nodesRef, pageUi, projectId, projectIdRef, setConnections, setNodes, startGenerationRequest]);
 
     const runDepthCaptureForTarget = useCallback(async (
         originalProjectId: string, targetNodeId: string, resourceId: string, clientOperationId: string, frozenInputKey: string,
@@ -809,7 +903,7 @@ export function useCanvasVideoTools({
     const mergeSelectedVideos = useCallback(() => mergeVideosByIds(Array.from(selectedNodeIdsRef.current)), [mergeVideosByIds, selectedNodeIdsRef]);
 
     return {
-        clearDeletedVideoNodes, videoCropNodeId, setVideoCropNodeId, cropVideoNode, submitVideoSubtitleEraseLocally, depthCaptureNode, retryDepthCaptureNode,
+        clearDeletedVideoNodes, videoCropNodeId, setVideoCropNodeId, cropVideoNode, submitVideoSubtitleEraseLocally, submitVideoSubtitleEraseVSR, depthCaptureNode, retryDepthCaptureNode,
         recoverDepthCaptureNodes, closeFrameDialog, extractAudioFromVideo, extractVideoFrameAt, extractVideoFrames,
         extractingVideoFramesNodeId, frameDialogNodeId, setFrameDialogNodeId, mergeSelectedVideos, mergeVideosByIds,
         mergeVideoProgress, segmentRunningMode, inlineTrimNodeId, inlineTrimRunning, setInlineTrimNodeId,

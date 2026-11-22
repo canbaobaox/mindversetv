@@ -4,6 +4,11 @@ All notable public changes to BeefTV are documented in this file.
 
 ## Unreleased
 
+## v2.3.6
+
+- 本地 AI 去字幕/去水印：接开源 VSR（Apache-2.0），自动检测字幕/水印位置并修复，首次使用需下载约 700MB 组件；CPU 推理较慢，处理长视频请耐心等待；仍保留按选框快速擦除（delogo）备选。
+- 深度动作捕捉自建签名清单：Windows 组件改从我们自己的 Release 下载并验签（CPU 档），安装包内置签名公钥；N 卡机器也用 CPU 包，不再重复下载。
+
 ## v2.3.5
 
 - 修复梦由心生生图仍失败：站方只接受 `resolution` 为 `auto / 1K / 2K / 4K`，宿主透传的 `720`（图片）与 `720P`（视频）会被站方在提交时直接拒绝；插件提交体改为白名单，只发这四个值（大小写归一），其余一律省略、由服务端自己定，不猜映射。

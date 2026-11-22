@@ -1,6 +1,7 @@
 import { createClientId } from "@/lib/client-id";
 import { createDepthCaptureTask, type DepthCaptureResult } from "@/services/api/depth-capture";
 import { getResource, type RemoteResource } from "@/services/api/resources";
+import { createVideoEraseVSRTask, type VideoEraseVSRCreateRequest, type VideoEraseVSRResult } from "@/services/api/vsr-erase";
 import { waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import {
     createTimelineRenderTask,
@@ -228,4 +229,49 @@ export async function runOwnedDepthCapture(input: {
     });
     assertLocalExecutorSession(input.session);
     return { task, resource, capture };
+}
+
+/**
+ * 本地 VSR 擦除（去字幕/去水印）：与 runOwnedDepthCapture 同一套本地执行器
+ * 会话/轮询/结果取回流程；CPU 推理可能耗时较长，默认轮询超时 120 分钟。
+ */
+export async function runOwnedVideoEraseVSR(input: {
+    session: LocalExecutorSession;
+    projectId: string;
+    resourceId: string;
+    nodeId?: string;
+    clientOperationId: string;
+    eraseType: VideoEraseVSRCreateRequest["eraseType"];
+    inpaintMode?: VideoEraseVSRCreateRequest["inpaintMode"];
+    region?: VideoEraseVSRCreateRequest["region"];
+    onCreated?: (task: GenerationTask) => void | Promise<void>;
+    onTaskUpdate?: (task: GenerationTask) => void;
+    timeoutMs?: number;
+    intervalMs?: number;
+}): Promise<{ task: GenerationTask; resource: RemoteResource; result: VideoEraseVSRResult }> {
+    assertLocalExecutorSession(input.session);
+    const created = await createVideoEraseVSRTask(
+        {
+            projectId: input.projectId, nodeId: input.nodeId, resourceId: input.resourceId,
+            clientOperationId: input.clientOperationId, eraseType: input.eraseType,
+            inpaintMode: input.inpaintMode, region: input.region,
+        },
+        { signal: input.session.controller.signal },
+    );
+    assertLocalExecutorSession(input.session);
+    await input.onCreated?.(created);
+    const task = await observeLocalExecutorTask(created.id, input.session, {
+        initialTask: created,
+        timeoutMs: input.timeoutMs ?? 120 * 60 * 1000,
+        intervalMs: input.intervalMs ?? 2000,
+        onTaskUpdate: input.onTaskUpdate,
+    });
+    const result = JSON.parse(task.resultJson || "{}") as VideoEraseVSRResult;
+    if (!result.resourceId) throw new Error("任务完成但没有返回擦除后的视频资源");
+    assertLocalExecutorSession(input.session);
+    const resource = await getResource(result.resourceId, {
+        signal: input.session.controller.signal,
+    });
+    assertLocalExecutorSession(input.session);
+    return { task, resource, result };
 }

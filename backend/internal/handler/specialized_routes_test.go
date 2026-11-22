@@ -17,6 +17,7 @@ import (
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 	localtask "infinite-canvas/backend/internal/task"
+	"infinite-canvas/backend/internal/videosr"
 	"infinite-canvas/backend/internal/workspace"
 
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,7 @@ type captureTaskPort struct {
 	render         localtask.TimelineRenderCreateRequest
 	trans          localtask.TimelineTranscriptionCreateRequest
 	depth          localtask.DepthCaptureCreateRequest
+	vsr            localtask.VideoEraseVSRCreateRequest
 	gen            localtask.CreateRequest
 	recovered      string
 	manualRecovery bool
@@ -62,6 +64,14 @@ func (c *captureTaskPort) CreateDepthCaptureTask(userID string, req localtask.De
 	c.userID = userID
 	c.depth = req
 	return &model.Task{ID: "depth-1", Type: model.TaskTypeDepthCapture, Status: model.TaskStatusQueued}, nil
+}
+
+func (c *captureTaskPort) CreateVideoEraseVSRTask(userID string, req localtask.VideoEraseVSRCreateRequest) (*model.Task, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.userID = userID
+	c.vsr = req
+	return &model.Task{ID: "vsr-1", Type: model.TaskTypeVideoEraseVSR, Status: model.TaskStatusQueued}, nil
 }
 
 func (c *captureTaskPort) RecoverTask(ctx context.Context, userID, id string) (*model.Task, error) {
@@ -137,6 +147,15 @@ func TestSpecializedRoutesBindLocalExecutorRequests(t *testing.T) {
 	postJSON(t, router, "/api/depth-captures", depthBody)
 	if capture.depth.ResourceID != "res-1" || capture.depth.ClientOperationID != "depth:http-1" {
 		t.Fatalf("depth bound = %+v", capture.depth)
+	}
+
+	vsrBody, _ := json.Marshal(localtask.VideoEraseVSRCreateRequest{
+		ProjectID: "prj-1", ResourceID: "res-1", ClientOperationID: "vsr:http-1",
+		EraseType: "subtitle", InpaintMode: "sttn-auto", Region: &videosr.Region{X: 0.08, Y: 0.76, Width: 0.84, Height: 0.18},
+	})
+	postJSON(t, router, "/api/vsr-erases", vsrBody)
+	if capture.vsr.ResourceID != "res-1" || capture.vsr.ClientOperationID != "vsr:http-1" || capture.vsr.EraseType != "subtitle" || capture.vsr.InpaintMode != "sttn-auto" || capture.vsr.Region == nil || capture.vsr.Region.X != 0.08 {
+		t.Fatalf("vsr bound = %+v", capture.vsr)
 	}
 
 	genBody, _ := json.Marshal(localtask.CreateRequest{Type: model.TaskTypeTimelineRender, Prompt: "时间线渲染"})

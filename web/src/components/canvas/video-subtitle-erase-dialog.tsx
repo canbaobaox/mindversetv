@@ -21,6 +21,7 @@ import {
     type SubtitleEraseParams,
     type SubtitleEraseRegion,
     type VideoSubtitleEraseLocalOptions,
+    type VideoSubtitleEraseVSROptions,
     type WatermarkEraseModel,
 } from "@/services/api/video-subtitle-erase";
 import { resolveMediaUrl } from "@/services/file-storage";
@@ -69,6 +70,8 @@ type CanvasVideoSubtitleEraseDialogProps = {
     onPrepareResource: (node: CanvasNodeData) => Promise<string>;
     onConfirm: (node: CanvasNodeData, options: VideoSubtitleEraseSubmitOptions) => Promise<void> | void;
     onConfirmLocal?: (node: CanvasNodeData, options: VideoSubtitleEraseLocalOptions) => Promise<void> | void;
+    /** 本地 VSR AI 擦除（自动检测字幕/水印位置，首次使用需下载组件）；未传时本地只提供 delogo 快速擦除。 */
+    onConfirmVSR?: (node: CanvasNodeData, options: VideoSubtitleEraseVSROptions) => Promise<void> | void;
 };
 
 /** 云端擦除不可用时能否走本地处理：只有去字幕/去水印能按选框做 delogo 擦除；隐私打码要云端自动检测人脸/车牌，本地没有等价实现。 */
@@ -209,6 +212,7 @@ export function CanvasVideoSubtitleEraseDialog({
     onPrepareResource,
     onConfirm,
     onConfirmLocal,
+    onConfirmVSR,
 }: CanvasVideoSubtitleEraseDialogProps) {
     const theme = canvasThemes[useActiveTheme()];
     const config = useEffectiveConfig();
@@ -249,6 +253,8 @@ export function CanvasVideoSubtitleEraseDialog({
     const [notice, setNotice] = useState("");
     const [submitting, setSubmitting] = useState(false);
     const [submittingLocal, setSubmittingLocal] = useState(false);
+    /** 本地处理引擎：vsr=AI 自动检测（默认），delogo=按选框快速擦除。 */
+    const [localEngine, setLocalEngine] = useState<"vsr" | "delogo">("vsr");
 
     const nodeStorageKey = node.metadata?.storageKey || "";
     const nodeContent = node.metadata?.content || "";
@@ -294,6 +300,7 @@ export function CanvasVideoSubtitleEraseDialog({
             setQuoteParamKey("");
             setQuotedAt(0);
             setNotice("");
+            setLocalEngine("vsr");
             setControls({ ...DEFAULT_CONTROL_STATE, eraseType: initialEraseType });
             setSubtitleRegion(DEFAULT_SUBTITLE_REGION);
             setWatermarkRegion(DEFAULT_WATERMARK_REGION);
@@ -430,8 +437,8 @@ export function CanvasVideoSubtitleEraseDialog({
     );
 
     const localAvailable = useMemo(
-        () => Boolean(onConfirmLocal) && resolveLocalSmartEraseAvailability(effectiveControls.eraseType, serviceUnavailable, Boolean(videoUrl)),
-        [effectiveControls.eraseType, onConfirmLocal, serviceUnavailable, videoUrl],
+        () => Boolean(onConfirmLocal || onConfirmVSR) && resolveLocalSmartEraseAvailability(effectiveControls.eraseType, serviceUnavailable, Boolean(videoUrl)),
+        [effectiveControls.eraseType, onConfirmLocal, onConfirmVSR, serviceUnavailable, videoUrl],
     );
 
     const requestParams = useMemo(
@@ -495,7 +502,7 @@ export function CanvasVideoSubtitleEraseDialog({
             effectiveControls.subtitleModel !== "mega" &&
             effectiveControls.eraseMethod === "custom") ||
             (effectiveControls.eraseType === "watermark" && effectiveControls.eraseMethod === "custom") ||
-            localAvailable);
+            (localAvailable && (localEngine === "delogo" || effectiveControls.eraseMethod === "custom")));
     const activeRegion = effectiveControls.eraseType === "watermark" ? watermarkRegion : subtitleRegion;
     const setActiveRegion = effectiveControls.eraseType === "watermark" ? setWatermarkRegion : setSubtitleRegion;
     const regionLabel = effectiveControls.eraseType === "watermark" ? "水印区域" : "字幕区域";
@@ -554,15 +561,26 @@ export function CanvasVideoSubtitleEraseDialog({
     };
 
     const handleLocalSubmit = async () => {
-        if (!onConfirmLocal || !localAvailable || submittingLocal) return;
+        if (!localAvailable || submittingLocal) return;
         setSubmittingLocal(true);
         setNotice("");
         try {
-            await onConfirmLocal(node, {
-                eraseType: effectiveControls.eraseType as "subtitle" | "watermark",
-                region: activeRegion,
-                dimensions,
-            });
+            if (localEngine === "vsr" && onConfirmVSR) {
+                await onConfirmVSR(node, {
+                    eraseType: effectiveControls.eraseType as "subtitle" | "watermark",
+                    eraseMethod: effectiveControls.eraseMethod,
+                    region: activeRegion,
+                    dimensions,
+                });
+            } else if (onConfirmLocal) {
+                await onConfirmLocal(node, {
+                    eraseType: effectiveControls.eraseType as "subtitle" | "watermark",
+                    region: activeRegion,
+                    dimensions,
+                });
+            } else {
+                throw new Error("本地处理暂不可用");
+            }
             onClose();
         } catch (error) {
             setNotice(error instanceof Error ? error.message : "本地处理失败");
@@ -740,9 +758,25 @@ export function CanvasVideoSubtitleEraseDialog({
                 ) : null}
 
                 {localAvailable ? (
-                    <p role="status" className="text-xs" style={{ color: theme.node.muted }}>
-                        云端服务暂未开启，可用本地处理：按上方选框区域擦除（免费，不走云端；可拖动选框调整位置）。
-                    </p>
+                    <div className="space-y-1.5 text-xs" style={{ color: theme.node.muted }}>
+                        <p role="status">
+                            云端服务暂未开启，可用本地处理（免费，不走云端）。
+                            {localEngine === "vsr" && onConfirmVSR
+                                ? "AI 自动检测：自动找到字幕/水印位置并修复，首次使用需下载约 700MB 组件，处理较慢；选“指定区域”可改用上方选框限定范围。"
+                                : "按上方选框区域擦除，可拖动选框调整位置。"}
+                        </p>
+                        {onConfirmVSR ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span>本地处理方式：</span>
+                                <Button size="small" type={localEngine === "vsr" ? "primary" : "default"} onClick={() => setLocalEngine("vsr")}>
+                                    AI 自动检测（VSR）
+                                </Button>
+                                <Button size="small" type={localEngine === "delogo" ? "primary" : "default"} onClick={() => setLocalEngine("delogo")}>
+                                    按选框快速擦除
+                                </Button>
+                            </div>
+                        ) : null}
+                    </div>
                 ) : null}
 
                 <div className="flex items-center justify-end gap-2 pt-1">
@@ -756,7 +790,7 @@ export function CanvasVideoSubtitleEraseDialog({
                             disabled={submitting}
                             onClick={() => void handleLocalSubmit()}
                         >
-                            本地处理
+                            {localEngine === "vsr" && onConfirmVSR ? "本地 AI 处理" : "本地处理"}
                         </Button>
                     ) : null}
                     <Button

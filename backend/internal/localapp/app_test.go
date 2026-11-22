@@ -37,6 +37,10 @@ func (fakePorts) CreateDepthCaptureTask(string, localtask.DepthCaptureCreateRequ
 	return nil, nil
 }
 
+func (fakePorts) CreateVideoEraseVSRTask(string, localtask.VideoEraseVSRCreateRequest) (*model.Task, error) {
+	return nil, nil
+}
+
 func (fakePorts) RecoverTask(context.Context, string, string) (*model.Task, error) {
 	return nil, nil
 }

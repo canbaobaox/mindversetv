@@ -55,7 +55,7 @@ func ComputeOutcome(task model.Task, resultState string, facts OutcomeFacts) Out
 		return outcome
 	}
 	regenerate := "confirm"
-	if task.Type == model.TaskTypeDepthCapture || provablyNotSubmitted(task, facts) {
+	if task.Type == model.TaskTypeDepthCapture || task.Type == model.TaskTypeVideoEraseVSR || provablyNotSubmitted(task, facts) {
 		regenerate = "allowed"
 	}
 	// 只读结构化上游错误码；不从 Error 文案重新推断审核或计费。

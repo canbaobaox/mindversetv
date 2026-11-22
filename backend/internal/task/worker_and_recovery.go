@@ -321,8 +321,54 @@ func FailTimelineTask(repo *repository.Repository, logInfo func(userID, taskID, 
 	if task.Type == model.TaskTypeDepthCapture {
 		label = "深度处理失败"
 	}
+	if task.Type == model.TaskTypeVideoEraseVSR {
+		label = "视频擦除失败"
+	}
 	if logInfo != nil {
 		logInfo(task.UserID, task.ID, fmt.Sprintf("%s: %s", label, message), "")
+	}
+	return nil
+}
+
+// prepareLocalMediaFailure 截断诊断文案（只留最后 240 字，进度文案不能顶掉
+// 真正原因）并写进任务的 FailureDiagnostics；失败写回仍用完整 message。
+func prepareLocalMediaFailure(task *model.Task, stage, message string) {
+	diagnosticMessage := strings.TrimSpace(message)
+	runes := []rune(diagnosticMessage)
+	if len(runes) > 239 {
+		diagnosticMessage = "…" + string(runes[len(runes)-239:])
+	}
+	generation.CaptureTaskFailureDiagnostics(task, errors.New(diagnosticMessage), "local_result")
+	task.FailureDiagnostics.Stage = stage
+	task.FailureDiagnostics.RequestID = task.RequestID
+	task.FailureDiagnostics.ExecutionResult = "failed"
+}
+
+// FailLocalMediaTask 是本地媒体处理（深度捕捉 / VSR 擦除）共用的失败收尾：
+// 诊断预算只留最后 240 字（进度文案不能顶掉真正原因），再进 FailTimelineTask。
+// 与 CompleteLocalMediaTask 配对，本地任务的成功/失败只在这两处算。
+func FailLocalMediaTask(repo *repository.Repository, logInfo func(userID, taskID, msg, extra string), task *model.Task, stage string, message string) error {
+	prepareLocalMediaFailure(task, stage, message)
+	return FailTimelineTask(repo, logInfo, task, stage, message)
+}
+
+// CompleteLocalMediaTask 是本地媒体处理（深度捕捉 / VSR 擦除）共用的成功收尾：
+// 结果 JSON 写回任务并置完成态，持久化后交付；交付失败只记日志、不翻转成功态。
+// save 由调用方提供（通常是 repo.SaveTaskCompletion 固定 from=running 的闭包）。
+func CompleteLocalMediaTask(save func(*model.Task) error, deliver func(model.Task) error, logErr func(userID, taskID, message, detail string), task *model.Task, resultJSON string, deliverFailureMessage string) error {
+	task.Status = model.TaskStatusSucceeded
+	task.Stage = "已完成"
+	task.Progress = 100
+	task.ResultJSON = resultJSON
+	now := time.Now()
+	task.CompletedAt = &now
+	if err := save(task); err != nil {
+		return err
+	}
+	if deliver != nil {
+		if err := deliver(*task); err != nil && logErr != nil {
+			logErr(task.UserID, task.ID, deliverFailureMessage, err.Error())
+		}
 	}
 	return nil
 }

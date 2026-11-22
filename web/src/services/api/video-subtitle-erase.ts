@@ -58,6 +58,17 @@ export type VideoSubtitleEraseLocalOptions = {
     dimensions: { width: number; height: number };
 };
 
+/**
+ * VSR 本地 AI 擦除的提交选项：eraseMethod=auto 时后端不传 -c 区域，由
+ * PaddleOCR 自动定位；custom 时用对话框框选的相对区域换算像素后传 -c。
+ */
+export type VideoSubtitleEraseVSROptions = {
+    eraseType: "subtitle" | "watermark";
+    eraseMethod: SubtitleEraseMethod;
+    region: SubtitleEraseRegion;
+    dimensions: { width: number; height: number };
+};
+
 export type SubtitleEraseParams = {
     resourceId: string;
     channelId: string;

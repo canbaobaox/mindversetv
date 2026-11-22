@@ -116,7 +116,7 @@ func PrepareCanvasNodeBind(repo *repository.Repository, userID string, patch can
 	if task != nil && task.UserID == userID && task.ProjectID == patch.CanvasID && task.Type == model.TaskTypeTimelineRender && task.Provider == "local" && task.Model == "ffmpeg" && task.Status == model.TaskStatusSucceeded {
 		patch.AllowEmptyVideo = true
 	}
-	if task != nil && task.UserID == userID && task.ProjectID == patch.CanvasID && (task.Type == model.TaskTypeDepthCapture || task.Type == "canvas_video") && task.Status == model.TaskStatusSucceeded && task.ClientOperationID != nil {
+	if task != nil && task.UserID == userID && task.ProjectID == patch.CanvasID && (task.Type == model.TaskTypeDepthCapture || task.Type == model.TaskTypeVideoEraseVSR || task.Type == "canvas_video") && task.Status == model.TaskStatusSucceeded && task.ClientOperationID != nil {
 		target := localtask.TargetBindingFromInput(task.InputJSON)
 		if target.NodeID == patch.NodeID && target.Source == "canvas" {
 			patch.PendingClientOperationID = strings.TrimSpace(*task.ClientOperationID)

@@ -113,7 +113,9 @@ func CanonicalOutputs(resultJSON string, taskType string) []CanonicalOutput {
 	if json.Unmarshal([]byte(resultJSON), &payload) != nil {
 		return nil
 	}
-	if taskType == model.TaskTypeDepthCapture {
+	// 深度捕捉与 VSR 擦除的结果都是扁平的 Result（resourceId 在顶层）：
+	// outputFromValue 把整个 payload 当作 video 输出读 resourceId。
+	if taskType == model.TaskTypeDepthCapture || taskType == model.TaskTypeVideoEraseVSR {
 		if output, ok := outputFromValue(payload, "video", 0); ok && output.ResourceID != "" {
 			return []CanonicalOutput{output}
 		}

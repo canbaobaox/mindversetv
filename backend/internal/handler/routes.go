@@ -169,6 +169,34 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc taskRouteService, hostedProfile 
 		}
 		ok(c, task)
 	})
+	r.POST("/vsr-erases", func(c *gin.Context) {
+		if !requireTrustedDesktopWritePrincipal(c, "视频智能擦除只能由当前桌面界面创建") {
+			return
+		}
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		policy, available := loadRuntimePolicy(c, svc)
+		if !available || !enforceRateLimit(c, "vsr-erase:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		var req localtask.VideoEraseVSRCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		req.TraceID = TraceID(c)
+		req.RequestID = RequestID(c)
+		task, err := requestTaskPort(c, svc).CreateVideoEraseVSRTask(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, task)
+	})
 	r.GET("/tasks", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

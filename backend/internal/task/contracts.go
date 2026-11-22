@@ -5,6 +5,7 @@ import (
 
 	"infinite-canvas/backend/internal/editing"
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/videosr"
 )
 
 // CreateRequest is the transport-neutral command accepted by the local task
@@ -65,6 +66,21 @@ type DepthCaptureCreateRequest struct {
 	ClientOperationID string `json:"clientOperationId"`
 	TraceID           string `json:"-"`
 	RequestID         string `json:"-"`
+}
+
+// VideoEraseVSRCreateRequest is the HTTP/local-port command for local VSR
+// subtitle/watermark removal. Region is the relative (0-1) dialog box;
+// nil means auto-detect (no -c, full-frame scan). ClientOperationID is optional.
+type VideoEraseVSRCreateRequest struct {
+	ProjectID         string          `json:"projectId"`
+	NodeID            string          `json:"nodeId,omitempty"`
+	ResourceID        string          `json:"resourceId"`
+	EraseType         string          `json:"eraseType,omitempty"`
+	InpaintMode       string          `json:"inpaintMode,omitempty"`
+	Region            *videosr.Region `json:"region,omitempty"`
+	ClientOperationID string          `json:"clientOperationId"`
+	TraceID           string          `json:"-"`
+	RequestID         string          `json:"-"`
 }
 
 // TimelineRenderInput is the durable local-executor payload for render tasks.

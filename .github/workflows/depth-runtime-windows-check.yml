@@ -16,6 +16,9 @@ on:
       store_packages:
         type: boolean
         default: false
+      variants:
+        type: string
+        default: '["cpu", "cuda"]'
 
 permissions:
   contents: read
@@ -28,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [cpu, cuda]
+        variant: ${{ fromJSON(inputs.variants) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -75,7 +78,7 @@ jobs:
           $modelDir = Join-Path $env:RUNNER_TEMP "beeftv-depth-model\checkpoints"
           New-Item -ItemType Directory -Path $modelDir -Force | Out-Null
           $model = Join-Path $modelDir "video_depth_anything_vits.pth"
-          Invoke-WebRequest -Uri "https://github.com/glanderness/BeefTV/releases/download/v1.5.5/video_depth_anything_vits.pth" -OutFile $model
+          Invoke-WebRequest -Uri "https://huggingface.co/depth-anything/Video-Depth-Anything-Small/resolve/main/video_depth_anything_vits.pth" -OutFile $model
           $zip = Resolve-Path ./build/depth-runtime/beeftv-depth-runtime-v1-windows-amd64-cpu.zip
           $unpacked = Join-Path $env:RUNNER_TEMP "beeftv-depth-中文 path"
           Expand-Archive -LiteralPath $zip -DestinationPath $unpacked

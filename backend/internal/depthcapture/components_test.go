@@ -2,7 +2,10 @@ package depthcapture
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -37,6 +40,10 @@ func TestComponentManifestMirrorsRespectExplicitOverride(t *testing.T) {
 			name := "depth-runtime-manifest.json"
 			if platform == "windows-amd64" {
 				name = "depth-runtime-manifest.v2.json"
+				if options.ManifestURL != mindverseDepthReleaseBase+name || len(options.ManifestMirrors) != 0 {
+					t.Fatalf("default windows sources: %+v", options)
+				}
+				continue
 			}
 			if options.ManifestURL != componentCOSBase+name || !reflect.DeepEqual(options.ManifestMirrors, []string{componentR2Base + name, componentGHBase + name}) {
 				t.Fatalf("default sources: %+v", options)
@@ -178,6 +185,73 @@ func TestCUDAFallbackRequestsCPUConsentWithoutDownloading(t *testing.T) {
 	svc := New(Deps{GOOS: "windows", GOARCH: "amd64", DataDir: t.TempDir(), Media: &fakeMedia{resource: testVideo(), body: []byte("video")}, Tasks: tasks, Installer: cudaOnlyInstaller{t}, WindowsManifestPublicKeyBase64: base64.StdEncoding.EncodeToString(make([]byte, 32)), NVIDIA: func(context.Context) bool { return true }, ProbeCUDA: func(context.Context, string, string, string) error { return ErrCUDADevice }})
 	svc.componentState = ComponentState{Status: "ready", Variant: "cuda"}
 	if err := svc.Process(context.Background(), &model.Task{ID: "cuda-fallback", UserID: "user-1", InputJSON: `{"resourceId":"res-1"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tasks.failMsg, "CPU") || !svc.componentFallbackCPU || svc.componentState.Status != "" {
+		t.Fatalf("CPU fallback lacks actionable consent: %s %+v", tasks.failMsg, svc.componentState)
+	}
+}
+
+func cpuOnlySignedManifest(t *testing.T, private ed25519.PrivateKey) []byte {
+	t.Helper()
+	cpu := depthruntime.Artifact{URLs: []string{"https://example.test/cpu.zip"}, Size: 100, SHA256: strings.Repeat("a", 64), Files: 1, ExpandedSize: 200}
+	model := depthruntime.Artifact{URLs: []string{"https://example.test/model.pth"}, Size: 100, SHA256: strings.Repeat("c", 64)}
+	payload, err := json.Marshal(depthruntime.Manifest{Version: 2, Runtimes: map[string]depthruntime.Artifact{"windows-amd64/cpu": cpu}, Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := json.Marshal(map[string]string{
+		"payload":   base64.StdEncoding.EncodeToString(payload),
+		"signature": base64.StdEncoding.EncodeToString(ed25519.Sign(private, payload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return envelope
+}
+
+func TestComponentStatusFallsBackToCPUWhenManifestIsCPUOnly(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := cpuOnlySignedManifest(t, private)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(envelope)
+	}))
+	defer server.Close()
+	svc := New(Deps{GOOS: "windows", GOARCH: "amd64", DataDir: t.TempDir(), WindowsManifestPublicKeyBase64: base64.StdEncoding.EncodeToString(public), NVIDIA: func(context.Context) bool { return true }, Getenv: func(key string) string {
+		if key == manifestEnv {
+			return server.URL
+		}
+		return ""
+	}})
+	state, err := svc.ComponentStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Variant != "cpu" || state.DownloadBytes != 200 {
+		t.Fatalf("CPU fallback plan: %+v", state)
+	}
+}
+
+type cpuOnlyManifestInstaller struct{ t *testing.T }
+
+func (i cpuOnlyManifestInstaller) Ensure(_ context.Context, options depthruntime.EnsureOptions) (depthruntime.Installation, error) {
+	if !options.Offline {
+		i.t.Fatal("capture attempted an implicit download")
+	}
+	if options.Variant == "cuda" {
+		return depthruntime.Installation{}, depthruntime.ErrVariantUnavailable
+	}
+	return depthruntime.Installation{}, depthruntime.ErrNotInstalled
+}
+
+func TestCaptureFallsBackToCPUWhenManifestLacksCUDA(t *testing.T) {
+	tasks := &fakeTasks{}
+	svc := New(Deps{GOOS: "windows", GOARCH: "amd64", DataDir: t.TempDir(), Media: &fakeMedia{resource: testVideo(), body: []byte("video")}, Tasks: tasks, Installer: cpuOnlyManifestInstaller{t}, WindowsManifestPublicKeyBase64: base64.StdEncoding.EncodeToString(make([]byte, 32)), NVIDIA: func(context.Context) bool { return true }})
+	svc.componentState = ComponentState{Status: "ready", Variant: "cuda"}
+	if err := svc.Process(context.Background(), &model.Task{ID: "cpu-only-manifest", UserID: "user-1", InputJSON: `{"resourceId":"res-1"}`}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(tasks.failMsg, "CPU") || !svc.componentFallbackCPU || svc.componentState.Status != "" {

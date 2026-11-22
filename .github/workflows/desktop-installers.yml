@@ -126,6 +126,9 @@ jobs:
         env:
           CGO_ENABLED: '1'
           BEEFTV_UPDATER_PUBLIC_KEY: ${{ vars.BEEFTV_UPDATER_PUBLIC_KEY }}
+          # 深度组件公钥与更新器共用同一对密钥；print-ldflags 只注入更新器的
+          # 变量，深度公钥必须经 BEEFTV_EXTRA_LDFLAGS 补（见 release-desktop.yml 上游写法）。
+          BEEFTV_EXTRA_LDFLAGS: -X infinite-canvas/backend/internal/app.depthWindowsManifestPublicKeyBase64=${{ vars.BEEFTV_UPDATER_PUBLIC_KEY }}
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-beeftv-windows-release.ps1
       - name: Package native installer

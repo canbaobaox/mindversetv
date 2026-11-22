@@ -1,0 +1,139 @@
+name: Build VSR CPU package
+
+# 打 VSR（video-subtitle-remover）Windows CPU 便携包，供 MindVerseTV 去字幕/去水印
+# sidecar 首次使用时按需下载。只手动触发；产物进本仓库的 vsr-cpu-<版本> Release，
+# Go 侧（backend/internal/videosr）钉死该 URL + sha256。
+#
+# 打包流程照抄上游 YaoFANGUK/video-subtitle-remover 的 build-windows-cpu.yml
+#（QPT 打包，HARDWARD_ACCELERATION_OPTION=False，Python 3.12），两处不同：
+#  1. 打完删掉 ProPainter 权重（非商业许可，sidecar 不用该模式）及其 RAFT/流补全依赖；
+#  2. 只发 Release 文件夹的 zip（Go 标准库可解），不发 Debug、不发 7z。
+# 布局合同（Go 侧依赖，改前先改 backend/internal/videosr/runtime.go）：
+#  zip 解开后根目录须有 Python/python.exe 与 resources/backend/main.py。
+
+on:
+  workflow_dispatch:
+    inputs:
+      vsr_ref:
+        description: "VSR 上游 tag/分支（默认 1.4.0）"
+        required: false
+        default: "1.4.0"
+
+concurrency:
+  group: vsr-cpu-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require fork main and unused runtime tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = canbaobaox/mindversetv
+          test "$GITHUB_REF" = refs/heads/main
+          TAG="vsr-cpu-${{ inputs.vsr_ref }}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          if gh release view "$TAG" >/dev/null 2>&1 || git ls-remote --exit-code origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Runtime release $TAG already exists; immutable assets cannot be overwritten."
+            exit 1
+          fi
+      - name: Clone VSR source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ inputs.vsr_ref }}" https://github.com/YaoFANGUK/video-subtitle-remover.git vsr-src
+          grep -E '^VERSION = ' vsr-src/backend/config.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Disable hardware acceleration
+        shell: bash
+        run: sed -i 's/HARDWARD_ACCELERATION_OPTION *= *.*/HARDWARD_ACCELERATION_OPTION = False/g' vsr-src/backend/config.py
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd vsr-src
+          pip install paddlepaddle==3.0.0
+          pip install torch==2.7.0 torchvision==0.22.0
+          pip install -r requirements.txt
+          pip freeze > requirements.txt
+          pip install QPT==1.0b8 setuptools
+      - name: Fix QPT internal error
+        shell: bash
+        run: |
+          SITE_PACKAGES=$(python -c "import site, os; print(os.path.join(site.getsitepackages()[0], 'Lib', 'site-packages'))")
+          SITE_PACKAGES_UNIX=$(cygpath -u "$SITE_PACKAGES")
+          sed -i '98c\        try:\n            dep = pkg.requires()\n        except TypeError:\n            continue' "${SITE_PACKAGES_UNIX}/qpt/kernel/qpackage.py"
+      - name: QPT package (CPU)
+        shell: bash
+        env:
+          QPT_Action: "True"
+        run: |
+          set -euo pipefail
+          cd vsr-src
+          python backend/tools/makedist.py
+          # makedist.py 把产物写到仓库上一级的 vsr_out/。
+          test -d ../vsr_out/Release
+      - name: Strip ProPainter weights (non-commercial, unused by the sidecar)
+        shell: bash
+        run: |
+          # 1.1.1 实测布局：resources/backend/models/video/ProPainter_*.pth +
+          # RAFT/流补全（同为 ProPainter 依赖）。1.4.0 布局若有变，下面按名删，
+          # 找不到也不报错；删完由下一步的布局校验兜底。
+          rm -f vsr_out/Release/resources/backend/models/video/ProPainter_*.pth \
+            vsr_out/Release/resources/backend/models/video/raft-things.pth \
+            vsr_out/Release/resources/backend/models/video/recurrent_flow_completion.pth || true
+          rm -rf vsr_out/Release/resources/backend/models/propainter \
+            vsr_out/Release/resources/backend/models/video/propainter || true
+          find vsr_out/Release/resources/backend/models -iname '*propainter*' -print -delete || true
+      - name: Verify package layout contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f vsr_out/Release/Python/python.exe
+          test -f vsr_out/Release/resources/backend/main.py
+          test -f vsr_out/Release/resources/LICENSE
+          echo "layout OK: Python/python.exe + resources/backend/main.py + resources/LICENSE"
+      - name: Repackage as zip + sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="vsr-cpu-${{ inputs.vsr_ref }}.zip"
+          cd vsr_out/Release
+          7z a -tzip -mx=9 "../../$ZIP" ./*
+          cd ../..
+          SIZE=$(stat -c%s "$ZIP")
+          echo "zip size: $SIZE bytes"
+          if [ "$SIZE" -ge 2147483648 ]; then
+            echo "zip exceeds the 2 GiB GitHub per-file limit; split it and teach backend/internal/videosr to use segmented parts first."
+            exit 1
+          fi
+          sha256sum "$ZIP" > "$ZIP.sha256"
+          cat "$ZIP.sha256"
+      - name: Publish immutable component release
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="vsr-cpu-${{ inputs.vsr_ref }}.zip"
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          VSR (video-subtitle-remover) Windows x64 CPU portable package for MindVerseTV.
+
+          Downloaded on first use by the local subtitle/watermark erase sidecar; not bundled in the desktop installer. CPU inference can be slow on long videos. ProPainter weights are removed (non-commercial license); only STTN/LaMa modes are used. Ships VSR's Apache-2.0 LICENSE under resources/.
+          EOF
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "VSR CPU package $TAG (MindVerseTV)" --notes-file "$RUNNER_TEMP/notes.md"
+          gh release upload "$TAG" "$ZIP" "$ZIP.sha256"
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          echo "Published $TAG. Update backend/internal/videosr/runtime.go defaultArtifact with the new URL, size and sha256."

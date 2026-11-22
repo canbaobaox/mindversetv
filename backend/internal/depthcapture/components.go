@@ -62,6 +62,15 @@ func (s *Service) ComponentStatus(ctx context.Context, refresh ...bool) (Compone
 			return state, err
 		}
 		plan, err := depthruntime.DownloadPlan(ctx, options)
+		if err != nil && errors.Is(err, depthruntime.ErrVariantUnavailable) && state.Variant == "cuda" {
+			// 清单只提供 CPU 档时，N 卡机器也改用 CPU 包，不直接报错。
+			state.Variant = "cpu"
+			options, err = s.componentOptions(platform, state.Variant)
+			if err != nil {
+				return state, err
+			}
+			plan, err = depthruntime.DownloadPlan(ctx, options)
+		}
 		if err != nil {
 			return state, err
 		}

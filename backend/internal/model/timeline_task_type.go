@@ -8,4 +8,5 @@ const (
 	TaskTypeTimelineRender        = "timeline_render"
 	TaskTypeDepthCapture          = "depth_capture"
 	TaskTypeCanvasMediaTransform  = "canvas_media_transform"
+	TaskTypeVideoEraseVSR         = "video_erase_vsr"
 )

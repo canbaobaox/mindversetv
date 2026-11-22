@@ -256,6 +256,7 @@ type WorkerExecuteDeps struct {
 	RunTimeline           func(*model.Task, context.Context) error
 	RunRender             func(*model.Task, context.Context) error
 	RunDepth              func(*model.Task, context.Context) error
+	RunVideoEraseVSR      func(*model.Task, context.Context) error
 	RunCanvasMedia        func(*model.Task, context.Context) error
 	BeginRouteAttempt     func(*model.Task) (*model.RouteAttempt, error)
 	ExecuteRoute          func(context.Context, *model.Task, *model.RouteAttempt) (RouteExecutionResult, error)
@@ -291,6 +292,9 @@ func ExecuteClaimedTask(deps WorkerExecuteDeps, session taskruntime.Session) tas
 	}
 	if task.Type == model.TaskTypeDepthCapture {
 		return SpecialTaskOutcome(session, deps.RunDepth)
+	}
+	if task.Type == model.TaskTypeVideoEraseVSR {
+		return SpecialTaskOutcome(session, deps.RunVideoEraseVSR)
 	}
 	if task.Type == model.TaskTypeCanvasMediaTransform {
 		return SpecialTaskOutcome(session, deps.RunCanvasMedia)

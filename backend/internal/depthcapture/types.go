@@ -24,11 +24,14 @@ const (
 	runtimeEnv  = "BEEFTV_DEPTH_RUNTIME"
 	manifestEnv = "BEEFTV_DEPTH_MANIFEST_URL"
 
-	componentCOSBase          = "https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/depth-runtime-v2/"
-	componentR2Base           = "https://updates.beefapi.com/beeftv/components/depth-runtime-v2/"
-	componentGHBase           = "https://github.com/glanderness/BeefTV/releases/download/depth-runtime-mirrors-v1/"
+	componentCOSBase = "https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/depth-runtime-v2/"
+	componentR2Base  = "https://updates.beefapi.com/beeftv/components/depth-runtime-v2/"
+	componentGHBase  = "https://github.com/glanderness/BeefTV/releases/download/depth-runtime-mirrors-v1/"
+	// MindVerseTV 自建签名清单：只发 CPU 档，托管在我们自己的 Release
+	// depth-runtime-v2；非 Windows 的 v1 清单仍走上游地址（本次不动）。
+	mindverseDepthReleaseBase = "https://github.com/canbaobaox/mindversetv/releases/download/depth-runtime-v2/"
 	defaultManifestURL        = componentCOSBase + "depth-runtime-manifest.json"
-	defaultWindowsManifestURL = componentCOSBase + "depth-runtime-manifest.v2.json"
+	defaultWindowsManifestURL = mindverseDepthReleaseBase + "depth-runtime-manifest.v2.json"
 )
 
 // CreateRequest is the HTTP create body. Handler keeps the app alias.

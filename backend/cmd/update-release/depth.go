@@ -15,6 +15,7 @@ func cmdDepthManifest(command string, args []string, stdout, stderr io.Writer) e
 	fs := newFlagSet(command, stderr)
 	input := fs.String("input", "", "manifest path")
 	output := fs.String("output", "", "signed manifest output (sign-depth only)")
+	cpuOnly := fs.Bool("cpu-only", false, "only require the windows-amd64/cpu runtime (MindVerseTV ships CPU only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -43,7 +44,11 @@ func cmdDepthManifest(command string, args []string, stdout, stderr io.Writer) e
 	if err != nil {
 		return err
 	}
-	for _, variant := range []string{"cpu", "cuda"} {
+	variants := []string{"cpu", "cuda"}
+	if *cpuOnly {
+		variants = []string{"cpu"}
+	}
+	for _, variant := range variants {
 		artifact, ok := manifest.Runtimes["windows-amd64/"+variant]
 		if !ok || artifact.Size <= 0 || artifact.Files <= 0 || artifact.ExpandedSize <= 0 || len(artifact.SHA256) != 64 || (len(artifact.URLs) == 0 && len(artifact.Parts) == 0) {
 			return fmt.Errorf("incomplete Windows %s runtime", variant)
@@ -53,6 +58,10 @@ func cmdDepthManifest(command string, args []string, stdout, stderr io.Writer) e
 		if err := os.WriteFile(*output, raw, 0o644); err != nil {
 			return err
 		}
+	}
+	if *cpuOnly {
+		fmt.Fprintln(stdout, "Verified signed Windows CPU-only depth manifest")
+		return nil
 	}
 	fmt.Fprintln(stdout, "Verified signed Windows CPU and CUDA depth manifest")
 	return nil

@@ -40,6 +40,11 @@ var (
 
 var ErrNotInstalled = errors.New("深度捕捉组件尚未安装，请在设置的存储页面下载后再使用")
 
+// ErrVariantUnavailable means the signed manifest has no package for the
+// requested platform/variant. Callers fall back to the CPU package instead
+// of failing when the manifest is CPU-only.
+var ErrVariantUnavailable = errors.New("深度组件清单缺少对应的 Windows 运行包")
+
 const modelSize = int64(116440756)
 const modelSHA = "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609"
 
@@ -124,7 +129,7 @@ func loadArtifacts(ctx context.Context, options EnsureOptions) (Manifest, Artifa
 		var ok bool
 		artifact, ok = manifest.Runtimes[options.Platform+"/"+options.Variant]
 		if !ok {
-			return Manifest{}, Artifact{}, errors.New("深度组件清单缺少对应的 Windows 运行包")
+			return Manifest{}, Artifact{}, ErrVariantUnavailable
 		}
 		if artifact.Files <= 0 || artifact.ExpandedSize <= 0 {
 			return Manifest{}, Artifact{}, errors.New("Windows 深度组件清单缺少解压体积或文件数")

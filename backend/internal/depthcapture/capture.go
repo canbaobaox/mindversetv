@@ -2,6 +2,8 @@ package depthcapture
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"infinite-canvas/backend/internal/depthruntime"
 	"infinite-canvas/backend/internal/mediatools"
 	"infinite-canvas/backend/internal/model"
 )
@@ -54,6 +57,11 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 		var resolveErr error
 		cudaPython, cudaToolDir, cudaModelRuntime, resolveErr = s.resolveRuntime(probeCtx, task, platform, "cuda")
 		if resolveErr != nil {
+			if errors.Is(resolveErr, depthruntime.ErrVariantUnavailable) {
+				// 清单只提供 CPU 档时，CUDA 探测直接按设备不可用处理，
+				// 走已有的 CPU 回落，不让任务死在组件阶段。
+				return fmt.Errorf("%w: 清单未提供 CUDA 运行包，改用 CPU", ErrCUDADevice)
+			}
 			return resolveErr
 		}
 		return s.cudaProbe(probeCtx, cudaPython, cudaToolDir, cudaModelRuntime)

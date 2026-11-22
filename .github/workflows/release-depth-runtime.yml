@@ -15,6 +15,7 @@ jobs:
     uses: ./.github/workflows/depth-runtime-windows-check.yml
     with:
       store_packages: true
+      variants: '["cpu"]'
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -27,10 +28,10 @@ jobs:
       BEEFTV_UPDATER_PUBLIC_KEY: ${{ vars.BEEFTV_UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Require official main and unused runtime tag
+      - name: Require fork main and unused runtime tag
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = glanderness/BeefTV
+          test "$GITHUB_REPOSITORY" = canbaobaox/mindversetv
           test "$GITHUB_REF" = refs/heads/main
           if gh release view depth-runtime-v2 >/dev/null 2>&1 || git ls-remote --exit-code origin refs/tags/depth-runtime-v2 >/dev/null 2>&1; then
             echo 'Runtime release already exists; immutable assets cannot be overwritten.'
@@ -51,27 +52,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s scripts -p 'test_prepare_depth_manifest.py'
-          python3 scripts/prepare-depth-manifest.py dist/depth dist/depth-payload.json
+          python3 scripts/prepare-depth-manifest.py dist/depth dist/depth-payload.json --cpu-only
           cd backend
           go test ./cmd/update-release ./internal/depthruntime
-          go run ./cmd/update-release sign-depth --input ../dist/depth-payload.json --output ../dist/depth/depth-runtime-manifest.v2.json
-          go run ./cmd/update-release verify-depth --input ../dist/depth/depth-runtime-manifest.v2.json
+          go run ./cmd/update-release sign-depth --cpu-only --input ../dist/depth-payload.json --output ../dist/depth/depth-runtime-manifest.v2.json
+          go run ./cmd/update-release verify-depth --cpu-only --input ../dist/depth/depth-runtime-manifest.v2.json
       - name: Publish immutable optional runtime
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/notes.md" <<'EOF'
-          Windows x64 optional depth-video runtime for BeefTV v1.6.12 and later.
+          Windows x64 optional depth-video runtime for MindVerseTV (CPU only).
 
-          CPU inference has been tested on a Windows AMD machine with 2-second and 15-second clips. CUDA packages pass build and relocation checks; real NVIDIA GPU inference is a community testing preview. CUDA device failures fall back to CPU once. CPU processing can be slow and memory intensive. Please include GPU, driver version, BeefTV version and task diagnostics when reporting issues.
-
-          Packages and the Small model are downloaded on first use. The signed manifest verifies every archive and CUDA part. These are optional components, not desktop installers.
+          CPU inference runs on any Windows x64 machine; processing can be slow and memory intensive. The Small model is downloaded on first use. The signed manifest verifies the archive. This is an optional component, not a desktop installer.
           EOF
-          gh release create depth-runtime-v2 --draft --target "$GITHUB_SHA" --title 'Windows depth runtime v2 — CUDA community preview' --notes-file "$RUNNER_TEMP/notes.md"
+          gh release create depth-runtime-v2 --draft --target "$GITHUB_SHA" --title 'Windows depth runtime v2 — CPU only (MindVerseTV)' --notes-file "$RUNNER_TEMP/notes.md"
           gh release upload depth-runtime-v2 dist/depth/*
           gh release edit depth-runtime-v2 --draft=false --prerelease --latest=false
-
-  mirror-cnb:
-    needs: publish
-    uses: ./.github/workflows/mirror-depth-cnb.yml
-    secrets:
-      BEEFTV_CNB_TRIGGER_TOKEN: ${{ secrets.BEEFTV_CNB_TRIGGER_TOKEN }}

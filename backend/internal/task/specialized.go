@@ -10,6 +10,7 @@ import (
 	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/transcription"
+	"infinite-canvas/backend/internal/videosr"
 )
 
 type localExecutorKind struct {
@@ -58,6 +59,16 @@ func localExecutorSchema(taskType string) (localExecutorKind, error) {
 			Stage:    depthcapture.InitialStage,
 			Progress: 0,
 			Log:      "深度动作捕捉任务已进入队列",
+		}, nil
+	case model.TaskTypeVideoEraseVSR:
+		return localExecutorKind{
+			Type:     model.TaskTypeVideoEraseVSR,
+			Prompt:   videosr.Prompt,
+			Provider: videosr.Provider,
+			Model:    videosr.ModelID,
+			Stage:    videosr.InitialStage,
+			Progress: 0,
+			Log:      "视频智能擦除任务已进入队列",
 		}, nil
 	default:
 		return localExecutorKind{}, kernel.BadAuthRequest(errUnsupportedLocalExecutor(taskType))
@@ -206,6 +217,46 @@ func (s *Service) CreateDepthCaptureTask(userID string, req DepthCaptureCreateRe
 	if nodeID := strings.TrimSpace(req.NodeID); nodeID != "" {
 		if strings.TrimSpace(req.ProjectID) == "" {
 			return nil, kernel.BadAuthRequest("指定深度结果节点时必须提供画布 ID")
+		}
+		input["metadata"] = map[string]any{"nodeId": nodeID, "source": "canvas"}
+	}
+	return s.admitSpecialized(userID, specializedAdmission{
+		kind:      kind,
+		projectID: strings.TrimSpace(req.ProjectID),
+		input:     withClientOperation(input, req.ClientOperationID),
+		traceID:   req.TraceID,
+		requestID: req.RequestID,
+	})
+}
+
+func (s *Service) CreateVideoEraseVSRTask(userID string, req VideoEraseVSRCreateRequest) (*model.Task, error) {
+	kind, err := localExecutorSchema(model.TaskTypeVideoEraseVSR)
+	if err != nil {
+		return nil, err
+	}
+	resourceID := strings.TrimSpace(req.ResourceID)
+	if resourceID == "" {
+		return nil, kernel.BadAuthRequest(videosr.ErrNeedVideo.Error())
+	}
+	if s.deps.OwnedMedia == nil {
+		return nil, unavailable()
+	}
+	resource, err := s.deps.OwnedMedia.Resource(userID, resourceID)
+	if err != nil || resource == nil {
+		return nil, kernel.BadAuthRequest(videosr.ErrMissingVideo.Error())
+	}
+	eraseType := videosr.EraseType(strings.TrimSpace(req.EraseType))
+	prepared, err := videosr.PrepareInput(resourceID, resource, eraseType, strings.TrimSpace(req.InpaintMode), req.Region)
+	if err != nil {
+		return nil, kernel.BadAuthRequest(err.Error())
+	}
+	input, err := decodeObject(prepared)
+	if err != nil {
+		return nil, err
+	}
+	if nodeID := strings.TrimSpace(req.NodeID); nodeID != "" {
+		if strings.TrimSpace(req.ProjectID) == "" {
+			return nil, kernel.BadAuthRequest("指定擦除结果节点时必须提供画布 ID")
 		}
 		input["metadata"] = map[string]any{"nodeId": nodeID, "source": "canvas"}
 	}
