@@ -2,6 +2,19 @@ import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { chromium } from "playwright";
 
+// 浏览器启动只给 10 秒，失败重试一次：2026-11-22 quality 45030378938 里本用例
+// 在 30 秒处无断言超时（正常约 5.5 秒），同次日志里 Bun 在该用例前刚杀掉一个
+// 残留进程；此前三次 CI 与本地四次都一次通过。启动本身默认 30 秒超时，等于
+// 用例预算，卡住就整段烧光且不留诊断；重试只动启动环节，断言一个字不改。
+// 最坏耗时约 10 + 10 + 6 秒，仍在 30 秒用例预算内。
+async function launchBrowser(executablePath: string | undefined) {
+    try {
+        return await chromium.launch({ executablePath, headless: true, timeout: 10_000 });
+    } catch {
+        return await chromium.launch({ executablePath, headless: true, timeout: 10_000 });
+    }
+}
+
 test("generation cards freeze decorative motion and timer paints during gestures, then catch up", async () => {
     const build = await Bun.build({ entrypoints: [import.meta.dir + "/fixtures/canvas-generation-motion-harness.tsx"], target: "browser",
         define: { "process.env.NODE_ENV": '"production"' },
@@ -11,7 +24,7 @@ test("generation cards freeze decorative motion and timer paints during gestures
     const script = await build.outputs.find(output => output.path.endsWith(".js"))!.text();
     const css = (await Promise.all(build.outputs.filter(output => output.path.endsWith(".css")).map(output => output.text()))).join("\n");
     const executablePath = [process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, process.env.CHROME_PATH, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find(path => path && existsSync(path));
-    const browser = await chromium.launch({ executablePath, headless: true });
+    const browser = await launchBrowser(executablePath);
     try {
         const page = await browser.newPage();
         page.setDefaultTimeout(5_000);
