@@ -36,6 +36,7 @@
 
 ## Recent updates
 
+- **[v2.3.3](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.3)** — Remove the Infistar, LL2, and Ysdui interface plugins, add the 梦由心生AI plugin, migrate the built-in channel to 梦由心生, and link account balance to 梦由心生.
 - **[v2.3.2](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.2)** — Fix the Windows desktop issue where the built-in assistant could not read or modify the canvas across keep-alive turns on local named pipes.
 - **[v2.3.1](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.1)** — Restore one-click channel setup compatibility for third-party desktop plugins, add the single-character replacement workflow, direct and batch storyboard asset binding, video-to-audio extraction, MCP call history, and prompt preset preferences, and ship storage migration rollback, domestic depth-runtime mirrors, and bundled macOS FFmpeg/ffprobe tools with corresponding open-source notices.
 - **[v2.3.0](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.0)** — Move four community plugins to on-demand marketplace installation and update ComfyUI and AutoDL workflow support, add stacked image generation history with side-by-side comparison and details, add video smart erase and fixed reference slot ordering, refine failure source navigation and retry confirmation, and improve desktop startup resilience and multi-video canvas zoom smoothness.
