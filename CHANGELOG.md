@@ -6,7 +6,7 @@ All notable public changes to BeefTV are documented in this file.
 
 ## v2.3.6
 
-- 本地 AI 去字幕/去水印：接开源 VSR（Apache-2.0），自动检测字幕/水印位置并修复，首次使用需下载约 700MB 组件；CPU 推理较慢，处理长视频请耐心等待；仍保留按选框快速擦除（delogo）备选。
+- 本地 AI 去字幕/去水印：接开源 VSR（Apache-2.0），自动检测字幕/水印位置并修复，首次使用需下载约 1.5GB 组件；CPU 推理较慢，处理长视频请耐心等待；仍保留按选框快速擦除（delogo）备选。
 - 深度动作捕捉自建签名清单：Windows 组件改从我们自己的 Release 下载并验签（CPU 档），安装包内置签名公钥；N 卡机器也用 CPU 包，不再重复下载。
 
 ## v2.3.5
