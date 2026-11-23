@@ -762,7 +762,7 @@ export function CanvasVideoSubtitleEraseDialog({
                         <p role="status">
                             云端服务暂未开启，可用本地处理（免费，不走云端）。
                             {localEngine === "vsr" && onConfirmVSR
-                                ? "AI 自动检测：自动找到字幕/水印位置并修复，首次使用需下载约 700MB 组件，处理较慢；选“指定区域”可改用上方选框限定范围。"
+                                ? "AI 自动检测：自动找到字幕/水印位置并修复，首次使用需下载约 1.5GB 组件，处理较慢；选“指定区域”可改用上方选框限定范围。"
                                 : "按上方选框区域擦除，可拖动选框调整位置。"}
                         </p>
                         {onConfirmVSR ? (
