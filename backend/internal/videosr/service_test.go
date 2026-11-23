@@ -216,8 +216,13 @@ func TestProcessFailsClosedWhenUnpublished(t *testing.T) {
 		Media:   media,
 		Tasks:   tasks,
 		GOOS:    "windows",
-		Getenv:  func(string) string { return "" },
-		Run:     nil,
+		Getenv: func(key string) string {
+			if key == packageSHAEnv {
+				return "not-a-sha256"
+			}
+			return ""
+		},
+		Run: nil,
 		ProbeOutput: func(ctx context.Context, path string) (mediatools.MediaMetadata, error) {
 			return mediatools.MediaMetadata{HasVideo: true, Width: 1920, Height: 1080, DurationMs: 10000, FPS: 30}, nil
 		},

@@ -70,7 +70,7 @@ func TestEnsureDownloadsAndInstalls(t *testing.T) {
 	defer server.Close()
 	dataDir := t.TempDir()
 	artifact := Artifact{
-		URLs:   []string{server.URL + "/vsr-cpu-v1.4.0.zip"},
+		URLs:   []string{server.URL + "/vsr-cpu-1.4.0.zip"},
 		Size:   int64(len(payload)),
 		SHA256: sum,
 	}
@@ -95,9 +95,27 @@ func TestEnsureDownloadsAndInstalls(t *testing.T) {
 }
 
 func TestEnsureFailsClosedWhenUnpublished(t *testing.T) {
-	_, err := Ensure(context.Background(), t.TempDir(), "windows", defaultArtifact, nil, nil)
+	unpublished := Artifact{
+		URLs:   []string{"https://example.invalid/vsr-cpu-1.4.0.zip"},
+		Size:   0,
+		SHA256: "",
+	}
+	_, err := Ensure(context.Background(), t.TempDir(), "windows", unpublished, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "尚未发布") {
 		t.Fatalf("got err %v, want ErrNotPublished", err)
+	}
+}
+
+func TestDefaultArtifactIsPublished(t *testing.T) {
+	artifact := ResolveArtifact(nil)
+	if len(artifact.URLs) != 1 || artifact.URLs[0] != "https://github.com/canbaobaox/mindversetv/releases/download/vsr-cpu-1.4.0/vsr-cpu-1.4.0.zip" {
+		t.Fatalf("urls %v", artifact.URLs)
+	}
+	if artifact.Size != 1570656403 {
+		t.Fatalf("size %d, want 1570656403", artifact.Size)
+	}
+	if artifact.SHA256 != "f1d7fb425cd1395ea35c2ab3115da1dbe7af1bef745f8e675e13d9ae40a4ca46" {
+		t.Fatalf("sha256 %q", artifact.SHA256)
 	}
 }
 
@@ -106,7 +124,7 @@ func TestEnsureRejectsBadHash(t *testing.T) {
 	server := servePackage(t, payload)
 	defer server.Close()
 	artifact := Artifact{
-		URLs:   []string{server.URL + "/vsr-cpu-v1.4.0.zip"},
+		URLs:   []string{server.URL + "/vsr-cpu-1.4.0.zip"},
 		Size:   int64(len(payload)),
 		SHA256: strings.Repeat("0", 64),
 	}

@@ -26,15 +26,15 @@ import (
 type Artifact = depthruntime.Artifact
 
 // defaultArtifact 是自打 CPU 便携包的钉死描述，由
-// .github/workflows/build-vsr-cpu.yml 产出（tag vsr-cpu-v1.4.0）。
-// Size 与 SHA256 在第一次打包落地后填入；填入之前 Ensure 直接报
-// ErrNotPublished，不会去下一个不存在的地址下载。
+// .github/workflows/build-vsr-cpu.yml 产出（tag vsr-cpu-1.4.0）。
+// Size 与 SHA256 是第一次打包落地的值（2026-11-23 按已发布的
+// .sha256 文件与 Content-Length 核对过）；换包必须同步改这里。
 var defaultArtifact = Artifact{
 	URLs: []string{
-		"https://github.com/canbaobaox/mindversetv/releases/download/vsr-cpu-v1.4.0/vsr-cpu-v1.4.0.zip",
+		"https://github.com/canbaobaox/mindversetv/releases/download/vsr-cpu-1.4.0/vsr-cpu-1.4.0.zip",
 	},
-	Size:   0,
-	SHA256: "",
+	Size:   1570656403,
+	SHA256: "f1d7fb425cd1395ea35c2ab3115da1dbe7af1bef745f8e675e13d9ae40a4ca46",
 }
 
 const (
@@ -70,7 +70,7 @@ func runtimePaths(dataDir, goos string) RuntimePaths {
 		Root:    root,
 		Python:  python,
 		ToolDir: root,
-		Archive: filepath.Join(dataDir, "downloads", "vsr-cpu-v1.4.0.zip"),
+		Archive: filepath.Join(dataDir, "downloads", "vsr-cpu-1.4.0.zip"),
 	}
 }
 
