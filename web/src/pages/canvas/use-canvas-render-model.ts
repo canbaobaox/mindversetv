@@ -39,6 +39,7 @@ type UseCanvasRenderModelOptions = {
     angleNodeId: string | null;
     lightingNodeId: string | null;
     emotionNodeId: string | null;
+    makeupNodeId: string | null;
     previewNodeId: string | null;
     contextMenu: ContextMenuState | null;
     versionCompareRootId: string | null;
@@ -102,6 +103,7 @@ export function useCanvasRenderModel({
     angleNodeId,
     lightingNodeId,
     emotionNodeId,
+    makeupNodeId,
     previewNodeId,
     contextMenu,
     versionCompareRootId,
@@ -332,6 +334,7 @@ export function useCanvasRenderModel({
     const angleNode = angleNodeId ? nodeById.get(angleNodeId) || null : null;
     const lightingNode = lightingNodeId ? nodeById.get(lightingNodeId) || null : null;
     const emotionNode = emotionNodeId ? nodeById.get(emotionNodeId) || null : null;
+    const makeupNode = makeupNodeId ? nodeById.get(makeupNodeId) || null : null;
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
     const contextMenuNode = contextMenu?.type === "node" ? nodeById.get(contextMenu.nodeId) || null : null;
     // Hover only drives transient affordances (toolbar/handles). Selection is
@@ -503,6 +506,7 @@ export function useCanvasRenderModel({
         angleNode,
         lightingNode,
         emotionNode,
+        makeupNode,
         annotationNode,
         batchChildCountById,
         batchMotionById,

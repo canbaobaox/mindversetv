@@ -607,6 +607,14 @@ export type CanvasNodeMetadata = {
         editMode?: "provider-mask" | "local-composite";
         fullImage?: boolean;
     };
+    // 妆容调节（二期模板）：只记本次妆容选择，供重试/追溯；不存图片本身。
+    makeupEdit?: {
+        sourceNodeId: string;
+        presetId: string;
+        label: string;
+        intensity: number;
+        notes?: string;
+    };
     maskEdit?: {
         sourceNodeId: string;
         maskStorageKey?: string;

@@ -1,0 +1,119 @@
+.canvas-template-picker {
+    display: flex;
+    width: 15rem;
+    flex-direction: column;
+    overflow: hidden;
+    border: var(--stroke-1) solid var(--dock-border);
+    border-radius: var(--dock-radius);
+    background: var(--dock-surface);
+    color: var(--fg);
+    box-shadow: var(--elevation-overlay);
+}
+
+.canvas-template-picker-head {
+    padding: 8px 12px 4px;
+    font-size: var(--fs-tiny);
+    font-weight: 600;
+    opacity: 0.7;
+}
+
+.canvas-template-picker-header {
+    border-bottom: var(--stroke-1) solid var(--dock-border);
+    padding: 4px 12px 8px;
+    font-size: var(--fs-tiny);
+    line-height: 1.5;
+}
+
+.canvas-template-picker-section {
+    display: flex;
+    flex-direction: column;
+    padding: 4px 0;
+}
+
+.canvas-template-picker-section + .canvas-template-picker-section {
+    border-top: var(--stroke-1) solid var(--dock-border);
+}
+
+.canvas-template-picker-section-title {
+    padding: 4px 12px 2px;
+    font-size: var(--fs-tiny);
+    font-weight: 600;
+    opacity: 0.55;
+}
+
+.canvas-template-picker-item {
+    display: flex;
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    padding: 6px 12px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: var(--fs-caption);
+    font-weight: 500;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+}
+
+.canvas-template-picker-item:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.canvas-template-picker-item:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.canvas-template-picker-item-label {
+    min-width: 0;
+}
+
+.canvas-template-picker-item-reason {
+    font-size: var(--fs-tiny);
+    font-weight: 400;
+    line-height: 1.4;
+    opacity: 0.7;
+}
+
+.canvas-template-picker-frame-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.canvas-template-picker-frame-option {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border: var(--stroke-1) solid var(--dock-border);
+    border-radius: var(--r-md);
+    background: transparent;
+    color: inherit;
+    font-size: var(--fs-tiny);
+    font-weight: 500;
+    line-height: 1.3;
+    text-align: left;
+    cursor: pointer;
+}
+
+.canvas-template-picker-frame-option:hover {
+    background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.canvas-template-picker-frame-option.is-active {
+    border-color: var(--fg);
+}
+
+.canvas-template-picker-frame-option-label {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

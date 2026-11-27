@@ -7,6 +7,13 @@ import type { CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node
 import type { CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
 import type { CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
+import type { CanvasMakeupPayload } from "@/components/canvas/canvas-node-makeup-dialog";
+import { buildGridGenerateLabel, buildGridGeneratePrompt } from "@/lib/canvas/canvas-grid-generate";
+import { buildLensLabel, buildLensPrompt } from "@/lib/canvas/canvas-lens";
+import { buildMakeupLabel, buildMakeupPrompt } from "@/lib/canvas/canvas-makeup";
+import { buildVideoMotionLabel, buildVideoMotionPrompt, CANVAS_VIDEO_TEMPLATE_SECONDS, findVideoMotionPreset } from "@/lib/canvas/canvas-video-motion";
+import { buildViewpointLabel, buildViewpointPrompt } from "@/lib/canvas/canvas-viewpoint";
+import type { ReferenceImage } from "@/types/image";
 import { buildLightingLabel, type CanvasImageLightingOptions } from "@/lib/canvas/canvas-lighting";
 import type { CanvasImageEmotionPayload } from "@/components/canvas/canvas-node-emotion-panel";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
@@ -97,6 +104,7 @@ export function useCanvasImageTools({
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
     const [lightingNodeId, setLightingNodeId] = useState<string | null>(null);
     const [emotionNodeId, setEmotionNodeId] = useState<string | null>(null);
+    const [makeupNodeId, setMakeupNodeId] = useState<string | null>(null);
 
     const clearDeletedImageNodes = useCallback((removedIds: Set<string>) => {
         const clear = (current: string | null) => (current && removedIds.has(current) ? null : current);
@@ -107,6 +115,7 @@ export function useCanvasImageTools({
         setAngleNodeId(clear);
         setLightingNodeId(clear);
         setEmotionNodeId(clear);
+        setMakeupNodeId(clear);
     }, []);
 
     useEffect(() => {
@@ -117,6 +126,7 @@ export function useCanvasImageTools({
         setAngleNodeId(null);
         setLightingNodeId(null);
         setEmotionNodeId(null);
+        setMakeupNodeId(null);
     }, [projectId]);
 
     const resolveImageEditStyle = useCallback((node: CanvasNodeData, prompt: string, config: AiConfig) => {
@@ -246,7 +256,7 @@ export function useCanvasImageTools({
         }
     }, [beginMediaOperation, pageUi, projectId, message, persistMediaNodes, setConnections, setNodes]);
 
-    const generateImageEditNode = useCallback(async (node: CanvasNodeData, payload: Omit<CanvasImageMaskEditPayload, "maskDataUrl"> & { maskDataUrl?: string; title?: string; editType?: "mask" | "angle" | "emotion"; nodeMetadata?: Partial<CanvasNodeMetadata>; onAccepted?: () => void }): Promise<boolean> => {
+    const generateImageEditNode = useCallback(async (node: CanvasNodeData, payload: Omit<CanvasImageMaskEditPayload, "maskDataUrl"> & { maskDataUrl?: string; title?: string; editType?: "mask" | "angle" | "emotion" | "template"; nodeMetadata?: Partial<CanvasNodeMetadata>; onAccepted?: () => void; extraReferenceImages?: ReferenceImage[] }): Promise<boolean> => {
         const operation = beginMediaOperation();
         if (!operation.isCurrent()) return false;
         try {
@@ -285,11 +295,13 @@ export function useCanvasImageTools({
             const prompt = payload.maskDataUrl ? formatMaskEditPrompt(userPrompt, localComposite) : userPrompt;
             const source = nodeReferenceImage(node);
             if (!source) return false;
+            const extraReferenceImages = payload.extraReferenceImages || [];
+            const referenceImages = [source, ...extraReferenceImages];
             const styleExecution = resolveImageEditStyle(node, prompt, generationConfig);
             if (!styleExecution) return false;
             const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
             const requestedCount = Math.max(1, Number(generationConfig.count) || 1);
-            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, requestedCount, [source]);
+            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, requestedCount, referenceImages);
             let uploadedMaskKey: string | undefined;
             if (payload.maskDataUrl && !payload.nodeMetadata?.emotionEdit) {
                 try {
@@ -361,7 +373,7 @@ export function useCanvasImageTools({
                     try {
                         const result = await operation.wait(runBackendCanvasGenerationTask({
                             projectId, nodeId: targetId, mode: "image", prompt: effectivePrompt,
-                            config: { ...generationConfig, count: String(editPlan.outputsPerRequest) }, referenceImages: [source],
+                            config: { ...generationConfig, count: String(editPlan.outputsPerRequest) }, referenceImages,
                             mask: maskReference,
                             signal: controller.signal, metadata: { sourceNodeId: node.id, edit: editKind, outputNodeIds, ...(localComposite ? { maskEditMode: "local-composite" } : {}), ...(extraNodeMetadata.emotionEdit ? { emotion: extraNodeMetadata.emotionEdit } : {}), ...styleMetadata },
                             onTaskCreated: (task) => operation.run(() => outputNodeIds.forEach((id) => bindGenerationTask(id, task))),
@@ -401,7 +413,7 @@ export function useCanvasImageTools({
                         const failure = canvasGenerationFailureMetadata(error, {
                             mode: "image",
                             prompt: effectivePrompt,
-                            referenceImages: [source],
+                            referenceImages,
                             ...(maskReference ? { mask: maskReference } : {}),
                         });
                         const details = failure.errorDetails || generationErrorMessage(error);
@@ -536,11 +548,100 @@ export function useCanvasImageTools({
         });
     }, [generateImageEditNode, setEmotionNodeId]);
 
+    // 二期模板：生成图片 / 镜头效果 / 宫格生成——与多角度同一条即时重绘链路
+    // （generateImageEditNode），当前图作参考图，点选后直接生成新图。
+    const generateImageTemplateNode = useCallback(async (node: CanvasNodeData, kind: "viewpoint" | "lens" | "grid", presetId: string) => {
+        if (node.type !== CanvasNodeType.Image || (!node.metadata?.content && !node.metadata?.storageKey)) {
+            message.warning("图片节点为空，无法生成");
+            return false;
+        }
+        const prompt = kind === "viewpoint" ? buildViewpointPrompt(presetId) : kind === "lens" ? buildLensPrompt(presetId) : buildGridGeneratePrompt(presetId);
+        const title = kind === "viewpoint" ? buildViewpointLabel(presetId) : kind === "lens" ? buildLensLabel(presetId) : buildGridGenerateLabel(presetId);
+        if (!prompt) {
+            message.warning("未找到该模板");
+            return false;
+        }
+        return generateImageEditNode(node, { prompt, title, generationConfig: { count: "1" }, editType: "template" });
+    }, [generateImageEditNode, message]);
+
+    // 二期模板：生成视频——建 idle 视频子节点并打开节点对话框，由用户在对话框点“生成”
+    // 走标准图生视频流程，与视频续写、故事板分镜同一条路。时长统一 5 秒（现有 videoSeconds 参数），
+    // 帧角色（首帧/尾帧）目前只在提示词里表达；站方是否认尾帧、duration 是否生效待真机验。
+    const generateVideoTemplateNode = useCallback((node: CanvasNodeData, presetId: string, secondFrameNode?: CanvasNodeData) => {
+        const preset = findVideoMotionPreset(presetId);
+        if (!preset) {
+            message.warning("未找到该模板");
+            return;
+        }
+        if (node.type !== CanvasNodeType.Image || (!node.metadata?.content && !node.metadata?.storageKey)) {
+            message.warning("图片节点为空，无法生成视频");
+            return;
+        }
+        if (preset.needsTwoFrames && !secondFrameNode) {
+            message.warning("首尾帧补间需要两张图");
+            return;
+        }
+        const videoModel = buildGenerationConfig(effectiveConfig, undefined, "video").model;
+        const prompt = buildVideoMotionPrompt(presetId);
+        // 向前推延：当前图是尾帧；其余：当前图是首帧；补间：当前图首帧、第二张图尾帧。
+        const startFrameNodeId = preset.id === "extend-backward" ? undefined : node.id;
+        const endFrameNodeId = preset.id === "extend-backward" ? node.id : preset.needsTwoFrames ? secondFrameNode?.id : undefined;
+        const childId = nanoid();
+        const videoSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
+        const child: CanvasNodeData = {
+            id: childId, type: CanvasNodeType.Video, title: buildVideoMotionLabel(presetId).slice(0, 36),
+            position: { x: node.position.x + node.width + 96, y: node.position.y }, width: videoSpec.width, height: videoSpec.height,
+            metadata: {
+                status: NODE_STATUS_IDLE, prompt, composerContent: prompt, model: videoModel,
+                generationMode: "video", videoEditOperation: "image_to_video",
+                videoStartFrameNodeId: startFrameNodeId, videoEndFrameNodeId: endFrameNodeId,
+                seconds: CANVAS_VIDEO_TEMPLATE_SECONDS, draft: "false", generatedFromNodeId: node.id,
+            },
+        };
+        const connections: CanvasConnection[] = [
+            { id: nanoid(), fromNodeId: node.id, toNodeId: childId },
+            ...(secondFrameNode ? [{ id: nanoid(), fromNodeId: secondFrameNode.id, toNodeId: childId }] : []),
+        ];
+        setNodes((current) => [...current, child]);
+        setConnections((current) => [...current, ...connections]);
+        pageUi.getState().setSelectedNodeIds(new Set([childId]));
+        pageUi.getState().setSelectedConnectionId(null);
+        pageUi.getState().setDialogNodeId(childId);
+    }, [effectiveConfig, message, pageUi, setConnections, setNodes]);
+
+    // 二期模板：妆容调节——与表情同一条即时重绘链路，当前图作参考图；
+    // “自定义”上传的妆容参考图作第二张参考图。
+    const generateMakeupNode = useCallback(async (node: CanvasNodeData, payload: CanvasMakeupPayload) => {
+        if (!node.metadata?.content && !node.metadata?.storageKey) return false;
+        const prompt = buildMakeupPrompt({ presetId: payload.presetId, intensity: payload.intensity, notes: payload.notes, hasCustomReference: Boolean(payload.customReference) });
+        if (!prompt) {
+            message.warning("未找到该妆容");
+            return false;
+        }
+        return generateImageEditNode(node, {
+            prompt,
+            title: buildMakeupLabel(payload.presetId),
+            editType: "template",
+            onAccepted: () => setMakeupNodeId(null),
+            nodeMetadata: {
+                makeupEdit: {
+                    sourceNodeId: node.id,
+                    presetId: payload.presetId,
+                    label: buildMakeupLabel(payload.presetId),
+                    intensity: payload.intensity,
+                    notes: payload.notes,
+                },
+            },
+            ...(payload.customReference ? { extraReferenceImages: [payload.customReference] } : {}),
+            generationConfig: { count: "1" },
+        });
+    }, [generateImageEditNode, message, setMakeupNodeId]);
+
     return {
-        clearDeletedImageNodes, angleNodeId, lightingNodeId, emotionNodeId, annotationNodeId,
+        clearDeletedImageNodes, angleNodeId, lightingNodeId, emotionNodeId, makeupNodeId, annotationNodeId,
         createImageReversePromptNodes, openPortraitTextureEditor, cropImageNode, cropNodeId,
-        generateAngleNode, generateLightingNode, maskEditImageNode: generateImageEditNode, maskEditNodeId, saveAnnotatedImageNode,
-        setAngleNodeId, setLightingNodeId, generateEmotionNode, setEmotionNodeId, setAnnotationNodeId,
+        generateAngleNode, generateLightingNode, generateImageTemplateNode, generateVideoTemplateNode, generateMakeupNode, maskEditImageNode: generateImageEditNode, maskEditNodeId, saveAnnotatedImageNode,
+        setAngleNodeId, setLightingNodeId, generateEmotionNode, setEmotionNodeId, setMakeupNodeId, setAnnotationNodeId,
         setCropNodeId, setMaskEditNodeId, setUpscaleNodeId, splitImageNode, upscaleImageNode, upscaleNodeId,
     };
 }

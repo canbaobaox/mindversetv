@@ -14,6 +14,9 @@ import { CanvasNodePlusTrigger } from "@/components/canvas/canvas-node-plus-trig
 const CanvasNodeLightingPanel = lazy(() =>
     import("@/components/canvas/canvas-node-lighting-dialog").then((module) => ({ default: module.CanvasNodeLightingPanel })),
 );
+const CanvasNodeMakeupPanel = lazy(() =>
+    import("@/components/canvas/canvas-node-makeup-dialog").then((module) => ({ default: module.CanvasNodeMakeupPanel })),
+);
 import { CanvasOverlayLayerContainer } from "@/components/canvas/canvas-overlay-layer";
 import { CANVAS_VIDEO_RETAKE_PANEL_HEIGHT, CanvasVideoInlineTrimOverlay } from "@/components/canvas/canvas-video-inline-trim";
 import { CanvasConnectionCreateMenu, CanvasNodePanelOverlay } from "@/components/canvas/canvas-workspace-overlays";
@@ -124,6 +127,7 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
         canvasImageNodes,
         emotionNode,
         lightingNode,
+        makeupNode,
         selectedNodeBounds,
         selectedVideoNodes,
         toolbarNode,
@@ -166,9 +170,13 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
         extractingVideoFramesNodeId,
         generateAngleNode,
         generateEmotionNode,
+        generateImageTemplateNode,
         generateLightingNode,
+        generateMakeupNode,
+        generateVideoTemplateNode,
         inlineTrimRunning,
         inlineVideoEditor,
+        makeupNodeId,
         maskEditNodeId,
         mergeSelectedVideos,
         mergeVideoProgress,
@@ -181,6 +189,7 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
         segmentRunningMode,
         setAnnotationNodeId,
         setCropNodeId,
+        setMakeupNodeId,
         setMaskEditNodeId,
         setUpscaleNodeId,
         splitImageNode,
@@ -198,7 +207,7 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
 
     // 一期换皮：图片/视频节点不再随选中出整条 dock，只由右边缘“＋”开胶囊。
     // 胶囊开给谁由 toolbarNodeId（点“＋”时写）决定；其余节点仍按选中出旧 dock。
-    const capsuleChromeHidden = isMediaGenerating || isCanvasNodeMoving || nodeImageSettingsOpen || annotationNodeId || maskEditNodeId || emotionNodeId || angleNodeId || (dialogNode && !isCanvasMediaResultNode(dialogNode)) || textEditorNodeId || inlineVideoEditor?.mode === "retake";
+    const capsuleChromeHidden = isMediaGenerating || isCanvasNodeMoving || nodeImageSettingsOpen || annotationNodeId || maskEditNodeId || emotionNodeId || makeupNodeId || angleNodeId || (dialogNode && !isCanvasMediaResultNode(dialogNode)) || textEditorNodeId || inlineVideoEditor?.mode === "retake";
     const hoveredNode = hoveredNodeId ? nodes.find((item) => item.id === hoveredNodeId) ?? null : null;
     const capsuleNode = capsuleNodeId ? nodes.find((item) => item.id === capsuleNodeId) ?? null : null;
     const toolbarNodeForBar = capsuleChromeHidden
@@ -247,6 +256,20 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
                             onClose={() => setLightingNodeId(null)}
                             onConfirm={(options, prompt) => {
                                 generateLightingNode(lightingNode, options, prompt);
+                            }}
+                        />
+                    </Suspense>
+                </AppModal>
+            ) : null}
+
+            {makeupNode?.metadata?.content ? (
+                <AppModal flush open centered title={null} closable={false} footer={null} width={880} onCancel={() => setMakeupNodeId(null)}>
+                    <Suspense fallback={null}>
+                        <CanvasNodeMakeupPanel
+                            dataUrl={makeupNode.metadata.content}
+                            onClose={() => setMakeupNodeId(null)}
+                            onConfirm={(payload) => {
+                                void generateMakeupNode(makeupNode, payload);
                             }}
                         />
                     </Suspense>
@@ -377,6 +400,10 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
                 onVideoRetake={!readOnly && toolbarNode?.type === CanvasNodeType.Video && generation.canRetakeVideo(toolbarNode) ? openVideoRetakePanel : undefined}
                 onAngle={(node) => { setDialogNodeId(null); setAngleNodeId((current) => (current === node.id ? null : node.id)); }}
                 onLighting={(node) => { setDialogNodeId(null); setLightingNodeId((current) => (current === node.id ? null : node.id)); }}
+                onImageTemplate={(node, kind, presetId) => { void generateImageTemplateNode(node, kind, presetId); }}
+                onVideoTemplate={(node, presetId, secondFrameNode) => { generateVideoTemplateNode(node, presetId, secondFrameNode); }}
+                onMakeup={(node) => { setDialogNodeId(null); setMakeupNodeId((current) => (current === node.id ? null : node.id)); }}
+                imageNodes={canvasImageNodes}
                 onPanorama={createPanoramaViewerDirect}
                 onPanoramaConfig={openPanoramaConfig}
                 onClose={() => pageUi.getState().setToolbarNodeId(null)}

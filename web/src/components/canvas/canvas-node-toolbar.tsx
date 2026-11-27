@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { App, Dropdown, Tooltip } from "antd";
 import type { MenuProps } from "antd";
-import { ChevronDown, ChevronRight, Globe2, Maximize2, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { Aperture, ChevronDown, ChevronRight, Clapperboard, Globe2, ImagePlus, LayoutGrid, Maximize2, Palette, SlidersHorizontal, Sparkles, X } from "lucide-react";
 
 import { canvasDockStyle } from "@/lib/canvas/canvas-aceternity-style";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -16,6 +16,7 @@ import { buildImageToolbarTools } from "./canvas-image-toolbar-tools";
 import { canConvertCanvasVideoDraft } from "@/lib/canvas/canvas-video-draft";
 import type { ToolbarTool } from "./canvas-video-toolbar-tools";
 import { CanvasGridSplitPicker } from "./canvas-grid-split-picker";
+import { CanvasImageTemplatePanels, type ImageTemplatePanelId } from "./canvas-node-template-panels";
 import "./canvas-node-capsule.css";
 
 type CanvasNodeToolbarProps = {
@@ -48,6 +49,11 @@ type CanvasNodeToolbarProps = {
     onLighting: (node: CanvasNodeData) => void;
     onPanorama: (node: CanvasNodeData) => void;
     onPanoramaConfig: (node: CanvasNodeData) => void;
+    // 二期模板：图片模板（生成图片 / 镜头效果 / 宫格生成）、视频模板、妆容弹窗。
+    onImageTemplate?: (node: CanvasNodeData, kind: "viewpoint" | "lens" | "grid", presetId: string) => void;
+    onVideoTemplate?: (node: CanvasNodeData, presetId: string, secondFrameNode?: CanvasNodeData) => void;
+    onMakeup?: (node: CanvasNodeData) => void;
+    imageNodes?: CanvasNodeData[];
     onClose: () => void;
     onViewImage: (node: CanvasNodeData) => void;
     onExtractVideoFrames: (node: CanvasNodeData, preset?: "current" | "first" | "last" | "firstLast") => void;
@@ -72,8 +78,8 @@ type CanvasNodeToolbarProps = {
 type CapsuleEntry = {
     id: string;
     label: string;
-    kind: "button" | "split" | "frames";
-    tool: ToolbarTool;
+    kind: "button" | "split" | "frames" | "panel" | "makeup";
+    tool: ToolbarTool | undefined;
 };
 
 type CapsuleEntryDraft = {
@@ -128,6 +134,10 @@ export function CanvasNodeToolbar({
     onLighting,
     onPanorama,
     onPanoramaConfig,
+    onImageTemplate,
+    onVideoTemplate,
+    onMakeup,
+    imageNodes = [],
     onClose,
     onViewImage,
     onExtractVideoFrames,
@@ -150,6 +160,7 @@ export function CanvasNodeToolbar({
 }: CanvasNodeToolbarProps) {
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [splitOpen, setSplitOpen] = useState(false);
+    const [templatePanel, setTemplatePanel] = useState<ImageTemplatePanelId | null>(null);
     const [containerWidth, setContainerWidth] = useState(1000);
     const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
     const toolbarRef = useRef<HTMLDivElement>(null);
@@ -162,6 +173,7 @@ export function CanvasNodeToolbar({
     useEffect(() => {
         setOpenMenuId(null);
         setSplitOpen(false);
+        setTemplatePanel(null);
     }, [node?.id]);
 
     // 胶囊只由点条外、× 或 Esc 收起；悬停离开、点开下拉菜单都不收。
@@ -388,6 +400,10 @@ export function CanvasNodeToolbar({
     // AI 超分（画质提升）随旧工具栏一起下线：云端超分服务未开启，节点保持置灰，
     // 这里直接不渲染；超分处理节点本身（Upscale 节点类型）不受影响。
     const findCapsuleTool = (id: string) => allTools.find((tool) => tool.id === id);
+    const templatePanelIdForEntry = (id: string): ImageTemplatePanelId | null =>
+        id === "viewpoint" ? "viewpoint" : id === "video-template" ? "video" : id === "lens" ? "lens" : id === "grid-generate" ? "grid" : null;
+    const templatePanelIcon = (panel: ImageTemplatePanelId) =>
+        panel === "viewpoint" ? <ImagePlus className="size-3.5" /> : panel === "video" ? <Clapperboard className="size-3.5" /> : panel === "lens" ? <Aperture className="size-3.5" /> : <LayoutGrid className="size-3.5" />;
     const runCapsuleTool = (tool: ToolbarTool | undefined) => {
         if (!tool || tool.disabled) return;
         tool.onClick();
@@ -417,18 +433,24 @@ export function CanvasNodeToolbar({
         onClick: () => onExtractVideoFrames(node, preset),
     }));
 
-    // 图片胶囊：拆分图片 / 多角度 / 打光 / 表情 / 生成 720° 全景图。
-    // “拆分图片”开宫格选择器；全景直接建节点（球形 2:1、当前图为源），配置窗只留作“更多设置”。
+    // 图片胶囊（二期）：10 个，按 S2 图片条顺序——生成图片 / 生成视频 / 镜头效果 / 宫格生成 /
+    // 拆分图片 / 多角度编辑 / 打光效果 / 表情调节 / 妆容调节 / 生成 720° 全景图。
+    // 前四个是模板下拉面板（点选即执行）；妆容调节开居中大弹窗；其余沿用一期接线。
     const imageCapsuleDrafts: CapsuleEntryDraft[] = isImage
         ? [
+            { id: "viewpoint", label: "生成图片", kind: "panel", tool: undefined },
+            { id: "video-template", label: "生成视频", kind: "panel", tool: undefined },
+            { id: "lens", label: "镜头效果", kind: "panel", tool: undefined },
+            { id: "grid-generate", label: "宫格生成", kind: "panel", tool: undefined },
             { id: "split", label: "拆分图片", kind: "split", tool: findCapsuleTool("split") },
-            { id: "angle", label: "多角度", kind: "button", tool: findCapsuleTool("angle") },
-            { id: "lighting", label: "打光", kind: "button", tool: findCapsuleTool("lighting") },
-            { id: "emotion", label: "表情", kind: "button", tool: findCapsuleTool("emotion") },
+            { id: "angle", label: "多角度编辑", kind: "button", tool: findCapsuleTool("angle") },
+            { id: "lighting", label: "打光效果", kind: "button", tool: findCapsuleTool("lighting") },
+            { id: "emotion", label: "表情调节", kind: "button", tool: findCapsuleTool("emotion") },
+            { id: "makeup", label: "妆容调节", kind: "makeup", tool: undefined },
             { id: "panorama", label: "生成 720° 全景图", kind: "button", tool: findCapsuleTool("panorama") },
         ]
         : [];
-    const imageCapsuleEntries: CapsuleEntry[] = imageCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool));
+    const imageCapsuleEntries: CapsuleEntry[] = imageCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool) || entry.kind === "panel" || entry.kind === "makeup");
     // 视频胶囊：截取 / 智能去字幕 / 音视频分离 / 深度捕捉。
     const videoCapsuleDrafts: CapsuleEntryDraft[] = isVideo
         ? [
@@ -446,9 +468,17 @@ export function CanvasNodeToolbar({
     const capsuleOverflowEntries = capsuleEntries.slice(capsuleVisibleCount);
     const overflowMenuItems: CapsuleMenuItem[] = capsuleOverflowEntries.flatMap((entry): CapsuleMenuItem[] => {
         if (entry.kind === "split") {
-            return [{ key: "split", label: entry.label, icon: entry.tool.icon, disabled: entry.tool.disabled, onClick: () => setSplitOpen(true) }];
+            return [{ key: "split", label: entry.label, icon: entry.tool?.icon, disabled: entry.tool?.disabled, onClick: () => setSplitOpen(true) }];
         }
         if (entry.kind === "frames") return frameMenuItems;
+        if (entry.kind === "panel") {
+            const panel = templatePanelIdForEntry(entry.id);
+            return panel ? [{ key: entry.id, label: entry.label, icon: templatePanelIcon(panel), onClick: () => setTemplatePanel(panel) }] : [];
+        }
+        if (entry.kind === "makeup") {
+            return [{ key: "makeup", label: entry.label, icon: <Palette className="size-3.5" />, onClick: () => { onMakeup?.(node); onClose(); } }];
+        }
+        if (!entry.tool) return [];
         return [toCapsuleMenuItem(entry.tool, entry.label)];
     });
 
@@ -540,20 +570,42 @@ export function CanvasNodeToolbar({
                                 <CapsuleMenuButton
                                     key={entry.id}
                                     label={entry.label}
-                                    icon={entry.tool.icon}
-                                    disabled={entry.tool.disabled || extractingVideoFrames}
+                                    icon={entry.tool?.icon}
+                                    disabled={entry.tool?.disabled || extractingVideoFrames}
                                     menuItems={frameMenuItems}
                                     onOpen={() => onKeep(node.id)}
+                                />
+                            ) : entry.kind === "panel" ? (
+                                <CapsuleToolButton
+                                    key={entry.id}
+                                    label={entry.label}
+                                    icon={templatePanelIcon(templatePanelIdForEntry(entry.id) || "viewpoint")}
+                                    pressed={templatePanel === templatePanelIdForEntry(entry.id)}
+                                    onClick={() => {
+                                        setSplitOpen(false);
+                                        const panel = templatePanelIdForEntry(entry.id);
+                                        setTemplatePanel((current) => (current === panel ? null : panel));
+                                    }}
+                                />
+                            ) : entry.kind === "makeup" ? (
+                                <CapsuleToolButton
+                                    key={entry.id}
+                                    label={entry.label}
+                                    icon={<Palette className="size-3.5" />}
+                                    onClick={() => {
+                                        onMakeup?.(node);
+                                        onClose();
+                                    }}
                                 />
                             ) : (
                                 <CapsuleToolButton
                                     key={entry.id}
                                     label={entry.label}
-                                    icon={entry.tool.icon}
-                                    disabled={entry.tool.disabled}
-                                    active={entry.tool.active}
+                                    icon={entry.tool?.icon}
+                                    disabled={entry.tool?.disabled}
+                                    active={entry.tool?.active}
                                     pressed={entry.kind === "split" && splitOpen}
-                                    onClick={entry.kind === "split" ? () => setSplitOpen((current) => !current) : () => runCapsuleTool(entry.tool)}
+                                    onClick={entry.kind === "split" ? () => { setTemplatePanel(null); setSplitOpen((current) => !current); } : () => runCapsuleTool(entry.tool)}
                                 />
                             ),
                         )}
@@ -569,6 +621,35 @@ export function CanvasNodeToolbar({
                                 onPick={(params) => {
                                     setSplitOpen(false);
                                     onSplit(node, params);
+                                    onClose();
+                                }}
+                            />
+                        </div>
+                    ) : null}
+                    {templatePanel && isImage ? (
+                        <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2" data-canvas-no-zoom onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+                            <CanvasImageTemplatePanels
+                                panel={templatePanel}
+                                node={node}
+                                imageNodes={imageNodes}
+                                onPickViewpoint={(presetId) => {
+                                    setTemplatePanel(null);
+                                    onImageTemplate?.(node, "viewpoint", presetId);
+                                    onClose();
+                                }}
+                                onPickVideo={(presetId, secondFrameNode) => {
+                                    setTemplatePanel(null);
+                                    onVideoTemplate?.(node, presetId, secondFrameNode);
+                                    onClose();
+                                }}
+                                onPickLens={(presetId) => {
+                                    setTemplatePanel(null);
+                                    onImageTemplate?.(node, "lens", presetId);
+                                    onClose();
+                                }}
+                                onPickGrid={(presetId) => {
+                                    setTemplatePanel(null);
+                                    onImageTemplate?.(node, "grid", presetId);
                                     onClose();
                                 }}
                             />
