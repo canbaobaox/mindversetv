@@ -459,6 +459,12 @@ export type PluginCanvasSidePanelContribution = {
      * 用于提示词连线板这类需要在画布边上边看边用的面板。
      */
     dockButton?: boolean;
+    /**
+     * 画布顶栏入口：仅对 dockButton 的面板有效。为 true 时宿主在画布顶部
+     * “工作流”旁边的胶囊栏里再放一个同名开关按钮，点的还是同一块浮动面板
+     * （与底部 Dock 开关共用开关状态），不用插件再贡献别的槽位。
+     */
+    topBarButton?: boolean;
     component: ComponentType<PluginCanvasSidePanelProps>;
 };
 

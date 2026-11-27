@@ -12,6 +12,8 @@ import { usePersonalAssetLibrary } from "@/hooks/use-personal-asset-library";
 import { DEFAULT_DRAWING_ENGINE } from "@/lib/canvas/canvas-drawing-engine";
 import { getContextResourceNodes, buildCanvasAgentMentionReferences } from "@/lib/canvas/canvas-resource-references";
 import { listCanvasWorkspaceProjectCanvases } from "@/lib/canvas/canvas-workspace-project";
+import { getDockSidePanelEntries, getTopBarSidePanelEntries, initialDockPanelState, nextDockPanelState } from "@/lib/plugins/plugin-side-panels";
+import { usePluginSlot } from "@/lib/plugins/slot-registry";
 import { isEmbeddedRuntime } from "@/lib/embedded-runtime";
 import { persistCanvasTimeline, refreshLocalCanvasProjectIfChanged } from "@/services/local-workspace-repository";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
@@ -114,6 +116,20 @@ function InfiniteCanvasPage() {
     const setSelectedNodeIds = pageUi((state) => state.setSelectedNodeIds);
     const workflowLibraryOpen = pageUi((state) => state.workflowLibraryOpen);
     const setWorkflowLibraryOpen = pageUi((state) => state.setWorkflowLibraryOpen);
+    // 画布 Dock 插件面板（dockButton 的 canvas.sidePanel 贡献，如提示词连线板）：
+    // 开关状态放在这个页面实例里，顶栏入口与底部 Dock 开关共用同一块浮动面板。
+    const dockPanelEntries = getDockSidePanelEntries(usePluginSlot("canvas.sidePanel"));
+    const topBarPanelEntries = getTopBarSidePanelEntries(dockPanelEntries);
+    const [dockPanel, setDockPanel] = useState(initialDockPanelState);
+    const toggleDockPanel = useCallback((id: string) => {
+        setDockPanel((current) => nextDockPanelState(current, { type: "toggle-entry", id }));
+    }, []);
+    const toggleDockPanelMinimized = useCallback(() => {
+        setDockPanel((current) => nextDockPanelState(current, { type: "toggle-minimize" }));
+    }, []);
+    const closeDockPanel = useCallback(() => {
+        setDockPanel((current) => nextDockPanelState(current, { type: "close" }));
+    }, []);
     const selectedConnectionId = pageUi((state) => state.selectedConnectionId);
     const setSelectedConnectionId = pageUi((state) => state.setSelectedConnectionId);
     const hoveredNodeId = pageUi((state) => state.hoveredNodeId);
@@ -646,6 +662,9 @@ function InfiniteCanvasPage() {
                                     onToggleVersions={toggleVersions}
                                     onOpenWorkflows={readOnly ? undefined : () => workflowsRef.current?.toggleLibrary()}
                                     workflowsOpen={workflowLibraryOpen}
+                                    topBarPanels={topBarPanelEntries.map((entry) => ({ id: entry.payload.id, title: entry.payload.title, icon: entry.payload.icon }))}
+                                    activeDockPanelId={dockPanel.activeId}
+                                    onToggleDockPanel={toggleDockPanel}
                                     assistantOpen={rightPanel === "assistant"}
                                     onToggleAssistant={internalAssistantEnabled ? toggleAssistant : undefined}
                                     // LibTV 的画布工作区使用“未命名工作区”作为首屏默认标题；
@@ -729,6 +748,12 @@ function InfiniteCanvasPage() {
                                 mediaSelection={mediaSelection}
                                 actions={actions}
                                 askSelectedNodes={askSelectedNodes}
+                                dockPanelEntries={dockPanelEntries}
+                                activeDockPanelId={dockPanel.activeId}
+                                dockPanelCollapsed={dockPanel.collapsed}
+                                onToggleDockPanel={toggleDockPanel}
+                                onToggleDockPanelMinimized={toggleDockPanelMinimized}
+                                onCloseDockPanel={closeDockPanel}
                             />
 
                             <CanvasUploadModal open={uploads.uploadModalOpen} onClose={uploads.closeUploadModal} onUpload={uploads.handleUploadFiles} onImportUrl={uploads.handleImportUrl} />

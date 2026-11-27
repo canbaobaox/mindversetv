@@ -46,4 +46,35 @@ describe("画布 Dock 插件面板开关", () => {
         expect(html).toContain('aria-label="关闭提示词板"');
         expect(html).toContain("project=project-1 canvas=project-1 selected=node-1,node-2");
     });
+
+    test("展开态有收起按钮、内容区可见；收起态只留标题栏、内容仍挂载", () => {
+        const Stub = () => createElement("div", null, "板子内容");
+        const renderPanel = (collapsed: boolean) =>
+            renderToStaticMarkup(
+                createElement(CanvasDockPanel, {
+                    title: "提示词板",
+                    onClose: () => {},
+                    collapsed,
+                    onToggleCollapsed: () => {},
+                    component: Stub,
+                    projectId: "project-1",
+                    canvasId: "project-1",
+                    selectedNodeIds: [],
+                }),
+            );
+
+        const expanded = renderPanel(false);
+        expect(expanded).toContain('aria-label="收起提示词板"');
+        expect(expanded).toContain("板子内容");
+        expect(expanded).toContain("min-h-0 flex-1 overflow-y-auto p-3");
+        expect(expanded).not.toContain('aria-label="展开提示词板"');
+
+        const collapsed = renderPanel(true);
+        expect(collapsed).toContain('aria-label="展开提示词板"');
+        expect(collapsed).toContain('aria-label="关闭提示词板"');
+        // 收起只隐藏内容区（hidden），组件不卸载：板子里的选择不丢，再展开直接恢复。
+        expect(collapsed).toContain('class="hidden"');
+        expect(collapsed).toContain("板子内容");
+        expect(collapsed).not.toContain('aria-label="收起提示词板"');
+    });
 });

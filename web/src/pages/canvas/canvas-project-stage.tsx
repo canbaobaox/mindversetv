@@ -1,4 +1,4 @@
-import { useState, type RefObject } from "react";
+import { type RefObject } from "react";
 
 import { CanvasActiveTaskPanel } from "@/components/canvas/canvas-active-task-panel";
 import { CanvasDockPanel } from "@/components/canvas/canvas-dock-panel";
@@ -15,8 +15,7 @@ import type { Asset } from "@/stores/use-asset-store";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasWorkspaceMode } from "@/types/canvas";
-import { getDockSidePanelEntries } from "@/lib/plugins/plugin-side-panels";
-import { usePluginSlot } from "@/lib/plugins/slot-registry";
+import { type SidePanelSlotEntry } from "@/lib/plugins/plugin-side-panels";
 import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { CanvasProjectStageOverlays } from "./canvas-project-overlays";
 import { CanvasProjectWorldLayers } from "./canvas-project-world-layers";
@@ -65,6 +64,14 @@ export type CanvasProjectStageProps = {
     mediaSelection: ReturnType<typeof useCanvasProjectMediaAndSelection>;
     actions: ReturnType<typeof useCanvasProjectActions>;
     askSelectedNodes: () => void;
+    /** 画布 Dock 插件面板开关：由画布页持有状态，顶栏入口与底部 Dock 开关共用同一块浮动面板。 */
+    dockPanelEntries: Array<SidePanelSlotEntry>;
+    activeDockPanelId: string | null;
+    /** 面板收起态：还开着，只是缩成标题栏；顶栏/Dock 按钮仍显示激活。 */
+    dockPanelCollapsed: boolean;
+    onToggleDockPanel: (id: string) => void;
+    onToggleDockPanelMinimized: () => void;
+    onCloseDockPanel: () => void;
 };
 
 export function CanvasProjectStage(props: CanvasProjectStageProps) {
@@ -95,12 +102,16 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         uploads,
         mediaSelection,
         actions,
+        dockPanelEntries,
+        activeDockPanelId,
+        dockPanelCollapsed,
+        onToggleDockPanel,
+        onToggleDockPanelMinimized,
+        onCloseDockPanel,
     } = props;
     const { containerRef, viewport } = viewportState;
     // 画布 Dock 上的插件面板开关（dockButton 的 canvas.sidePanel 贡献，如提示词连线板）：
     // 点 Dock 按钮在画布内浮出面板，再点隐藏；面板内容就是插件的侧栏组件。
-    const dockPanelEntries = getDockSidePanelEntries(usePluginSlot("canvas.sidePanel"));
-    const [activeDockPanelId, setActiveDockPanelId] = useState<string | null>(null);
     const activeDockPanel = dockPanelEntries.find((entry) => entry.payload.id === activeDockPanelId) ?? null;
     const { fitCanvasContent, handleCanvasDoubleClick, handleViewportChange, handleViewportPreviewChange, screenToCanvas, zoomCanvasIn, zoomCanvasOut } = viewportController;
     const { nodes } = document;
@@ -480,13 +491,15 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                             shortcutRequestNonce={shortcutRequestNonce}
                             dockPanels={dockPanelEntries.map((entry) => ({ id: entry.payload.id, title: entry.payload.title, icon: entry.payload.icon }))}
                             activeDockPanelId={activeDockPanelId}
-                            onToggleDockPanel={(id) => setActiveDockPanelId((current) => (current === id ? null : id))}
+                            onToggleDockPanel={onToggleDockPanel}
                         />
                     ) : null}
                     {activeDockPanel ? (
                         <CanvasDockPanel
                             title={activeDockPanel.payload.title}
-                            onClose={() => setActiveDockPanelId(null)}
+                            onClose={onCloseDockPanel}
+                            collapsed={dockPanelCollapsed}
+                            onToggleCollapsed={onToggleDockPanelMinimized}
                             component={activeDockPanel.payload.component}
                             projectId={projectId}
                             canvasId={projectId}

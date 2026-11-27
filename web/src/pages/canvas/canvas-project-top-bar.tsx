@@ -26,6 +26,10 @@ type CanvasTopBarProps = {
     workflowsOpen?: boolean;
     assistantOpen?: boolean;
     onToggleAssistant?: () => void;
+    /** 画布顶部胶囊栏的插件面板开关（dockButton + topBarButton 的 canvas.sidePanel 贡献）：点开与底部 Dock 开关同一块浮动面板。 */
+    topBarPanels?: Array<{ id: string; title: string; icon?: ReactNode }>;
+    activeDockPanelId?: string | null;
+    onToggleDockPanel?: (id: string) => void;
     title: string;
     titleDraft: string;
     isTitleEditing: boolean;
@@ -74,6 +78,9 @@ export function CanvasTopBar({
     workflowsOpen = false,
     assistantOpen = false,
     onToggleAssistant,
+    topBarPanels,
+    activeDockPanelId,
+    onToggleDockPanel,
     title,
     titleDraft,
     isTitleEditing,
@@ -406,6 +413,9 @@ export function CanvasTopBar({
 
                 <div className="canvas-topbar-cluster canvas-topbar-local-cluster pointer-events-auto hidden items-center gap-1 lg:flex" style={dockStyle}>
                     {onOpenWorkflows ? <Button type="text" className="canvas-topbar-action canvas-topbar-workflow-button !h-9 !rounded-xl !px-2.5" style={{ color: theme.node.text, background: workflowsOpen ? theme.toolbar.activeBg : undefined }} aria-pressed={workflowsOpen} icon={<Workflow className="size-4" />} onClick={onOpenWorkflows}>工作流</Button> : null}
+                    {topBarPanels?.map((panel) => (
+                        <Button key={panel.id} type="text" className="canvas-topbar-action canvas-topbar-panel-button" style={{ color: theme.node.text, background: activeDockPanelId === panel.id ? theme.toolbar.activeBg : undefined, height: 36, borderRadius: 12, paddingLeft: 10, paddingRight: 10 }} aria-pressed={activeDockPanelId === panel.id} icon={panel.icon} onClick={() => onToggleDockPanel?.(panel.id)} aria-label={panel.title}>{panel.title}</Button>
+                    ))}
                     {onToggleAssistant ? (
                         <CanvasTopBarTooltip label="Agent（Ctrl/Cmd + J）">
                             <Button
@@ -426,6 +436,11 @@ export function CanvasTopBar({
 
                 <div className="canvas-topbar-cluster canvas-topbar-tools-cluster pointer-events-auto flex items-center gap-1.5 lg:hidden" style={dockStyle}>
                     {onOpenWorkflows ? <CanvasTopBarTooltip label="工作流"><Button type="text" className="canvas-topbar-action canvas-topbar-workflow-button !h-10 !w-10 !min-w-10 !rounded-xl !p-0" style={{ color: theme.node.text, background: workflowsOpen ? theme.toolbar.activeBg : undefined }} aria-pressed={workflowsOpen} icon={<Workflow className="size-4" />} aria-label="工作流" onClick={onOpenWorkflows} /></CanvasTopBarTooltip> : null}
+                    {topBarPanels?.map((panel) => (
+                        <CanvasTopBarTooltip key={panel.id} label={panel.title}>
+                            <Button type="text" className="canvas-topbar-action canvas-topbar-panel-button" style={{ color: theme.node.text, background: activeDockPanelId === panel.id ? theme.toolbar.activeBg : undefined, height: 40, width: 40, minWidth: 40, borderRadius: 12, padding: 0 }} aria-pressed={activeDockPanelId === panel.id} icon={panel.icon} aria-label={panel.title} onClick={() => onToggleDockPanel?.(panel.id)} />
+                        </CanvasTopBarTooltip>
+                    ))}
                     <CanvasTopBarTooltip label="搜索画布节点">
                         <Button
                             type="text"

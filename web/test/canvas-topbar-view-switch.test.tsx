@@ -49,3 +49,24 @@ test("CanvasTopBar caps and truncates long canvas switch labels with tooltip whi
     />);
     expect(defaultHtml).toContain('title="画布 1"');
 });
+
+test("CanvasTopBar 在工作流旁边放提示词板顶栏入口，打开态高亮", () => {
+    const noop = () => {};
+    const panels = [{ id: "prompt-board", title: "提示词板" }];
+    const renderTopBar = (activeDockPanelId: string | null) => renderToStaticMarkup(<CanvasTopBar
+        workspaceView="workflow" onWorkspaceViewChange={noop} versionsOpen={false} onToggleVersions={noop}
+        onOpenWorkflows={noop} workflowsOpen={false}
+        topBarPanels={panels} activeDockPanelId={activeDockPanelId} onToggleDockPanel={noop}
+        title="未命名工作区" titleDraft="未命名工作区" isTitleEditing={false} onTitleDraftChange={noop} onStartTitleEditing={noop} onFinishTitleEditing={noop} onCancelTitleEditing={noop}
+        canUndo={false} canRedo={false} onCreateCanvas={noop} onDeleteProject={noop} onSave={noop} onForceSave={noop} onImportImage={noop} onImportLibTV={noop} onImportTapNow={noop} onUndo={noop} onRedo={noop}
+        mediaPerformanceMode="auto" onMediaPerformanceModeChange={noop} onOpenSearch={noop} onEnterFocusMode={noop}
+    />);
+
+    const closed = renderTopBar(null);
+    expect(closed).toContain('aria-label="提示词板"');
+    expect(closed).toContain('aria-pressed="false"');
+    // 提示词板排在工作流后面：桌面胶囊栏里工作流按钮文案先出现。
+    expect(closed.indexOf("工作流")).toBeLessThan(closed.indexOf("提示词板"));
+    const open = renderTopBar("prompt-board");
+    expect(open).toContain('aria-pressed="true"');
+});
