@@ -4,6 +4,14 @@ All notable public changes to BeefTV are documented in this file.
 
 ## Unreleased
 
+## v2.3.8
+
+- 合并上游 v2.5.0：内置创作助手 2.0（支持文档与扫描 PDF 读取、文件导出、创作设定集、对话分叉、多模型合并确认、外部 MCP 接入）、画布媒体工作流与项目素材自动保存本地、应用内网络代理、新模型协议（百炼 Wan 3.0 / Qwen Image 2.1、vLLM-Omni、OpenAI Videos Media JSON）。
+- 画布节点工具栏三期：点“＋”弹出胶囊浮条；新增 5 项提示词模板（生成图片/视频/镜头/宫格/妆容）；主体操作（消除/修改/替换）与高清 1080P。
+- 提示词板镶进顶栏入口，面板支持缩小/恢复，与 Dock 开关共用同一面板。
+- A2 七项修复：报错先写站方返回的真实错误文本、超分按上游可用置灰并说明“云端超分服务暂未开启”、清理投稿死代码、全新画布 revision 0 可首写。
+- 注意：提示词模板是新写的，效果不保证与梦由心生 S2 一致；主体 edit 入口与画幅/时长/参考图格式等 A1 项待真 Key 真机验。
+
 ## v2.3.7
 
 - 新增 Muse 视频插件（经 muse2api 中继）：画布新增内置插件 `beeftv-plugin-muse`，视频走 `POST /v1/videos` JSON 提交（duration 整数，不用 multipart/seconds），时长 5/6/8/10 秒、画幅 16:9/9:16；文本 muse-spark 与图片 muse-image 走自填渠道通用协议，不动代码。中继与画布须在同一台 Windows 机器上（默认 `http://127.0.0.1:18610`），账号由用户本人在中继管理页导入，插件只填中继 API Key。

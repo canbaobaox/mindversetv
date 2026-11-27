@@ -36,6 +36,7 @@
 
 ## Recent updates
 
+- **[v2.3.8](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.8)** — Merge upstream v2.5.0 (assistant 2.0, canvas media workflows, in-app proxy, new model protocols), canvas toolbar phases 1–3 ("+" capsule bar, 5 prompt templates, subject tools and 1080P HD), prompt board docked in the top bar with collapse, and 7 A2 fixes.
 - **[v2.3.7](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.7)** — Add the Muse video plugin (via the muse2api relay; video submits as JSON, durations 5/6/8/10s, aspect ratios 16:9/9:16), and fix poll-404 error messages showing raw JSON instead of the Chinese reason.
 - **[v2.3.6](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.6)** — Local AI subtitle/watermark removal (open-source VSR, auto-detects and inpaints subtitles and watermarks; first use downloads a ~1.5GB component), and a self-built signed manifest for depth capture (Windows components now download and verify from our own Release, CPU tier).
 - **[v2.3.5](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.5)** — Fix 梦由心生 image generation still failing (resolution now only sends the site-accepted auto / 1K / 2K / 4K), show "价格待确认" instead of a blank price in the generation panel, tighten the AI upscale gate, and make depth capture failures show a persistent dialog instead of failing silently.
