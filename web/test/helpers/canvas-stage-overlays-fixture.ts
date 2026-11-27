@@ -88,6 +88,7 @@ export function createCanvasStageOverlayProps(overrides: OverlayStageFixtureOver
         generation: {
             generateImageFromTextNode: noop,
             generateFinalVideoFromDraftNode: noop,
+            createHighDefinitionVideoNodeFromVideo: noop,
             canRetakeVideo: () => false,
             createVideoEditNodeFromVideo: noop,
         } as unknown as CanvasProjectStageOverlaysProps["generation"],

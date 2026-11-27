@@ -19,7 +19,7 @@ import { canvasNodeFailureView } from "@/lib/canvas/canvas-node-failure-view";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { Asset } from "@/stores/use-asset-store";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasVideoSubjectAction, type Position } from "@/types/canvas";
 
 import { CanvasOwnerAbandonedError, canvasOwnerCanPersist, canvasOwnerEpochMatches, canvasOwnerUserMatches, type CanvasOwnerEpoch } from "./canvas-owner-epoch";
 
@@ -280,8 +280,32 @@ export async function runOwnedCanvasHistoryInsert(input: {
     }
 }
 
-export function resolveVideoEditNodeDraft(effectiveConfig: AiConfig, node: CanvasNodeData, operation: "extend" | "inpaint") {
-    const editQuality = node.metadata?.vquality || "720p";
+// 视频浮条“主体”三个动作的预填文案：只是新建子节点时放进配置框的提示词草稿，
+// 用户可在框里改完再提交；不声明新的插件能力、不编 edit 入口参数。
+// 站方是否接受 edit 入口未验证（审计 A2-1/A1-5），需真 Key 真机验。
+export const VIDEO_SUBJECT_EDIT_PROMPTS: Record<CanvasVideoSubjectAction, { label: string; prompt: string }> = {
+    remove: {
+        label: "主体消除",
+        prompt: "基于 @视频1 进行画面修改：保持原有构图与节奏，将画面中的指定主体完全抹去并自然补全背景。抹去的主体：",
+    },
+    modify: {
+        label: "主体修改",
+        prompt: "基于 @视频1 进行画面修改：保持原有构图与节奏，将主体调整为 ",
+    },
+    replace: {
+        label: "主体替换",
+        prompt: "基于 @视频1 进行画面修改：保持原有构图与节奏，将画面中的指定主体替换为 ",
+    },
+};
+
+// 非草稿视频转 1080P 的模型选择：沿用原视频模型（须声明 reference_to_video），
+// 否则用当前配置的视频模型；两个都不声明时返回 undefined，由调用方提示、不要硬上。
+export function resolveReferenceVideoModel(effectiveConfig: AiConfig, node: CanvasNodeData) {
+    const candidates = [node.metadata?.model, effectiveConfig.videoModel].filter((item): item is string => Boolean(item));
+    return candidates.find((item) => modelCapabilityConfigFor(effectiveConfig, item).video?.operations?.includes("reference_to_video"));
+}
+
+export function resolveVideoEditNodeDraft(effectiveConfig: AiConfig, node: CanvasNodeData, operation: "extend" | "inpaint") {    const editQuality = node.metadata?.vquality || "720p";
     const candidateModels = [node.metadata?.model, effectiveConfig.videoModel, ...selectableModelsByCapability(effectiveConfig, "video")].filter((item): item is string => Boolean(item));
     const editRequirementsFor = (modelKey: string) => {
         const constraints = seedanceSettingsConstraints(modelCapabilityConfigFor(effectiveConfig, modelKey), 0, 1, 0, operation);

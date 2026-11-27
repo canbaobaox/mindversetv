@@ -11,12 +11,13 @@ import { canQuickReferenceCanvasMediaNode } from "@/lib/canvas/canvas-node-seman
 import type { ImageSplitParams } from "@/lib/canvas/canvas-image-data";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
-import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ViewportTransform } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasVideoSubjectAction, type CanvasWorkspaceMode, type ViewportTransform } from "@/types/canvas";
 import { buildImageToolbarTools } from "./canvas-image-toolbar-tools";
 import { canConvertCanvasVideoDraft } from "@/lib/canvas/canvas-video-draft";
 import type { ToolbarTool } from "./canvas-video-toolbar-tools";
 import { CanvasGridSplitPicker } from "./canvas-grid-split-picker";
 import { CanvasImageTemplatePanels, type ImageTemplatePanelId } from "./canvas-node-template-panels";
+import { buildVideoCapsuleMenuItems, type CapsuleMenuItem } from "./canvas-node-capsule-menus";
 import "./canvas-node-capsule.css";
 
 type CanvasNodeToolbarProps = {
@@ -42,8 +43,8 @@ type CanvasNodeToolbarProps = {
     onSplit: (node: CanvasNodeData, params: ImageSplitParams) => void;
     onLayerSplit?: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData) => void;
-    onDraftToFinal?: (node: CanvasNodeData) => void;
-    onVideoEditOperation?: (node: CanvasNodeData, operation: "extend" | "inpaint") => void;
+    onHighDefinitionVideo?: (node: CanvasNodeData) => void;
+    onVideoEditOperation?: (node: CanvasNodeData, operation: "extend" | "inpaint", subjectAction?: CanvasVideoSubjectAction) => void;
     onVideoRetake?: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onLighting: (node: CanvasNodeData) => void;
@@ -78,8 +79,9 @@ type CanvasNodeToolbarProps = {
 type CapsuleEntry = {
     id: string;
     label: string;
-    kind: "button" | "split" | "frames" | "panel" | "makeup";
+    kind: "button" | "split" | "frames" | "panel" | "makeup" | "menu";
     tool: ToolbarTool | undefined;
+    menuItems?: CapsuleMenuItem[];
 };
 
 type CapsuleEntryDraft = {
@@ -87,15 +89,7 @@ type CapsuleEntryDraft = {
     label: string;
     kind: CapsuleEntry["kind"];
     tool: ToolbarTool | undefined;
-};
-
-type CapsuleMenuItem = {
-    key: string;
-    label: string;
-    icon?: ReactNode;
-    disabled?: boolean;
-    danger?: boolean;
-    onClick: () => void;
+    menuItems?: CapsuleMenuItem[];
 };
 
 type CapsuleMenuGroup = {
@@ -127,7 +121,7 @@ export function CanvasNodeToolbar({
     onSplit,
     onLayerSplit,
     onUpscale,
-    onDraftToFinal,
+    onHighDefinitionVideo,
     onVideoEditOperation,
     onVideoRetake,
     onAngle,
@@ -393,7 +387,15 @@ export function CanvasNodeToolbar({
     const workspaceTools = narrow ? [] : allWorkspaceTools;
     const utilityTools = inGroup("utility");
     const processMenuLabel = compact ? "工具" : isAudio ? "音频处理" : "文本调整";
-    const showDraftToFinal = Boolean(canDraftToFinal && onDraftToFinal);
+
+    // 三期下拉菜单（“高清”与“主体”）见 canvas-node-capsule-menus.tsx。
+    const { hdMenuItems, subjectMenuItems } = buildVideoCapsuleMenuItems({
+        node,
+        canDraftToFinal,
+        onHighDefinitionVideo,
+        onVideoEditOperation,
+        onClose,
+    });
 
     // ---- 一期换皮：胶囊浮条模型（图片/视频）----
     // 按钮只取已解析好的工具定义，接线与旧 dock 完全一致，不重做弹窗。
@@ -451,16 +453,18 @@ export function CanvasNodeToolbar({
         ]
         : [];
     const imageCapsuleEntries: CapsuleEntry[] = imageCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool) || entry.kind === "panel" || entry.kind === "makeup");
-    // 视频胶囊：截取 / 智能去字幕 / 音视频分离 / 深度捕捉。
+    // 视频胶囊（三期）：截取 / 高清 / 智能去字幕 / 主体 / 音视频分离 / 深度捕捉，按 S2 视频条顺序。
     const videoCapsuleDrafts: CapsuleEntryDraft[] = isVideo
         ? [
             { id: "frames", label: "截取", kind: "frames", tool: findCapsuleTool("extractFrames") },
+            ...(onHighDefinitionVideo ? [{ id: "hd", label: "高清", kind: "menu" as const, tool: undefined, menuItems: hdMenuItems }] : []),
             { id: "subtitleErase", label: "智能去字幕", kind: "button", tool: findCapsuleTool("subtitleErase") },
+            ...(onVideoEditOperation ? [{ id: "subject", label: "主体", kind: "menu" as const, tool: undefined, menuItems: subjectMenuItems }] : []),
             { id: "extractAudio", label: "音视频分离", kind: "button", tool: findCapsuleTool("extractAudio") },
             { id: "depthCapture", label: "深度捕捉", kind: "button", tool: findCapsuleTool("depthCapture") },
         ]
         : [];
-    const videoCapsuleEntries: CapsuleEntry[] = videoCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool));
+    const videoCapsuleEntries: CapsuleEntry[] = videoCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool) || entry.kind === "menu");
     const capsuleEntries = isImage ? imageCapsuleEntries : videoCapsuleEntries;
     // 窄屏与 simple 模式：放不下的按钮收进“更多”，simple 模式只留“更多”。
     const capsuleVisibleCount = simpleMode ? 0 : narrow ? 1 : compact ? 3 : capsuleEntries.length;
@@ -471,6 +475,7 @@ export function CanvasNodeToolbar({
             return [{ key: "split", label: entry.label, icon: entry.tool?.icon, disabled: entry.tool?.disabled, onClick: () => setSplitOpen(true) }];
         }
         if (entry.kind === "frames") return frameMenuItems;
+        if (entry.kind === "menu") return entry.menuItems ?? [];
         if (entry.kind === "panel") {
             const panel = templatePanelIdForEntry(entry.id);
             return panel ? [{ key: entry.id, label: entry.label, icon: templatePanelIcon(panel), onClick: () => setTemplatePanel(panel) }] : [];
@@ -507,7 +512,7 @@ export function CanvasNodeToolbar({
                 ...overflowMenuItems,
                 ...(onVideoEditOperation ? [
                     { key: "video-extend", label: "视频续写", onClick: () => { onVideoEditOperation(node, "extend"); onClose(); } },
-                    { key: "video-inpaint", label: "视频局部修改", onClick: () => { onVideoEditOperation(node, "inpaint"); onClose(); } },
+                    // 视频局部修改已并进浮条“主体”（消除/修改/替换），不再单独留。
                 ] as CapsuleMenuItem[] : []),
                 ...(onVideoRetake ? [{ key: "video-retake", label: "片段重拍", onClick: () => { onVideoRetake(node); onClose(); } } as CapsuleMenuItem] : []),
                 { key: "video-reverse-prompt", label: "反推提示词", onClick: () => { onReversePrompt(node); onClose(); } },
@@ -517,10 +522,8 @@ export function CanvasNodeToolbar({
         {
             key: "video-post",
             title: "视频后期",
-            items: [
-                ...toCapsuleMenuItems(["subtitles", "timeline"]),
-                ...(showDraftToFinal && onDraftToFinal ? [{ key: "draft-to-final", label: "转 1080P 成片", icon: <UpscaleToolbarIcon />, onClick: () => { onDraftToFinal(node); onClose(); } } as CapsuleMenuItem] : []),
-            ],
+            // 转高清成片已并进浮条“高清”（1080P），不再单独留。
+            items: toCapsuleMenuItems(["subtitles", "timeline"]),
         },
         {
             key: "node-manage",
@@ -566,13 +569,13 @@ export function CanvasNodeToolbar({
                 <>
                     <div role="toolbar" aria-label="节点快捷工具" className="canvas-node-capsule">
                         {capsuleVisibleEntries.map((entry) =>
-                            entry.kind === "frames" ? (
+                            entry.kind === "frames" || entry.kind === "menu" ? (
                                 <CapsuleMenuButton
                                     key={entry.id}
                                     label={entry.label}
                                     icon={entry.tool?.icon}
-                                    disabled={entry.tool?.disabled || extractingVideoFrames}
-                                    menuItems={frameMenuItems}
+                                    disabled={entry.kind === "frames" ? entry.tool?.disabled || extractingVideoFrames : false}
+                                    menuItems={entry.kind === "frames" ? frameMenuItems : entry.menuItems ?? []}
                                     onOpen={() => onKeep(node.id)}
                                 />
                             ) : entry.kind === "panel" ? (
@@ -686,13 +689,6 @@ export function CanvasNodeToolbar({
             )}
         </div>
     );
-}
-
-function UpscaleToolbarIcon() {
-    return <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3" />
-        <path d="M9 2h5v5M14 2 7 9" />
-    </svg>;
 }
 
 function NodeDockToolButton({ tool, iconOnly = false, showTooltip = true }: { tool: ToolbarTool; iconOnly?: boolean; showTooltip?: boolean }) {

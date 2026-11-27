@@ -395,7 +395,7 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
                 onSplit={(node, params) => void splitImageNode(node, params)}
                 onLayerSplit={readOnly ? undefined : (node) => void generation.generateImageLayers(node)}
                 onUpscale={(node) => setUpscaleNodeId(node.id)}
-                onDraftToFinal={generation.generateFinalVideoFromDraftNode}
+                onHighDefinitionVideo={generation.createHighDefinitionVideoNodeFromVideo}
                 onVideoEditOperation={generation.createVideoEditNodeFromVideo}
                 onVideoRetake={!readOnly && toolbarNode?.type === CanvasNodeType.Video && generation.canRetakeVideo(toolbarNode) ? openVideoRetakePanel : undefined}
                 onAngle={(node) => { setDialogNodeId(null); setAngleNodeId((current) => (current === node.id ? null : node.id)); }}

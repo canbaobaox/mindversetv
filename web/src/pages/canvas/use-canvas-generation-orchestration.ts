@@ -20,14 +20,16 @@ import type { Skill } from "@/services/api/skills";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasVideoSubjectAction, type Position } from "@/types/canvas";
 
 import {
+    VIDEO_SUBJECT_EDIT_PROMPTS,
     createImageNodeFromTextSource,
     createImageLayerSplit,
     createInsertingHistoryGate,
     rebaseInsertedCanvasNode,
     reconcileImageBatchRootNodes,
+    resolveReferenceVideoModel,
     resolveVideoEditNodeDraft,
     runImageBatchChildRetry,
     runOwnedCanvasHistoryInsert,
@@ -540,15 +542,19 @@ export function useCanvasGenerationOrchestration({
     );
 
     const createVideoEditNodeFromVideo = useCallback(
-        (node: CanvasNodeData, operation: "extend" | "inpaint") => {
+        (node: CanvasNodeData, operation: "extend" | "inpaint", subjectAction: CanvasVideoSubjectAction = "modify") => {
             if (!node.metadata?.content && !node.metadata?.storageKey) {
                 message.warning("视频节点为空，无法发起视频二创");
                 return;
             }
-            const label = operation === "extend" ? "视频续写" : "视频局部修改";
+            // 主体三个动作与旧“视频局部修改”走同一条链路（inpaint 子节点＋配置框），
+            // 区别只在预填提示词与标题；站方是否接受 edit 入口未验证（审计 A2-1/A1-5），
+            // 需真 Key 真机验，若站方拒绝走现有报错链路。
+            const subject = operation === "inpaint" ? VIDEO_SUBJECT_EDIT_PROMPTS[subjectAction] : undefined;
+            const label = operation === "extend" ? "视频续写" : subject?.label ?? "视频局部修改";
             const defaultPrompt = operation === "extend"
                 ? `基于 @视频1 自然顺延后续动作、镜头运动与环境氛围，保持人物与画风一致`
-                : `基于 @视频1 进行画面修改：保持原有构图与节奏，将主体调整为 `;
+                : subject?.prompt ?? `基于 @视频1 进行画面修改：保持原有构图与节奏，将主体调整为 `;
             const editDraft = resolveVideoEditNodeDraft(effectiveConfig, node, operation);
             const childNode: CanvasNodeData = {
                 id: nanoid(),
@@ -585,6 +591,79 @@ export function useCanvasGenerationOrchestration({
             pageUi.getState().setDialogNodeId(childNode.id);
         },
         [connectionsRef, effectiveConfig, message, nodesRef, pageUi, setConnections, setNodes],
+    );
+
+    // 视频浮条“高清”1080P：只有 1 个选项，但分两条路——
+    // ① 草稿视频走已有样片转高清成片（generateFinalVideoFromDraftNode，draft_task_id 直连
+    //    上游、提示词已清空复用原设定，立即提交）；
+    // ② 非草稿视频不能直接放开 draft_to_final：后端校验写明“高清成片需要关联已完成的有声
+    //    样片任务 ID”，且 myxsai 插件未声明 draft 能力，站方是否接受非样片任务 ID 作
+    //    draft_task_id 未验证。改走标准视频生成链——原视频作参考（reference_to_video，
+    //    已声明的操作）、原提示词重新生成 1080P：新建 idle 子节点并打开配置框，由用户确认
+    //    后再提交。这是重新生成（会再次扣费，结果可能与原片有出入），不是像素超分；
+    //    AI 超分一期已随旧工具栏下线，这里不恢复、不接 Real-ESRGAN。
+    // ③ 缺原提示词的非草稿视频（外来导入等）无法重制，明确提示、不建空节点。
+    const createHighDefinitionVideoNodeFromVideo = useCallback(
+        (node: CanvasNodeData) => {
+            if (!node.metadata?.content && !node.metadata?.storageKey) {
+                message.warning("视频节点为空，无法生成 1080P");
+                return;
+            }
+            if (node.metadata?.draft === "true") {
+                if (!canConvertCanvasVideoDraft(node)) {
+                    if (node.metadata?.status === "loading") message.warning("样片还在生成中，完成后才能转高清成片");
+                    else message.warning("该样片缺少上游任务 ID，无法直接转高清成片");
+                    return;
+                }
+                generateFinalVideoFromDraftNode(node);
+                return;
+            }
+            const promptText = node.metadata?.prompt?.trim();
+            if (!promptText) {
+                message.warning("此视频没有原提示词，无法重新生成 1080P");
+                return;
+            }
+            const model = resolveReferenceVideoModel(effectiveConfig, node);
+            if (!model) {
+                message.warning("当前模型不支持参考视频重制，无法重新生成 1080P");
+                return;
+            }
+            const prompt = `基于 @视频1 重新生成，保持原片内容、构图与节奏，输出 1080P 高清版本：${promptText}`;
+            const childNode: CanvasNodeData = {
+                id: nanoid(),
+                type: CanvasNodeType.Video,
+                title: `${node.title || "视频"} · 1080P 重制`.slice(0, 36),
+                position: { x: node.position.x + node.width + 96, y: node.position.y },
+                width: node.width,
+                height: node.height,
+                metadata: {
+                    status: "idle",
+                    prompt,
+                    composerContent: prompt,
+                    model,
+                    size: node.metadata?.size,
+                    seconds: node.metadata?.seconds,
+                    vquality: "1080p",
+                    generateAudio: node.metadata?.generateAudio ?? "true",
+                    watermark: node.metadata?.watermark ?? "false",
+                    draft: "false",
+                    videoEditOperation: "reference_to_video",
+                    generatedFromNodeId: node.id,
+                },
+            };
+            const nextNodes = [...nodesRef.current, childNode];
+            const nextConnections = [...connectionsRef.current, { id: nanoid(), fromNodeId: node.id, toNodeId: childNode.id }];
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
+            pageUi.getState().setHoveredNodeId(null);
+            pageUi.getState().setToolbarNodeId(null);
+            pageUi.getState().setSelectedNodeIds(new Set([childNode.id]));
+            pageUi.getState().setSelectedConnectionId(null);
+            pageUi.getState().setDialogNodeId(childNode.id);
+        },
+        [connectionsRef, effectiveConfig, generateFinalVideoFromDraftNode, message, nodesRef, pageUi, setConnections, setNodes],
     );
 
     return {
@@ -638,6 +717,7 @@ export function useCanvasGenerationOrchestration({
         generateImageFromTextNode,
         generateImageLayers,
         generateFinalVideoFromDraftNode,
+        createHighDefinitionVideoNodeFromVideo,
         createVideoEditNodeFromVideo,
         canRetakeVideo,
         generateVideoRetake,

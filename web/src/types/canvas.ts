@@ -99,6 +99,9 @@ export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board" | "video_retake";
 export type CanvasVideoReferenceMode = "frames" | "all";
 export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat" | "draft_to_final";
+// 视频浮条“主体”下拉的三个动作：都走已有视频局部修改链路（videoEditOperation=inpaint），
+// 区别只在新建子节点时预填的提示词草稿与标题；站方是否接受 edit 入口未验证（审计 A2-1/A1-5）。
+export type CanvasVideoSubjectAction = "remove" | "modify" | "replace";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
 export type CanvasSkillOutputMode = "text" | "json" | "image_prompt" | "workflow";
 export type StoryboardColumn =
