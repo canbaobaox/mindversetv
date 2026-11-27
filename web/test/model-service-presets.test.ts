@@ -918,6 +918,13 @@ test("retired LL2 wan3.0-video and Super Vega user-edited profiles pass through 
 
 test("dynamic partner metadata still lands in the preset catalog for saved channels, but MindVerseTV never lists partners in the UI", async () => {
     try {
+        // 本用例的前提是“后端权威目录到达前”的干净状态：同一 bun
+        // 进程里其它分片文件（如 plugin-host-slots）可能先记住了
+        // acme 已安装（installed:true 会写进 remembered 映射，且
+        // resetDynamicPartnersInMemoryForReloadTest 刻意保留它以模拟
+        // 重载恢复），不先清掉这里的第一组 sync 断言会误判为已上线。
+        clearDynamicPartnerModulesForTest();
+        delete BUILTIN_PRESETS.acme;
         // 拒绝伪造或抢占核心预设与已有合作伙伴预设 ID。
         expect(syncBuiltinPresetFromModule("beeftv-plugin-evil", {
             BUILTIN_SERVICE_PRESET: {
