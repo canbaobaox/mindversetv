@@ -176,7 +176,7 @@ test("a deleted result is reconciled by original task ID without creating anothe
 
 test("video uses the selected output resolution and only the Seedance video preset", async () => {
     await page.goto(server.url + "?video");
-    await page.getByText("BeefTV超分模型", { exact: true }).waitFor();
+    await page.getByText("梦由心生超分模型", { exact: true }).waitFor();
     expect(await page.getByLabel("超分倍率").count()).toBe(0);
     expect(await page.getByText("原图", { exact: true }).count()).toBe(0);
     await page.getByLabel("输出清晰度").click();

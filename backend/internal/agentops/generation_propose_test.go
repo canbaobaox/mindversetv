@@ -363,7 +363,7 @@ func TestGenerationProposeCombinesMixedNodeModels(t *testing.T) {
 	}
 	first, _ := targets[0].(map[string]any)
 	second, _ := targets[1].(map[string]any)
-	if first["modelKey"] != "beeftv::gpt-image-2.5-flare" || second["modelKey"] != "beeftv::gpt-image-2" {
+	if first["modelKey"] != "myxsai::gpt-image-2.5-flare" || second["modelKey"] != "myxsai::gpt-image-2" {
 		t.Fatalf("每个节点应保留各自模型: %#v", payload["targets"])
 	}
 }
