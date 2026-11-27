@@ -602,7 +602,7 @@ func opCanvasNodeUpdate(ctx *Context, params json.RawMessage) (any, error) {
 	var args struct {
 		CanvasID         string `json:"canvasId"`
 		NodeID           string `json:"nodeId"`
-		ExpectedRevision int64  `json:"expectedRevision"`
+		ExpectedRevision *int64 `json:"expectedRevision"`
 		Patch            struct {
 			Title      *string        `json:"title"`
 			Prompt     *string        `json:"prompt"`
@@ -615,6 +615,12 @@ func opCanvasNodeUpdate(ctx *Context, params json.RawMessage) (any, error) {
 	}
 	if strings.TrimSpace(args.CanvasID) == "" || strings.TrimSpace(args.NodeID) == "" {
 		return nil, InvalidArg("invalid_params", "canvasId 与 nodeId 必填")
+	}
+	if args.ExpectedRevision == nil {
+		return nil, InvalidArg("invalid_params", "expectedRevision 必填")
+	}
+	if *args.ExpectedRevision < 0 {
+		return nil, InvalidArg("invalid_params", "expectedRevision 无效")
 	}
 	if args.Patch.Prompt != nil && args.Patch.Content != nil && *args.Patch.Prompt != *args.Patch.Content {
 		return nil, InvalidArg("conflicting_patch_fields", "patch.prompt 与 patch.content 不能同时提交不同内容")
@@ -635,7 +641,7 @@ func opCanvasNodeUpdate(ctx *Context, params json.RawMessage) (any, error) {
 	if len(patch) == 0 {
 		return nil, InvalidArg("empty_patch", "patch 至少要有一个字段")
 	}
-	if _, err := ctx.Domain.UpdateUserCanvasNodeFields(ctx.UserID, args.CanvasID, args.NodeID, patch, args.ExpectedRevision); err != nil {
+	if _, err := ctx.Domain.UpdateUserCanvasNodeFields(ctx.UserID, args.CanvasID, args.NodeID, patch, *args.ExpectedRevision); err != nil {
 		return nil, mapDomainError(err)
 	}
 	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
@@ -646,7 +652,7 @@ func opCanvasNodeUpdate(ctx *Context, params json.RawMessage) (any, error) {
 func opCanvasNodesCreate(ctx *Context, params json.RawMessage) (any, error) {
 	var args struct {
 		CanvasID         string `json:"canvasId"`
-		ExpectedRevision int64  `json:"expectedRevision"`
+		ExpectedRevision *int64 `json:"expectedRevision"`
 		Nodes            []struct {
 			Title  string `json:"title"`
 			Type   string `json:"type"`
@@ -662,6 +668,12 @@ func opCanvasNodesCreate(ctx *Context, params json.RawMessage) (any, error) {
 	if strings.TrimSpace(args.CanvasID) == "" {
 		return nil, InvalidArg("invalid_params", "canvasId 必填")
 	}
+	if args.ExpectedRevision == nil {
+		return nil, InvalidArg("invalid_params", "expectedRevision 必填")
+	}
+	if *args.ExpectedRevision < 0 {
+		return nil, InvalidArg("invalid_params", "expectedRevision 无效")
+	}
 	if len(args.Nodes) == 0 {
 		return nil, InvalidArg("invalid_batch", "nodes 至少需要 1 项")
 	}
@@ -669,7 +681,7 @@ func opCanvasNodesCreate(ctx *Context, params json.RawMessage) (any, error) {
 	for _, node := range args.Nodes {
 		drafts = append(drafts, canvas.NodeDraft{Title: node.Title, Type: node.Type, Prompt: node.Prompt, PluginData: node.PluginData})
 	}
-	_, createdNodes, err := ctx.Domain.CreateUserCanvasNodes(ctx.UserID, args.CanvasID, drafts, args.ExpectedRevision)
+	_, createdNodes, err := ctx.Domain.CreateUserCanvasNodes(ctx.UserID, args.CanvasID, drafts, *args.ExpectedRevision)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -834,7 +846,7 @@ func opCanvasEdgeCreate(ctx *Context, params json.RawMessage) (any, error) {
 		CanvasID         string `json:"canvasId"`
 		FromNodeID       string `json:"fromNodeId"`
 		ToNodeID         string `json:"toNodeId"`
-		ExpectedRevision int64  `json:"expectedRevision"`
+		ExpectedRevision *int64 `json:"expectedRevision"`
 	}
 	if err := decodeParams(params, &args); err != nil {
 		return nil, err
@@ -842,14 +854,20 @@ func opCanvasEdgeCreate(ctx *Context, params json.RawMessage) (any, error) {
 	if strings.TrimSpace(args.CanvasID) == "" || strings.TrimSpace(args.FromNodeID) == "" || strings.TrimSpace(args.ToNodeID) == "" {
 		return nil, InvalidArg("invalid_params", "canvasId、fromNodeId、toNodeId 必填")
 	}
+	if args.ExpectedRevision == nil {
+		return nil, InvalidArg("invalid_params", "expectedRevision 必填")
+	}
+	if *args.ExpectedRevision < 0 {
+		return nil, InvalidArg("invalid_params", "expectedRevision 无效")
+	}
 	if args.FromNodeID == args.ToNodeID {
 		return nil, InvalidArg("self_loop", "不能把节点连接到自身")
 	}
-	summary, err := ctx.Domain.ConnectUserCanvasNodesAtRevision(ctx.UserID, args.CanvasID, args.FromNodeID, args.ToNodeID, args.ExpectedRevision)
+	summary, err := ctx.Domain.ConnectUserCanvasNodesAtRevision(ctx.UserID, args.CanvasID, args.FromNodeID, args.ToNodeID, *args.ExpectedRevision)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
-	created := summary.Revision != args.ExpectedRevision
+	created := summary.Revision != *args.ExpectedRevision
 	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
 		return map[string]any{"canvasId": args.CanvasID, "duplicate": !created, "revision": summary.Revision,
 			"edgeId": findDocEdgeID(doc, args.FromNodeID, args.ToNodeID), "created": created}
