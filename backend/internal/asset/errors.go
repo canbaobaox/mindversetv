@@ -37,8 +37,22 @@ func ResourceMissing() error {
 	return kernel.BadAuthRequest("资源不存在")
 }
 
+func ResourceNotFound() error {
+	return kernel.NotFound("资源不存在")
+}
+
+func AssetNotFound() error {
+	return kernel.NotFound("素材不存在")
+}
+
 func ResourceFileMissing() error {
 	return kernel.NotFound("本地媒体文件不存在或已丢失")
+}
+
+func PreviewUnavailable() error {
+	err := kernel.NewAppError(http.StatusServiceUnavailable, "图片尺寸过大或预览生成暂不可用，请稍后重试")
+	err.Retryable = true
+	return err
 }
 
 func UnreadableAssetDocument(kind string) error {
@@ -50,14 +64,6 @@ func UnreadableAssetDocument(kind string) error {
 	default:
 		return kernel.BadAuthRequest("素材数据无法解析，已停止删除以避免误删文件")
 	}
-}
-
-func HistoryReferenced() error {
-	return kernel.BadAuthRequest("素材仍被画布历史版本引用，已保留文件")
-}
-
-func StillReferenced() error {
-	return kernel.BadAuthRequest("素材仍被引用，请先在对应画布、任务或业务记录中解除引用后再删除")
 }
 
 func TrashStatusConflict() error {

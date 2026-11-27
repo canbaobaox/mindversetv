@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { isVideoProvider, MediaPlayer, MediaProvider, type MediaPlayerInstance } from "@vidstack/react";
 import { DefaultVideoLayout, defaultLayoutIcons, type DefaultLayoutTranslations } from "@vidstack/react/player/layouts/default";
 import { useVideoAudioTrack } from "@/hooks/use-video-audio-track";
-import { normalizeVideoPlayerMimeType } from "@/lib/video-player-policy";
+import { isUndecodableVideoTrack, isVideoSpaceShortcutIgnoredTarget, normalizeVideoPlayerMimeType } from "@/lib/video-player-policy";
 import "@vidstack/react/player/styles/base.css";
 import "@vidstack/react/player/styles/default/theme.css";
 import "@vidstack/react/player/styles/default/layouts/video.css";
@@ -20,11 +20,14 @@ type VideoPlayerProps = {
     preload?: MediaPlayerProps["preload"];
     autoPlay?: boolean;
     compactControls?: boolean;
+    /** 弹窗等独立预览场景启用空格键播放/暂停快捷键（避开输入框与聚焦控件）。 */
+    enableSpaceToggle?: boolean;
     /** Explicitly marks videos known to have an audio track (or not). */
     hasAudio?: boolean;
     onCanPlay?: MediaPlayerProps["onCanPlay"];
     onPlay?: MediaPlayerProps["onPlay"];
-    onError?: MediaPlayerProps["onError"];
+    onError?: () => void;
+    onVideoMetadata?: (video: HTMLVideoElement) => void;
     onFirstFramePresented?: () => void;
 };
 
@@ -83,16 +86,19 @@ export function VideoPlayer({
     preload = "metadata",
     autoPlay = false,
     compactControls = false,
+    enableSpaceToggle = false,
     hasAudio,
     onCanPlay,
     onPlay,
     onError,
+    onVideoMetadata,
     onFirstFramePresented,
 }: VideoPlayerProps) {
     const { noAudio, probeVideoAudio } = useVideoAudioTrack(src, hasAudio);
     const autoPlayAttemptedRef = useRef(false);
     const mediaPlayerRef = useRef<MediaPlayerInstance>(null);
     const firstFrameRequestedRef = useRef(false);
+    const decodeFailureReportedRef = useRef(false);
     const layoutIcons = useMemo(() => {
         if (!noAudio) return defaultLayoutIcons;
         // Vidstack chooses the volume icon from its internal media state. That
@@ -111,6 +117,7 @@ export function VideoPlayer({
     useEffect(() => {
         autoPlayAttemptedRef.current = false;
         firstFrameRequestedRef.current = false;
+        decodeFailureReportedRef.current = false;
     }, [src]);
 
     useEffect(() => {
@@ -130,6 +137,28 @@ export function VideoPlayer({
         }
     }, [noAudio]);
 
+    useEffect(() => {
+        if (!enableSpaceToggle) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+            if (event.key !== " " && event.code !== "Space") return;
+            if (isVideoSpaceShortcutIgnoredTarget(event.target)) return;
+            const instance = mediaPlayerRef.current;
+            if (!instance || decodeFailureReportedRef.current) return;
+            event.preventDefault();
+            const provider = instance.provider;
+            const media = isVideoProvider(provider) ? (provider.media as HTMLVideoElement) : undefined;
+            const paused = media ? media.paused || media.ended : instance.paused;
+            if (paused) {
+                void instance.play().catch(() => undefined);
+            } else {
+                void instance.pause().catch(() => undefined);
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [enableSpaceToggle]);
+
     const stopCanvasControlInteraction = (event: { target: EventTarget | null; nativeEvent?: Event; stopPropagation: () => void; preventDefault?: () => void }) => {
         if (!isPlayerControlEvent(event)) return;
         if (noAudio && isVolumeControlEvent(event)) {
@@ -146,9 +175,21 @@ export function VideoPlayer({
     };
     const type = normalizeVideoPlayerMimeType(mimeType);
     const mediaSource = useMemo(() => ({ src, type }), [src, type]);
+    const reportError = () => {
+        if (decodeFailureReportedRef.current) return;
+        decodeFailureReportedRef.current = true;
+        onError?.();
+    };
+    const rejectUndecodable = (media: HTMLVideoElement | undefined) => {
+        if (!isUndecodableVideoTrack(media)) return false;
+        media?.pause();
+        reportError();
+        return true;
+    };
     const handleCanPlay = (detail: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[0], event: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[1]) => {
         const provider = event.target.provider;
         const media = isVideoProvider(provider) ? (provider.media as HTMLVideoElement) : undefined;
+        if (rejectUndecodable(media)) return;
         if (media && !firstFrameRequestedRef.current) {
             firstFrameRequestedRef.current = true;
             if (typeof media.requestVideoFrameCallback === "function") {
@@ -185,16 +226,27 @@ export function VideoPlayer({
             data-no-audio={noAudio ? "true" : undefined}
             style={{ "--video-brand": brandColor }}
             onCanPlay={handleCanPlay}
-            onPlay={onPlay}
-            onError={onError}
+            onPlay={(event) => {
+                const provider = event.target.provider;
+                const media = isVideoProvider(provider) ? (provider.media as HTMLVideoElement) : undefined;
+                if (decodeFailureReportedRef.current || rejectUndecodable(media)) {
+                    media?.pause();
+                    return;
+                }
+                onPlay?.(event);
+            }}
+            onError={reportError}
             onLoadedMetadata={(event) => {
                 const provider = event.target.provider;
                 const media = isVideoProvider(provider) ? (provider.media as HTMLVideoElement) : undefined;
+                if (rejectUndecodable(media)) return;
                 probeVideoAudio(media);
+                if (media) onVideoMetadata?.(media);
             }}
             onLoadedData={(event) => {
                 const provider = event.target.provider;
                 const media = isVideoProvider(provider) ? (provider.media as HTMLVideoElement) : undefined;
+                if (rejectUndecodable(media)) return;
                 probeVideoAudio(media);
             }}
             onPointerDown={stopCanvasControlInteraction}

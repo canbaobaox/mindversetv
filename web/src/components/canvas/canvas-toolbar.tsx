@@ -1,3 +1,4 @@
+import { hasCanvasKeyboardHost } from "@/lib/canvas/canvas-keyboard-scope";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Blocks, Hand, MousePointer2, ScanFace } from "lucide-react";
@@ -61,7 +62,6 @@ export function CanvasToolbar({
     onAddText,
     onChooseStyle,
     onAddScript,
-    onAddFrame,
     onAddFolder,
     onAddDrawing,
     onAddExtensionNode,
@@ -109,7 +109,6 @@ export function CanvasToolbar({
     onAddText: () => void;
     onChooseStyle: () => void;
     onAddScript: () => void;
-    onAddFrame: () => void;
     onAddFolder: () => void;
     onAddDrawing: () => void;
     onAddExtensionNode: (type: CanvasNodeTypeId) => void;
@@ -222,7 +221,7 @@ export function CanvasToolbar({
             const target = event.target instanceof HTMLElement ? event.target : null;
             if (target?.isContentEditable || target?.closest("input, textarea, select, [contenteditable='true']")) return;
             const key = event.key.toLowerCase();
-            if (key !== "v" && key !== "h") return;
+            if ((key !== "v" && key !== "h") || hasCanvasKeyboardHost()) return;
             event.preventDefault();
             onToolChange(key === "h" ? "move" : "box-select");
             setModeMenuOpen(false);
@@ -243,7 +242,6 @@ export function CanvasToolbar({
         onAddVideo,
         onAddAudio,
         onAddScript,
-        onAddFrame,
         onAddFolder,
         onAddDrawing,
         onAddExtensionNode,

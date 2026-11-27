@@ -6,6 +6,16 @@
 
 BeefTV（`glanderness/BeefTV`）是面向 AI 影视与短剧创作的本地优先工作台，处于快速迭代期；除非任务明确要求，不为旧字段、旧接口或旧数据保留兼容层。主线不依赖 PostgreSQL、Redis、账号登录或多租户部署。
 
+### 核心原则
+
+1. **彻底本地优先，只认一份真数据**：单机工作台以本地 SQLite 和本地磁盘文件为唯一事实源；不再为已退场的多租户云 SaaS、多端离线抢写或运行中切账号保留双写缓存、冲突停机弹窗、伪配额账本与防作弊硬拦截。
+2. **宿主轻量化 + 垂直功能/第三方协议插件化**：宿主内核只管通用工作区与画布基础渲染/交互；垂直创作流、第三方或本地模型协议放 `plugin-packages/`；新业务不再塞进 `backend/internal/app/`。
+3. **能力、计费、素材校验与报错洗敏归服务端 API**：客户端不做素材预检门禁、不按模型名写死分支、不自行拼凑 `task.outcome` 猜能否重试；同一条规则全仓只在一处算。
+4. **容错优先于“一错全炸”**：工程与画布永远优先能打开、能保存；个别缺失媒体做节点级占位提示，绝不因单条历史脏引用把整份工程或用户编辑全回滚。
+5. **先减法、三档分流，小步治本，非必要不开大重写**：先问能否删除或合并重复实现，无真实性能、体验或正确性/安全需要时不提前上大引擎重写——① 属于已退场能力（原则 1）或可证无触发路径的多余/过度防御机制（不含第 4 节安全、权限、归属与数据完整性硬校验）优先纯减法删除，不另造替代机制；② 明确的单点错漏（参数写错、读写打架、超时过短或缺少对应运行验证）用最小改动治根因并补复现测试，不为无关重构扩大范围（根因落在重复规则或超 800 行高频文件时仍按第 7 节先合并/拆分）；③ 需改底层设计（存储、同步、渲染、导入导出、大插件协议）时按原则 6 分开立 PR。
+6. **大改结构前先看外部成熟做法（且与紧急修复分立）**：仅在涉及存储格式、同步机制、渲染架构、导入导出或大插件协议等底层改动前，先查 2–3 个同类成熟桌面/开源软件做法再定方案，并与紧急 Bug 修复分开立 PR；常规清债与单点修复不对标外部、不塞进同一个大 PR。
+7. **靠真实行为测试与硬门禁守质量**：测试只测真实运行结果（禁新增读源码字符串测试）；靠 `structure-budget.mjs` 与 `deadcode-budget.mjs` 保证大文件和死代码只降不升；合并前过独立复审（先看真实目的、治根因、减法重构与最简洁复用）。
+
 | 单元 | 技术栈 | 入口 | 职责 |
 | --- | --- | --- | --- |
 | `web/` | Vite、React 19、TypeScript、React Router、Ant Design、Tailwind、Zustand、TanStack Query | `web/src/application.tsx`、`web/src/router.tsx` | 工作区 UI、画布渲染与交互、本地缓存、API 调用 |
@@ -67,6 +77,7 @@ BeefTV（`glanderness/BeefTV`）是面向 AI 影视与短剧创作的本地优�
 ## 5. 画布、UI 与排版硬约束
 
 - 画布组件、状态、算法分别放在 `web/src/components/canvas/`、`stores/canvas/`、`lib/canvas/`；事件忽略选择器须覆盖 modal/popover/dropdown 等浮层，拖拽/连线/缩放/快捷键须处理 pointer capture、滚轮冒泡、焦点与 `data-canvas-no-zoom` / `data-canvas-wheel-scroll`。节点和对象名称保留可发现的铅笔入口并支持单击编辑（双击/右键不能是唯一入口）；图片节点保持原始比例，面板不长期遮挡主要画布空间。
+- 画布上的编辑弹窗统一使用 `AppModal` / `AppDrawer`。自绘模态窗口声明 `role="dialog"` 和 `aria-modal="true"`，自绘临时编辑面板在打开时挂载的根元素标记 `data-canvas-keyboard-scope`。画布删除统一经过 `useCanvasKeyboard`，由 `canvas-keyboard-scope.ts` 判断可见浮层。验收新编辑器时，先选中画布节点，再在输入框、按钮和空白处测试 Backspace / Delete，同时验证关闭后画布快捷键恢复。
 - Ant Design 共性主题集中在 `web/src/lib/app-theme.ts` / `AppProviders`，遵循 `web/src/components/ui/README.md` 三层 token（Primitive → Semantic → Component，inline style 优先引用 `var(--token-name)`，禁散写字面颜色/圆角/阴影/`z-index`）。产品弹窗用 `AppModal flush`（内容壳仍为 `.ant-modal-container`，不复制 `padding: 0` Modal styles），侧栏用 `AppDrawer`。第三方覆盖限定在具体组件（新增 CSS 前先搜同名选择器改单一真源），禁止新增全局 `.ant-modal-*`、`.dark .ant-switch-*`、`.ant-checkbox-*` 或 Segmented 补丁；主操作、普通选中、Checkbox/Radio、Switch 区分颜色角色，持久切换用 `aria-pressed`，`type="primary"` 只表当前主命令，保留 `:focus-visible` 与 `prefers-reduced-motion`。
 - **画布外布局与单一滚动所有者**：遵循「页面标题与动作（复用 `PageHeader`，基准 `64px` 节奏，共享容器桌面 `40px`、`<=720px` 下 `20px` 内边距）→ 按需同级导航 → 单条工具栏 → 单一主内容区 → 底部翻页（复用共享 `PaginationBar`，页面不写私有定位覆盖）或固定提交区」，标题/标签页/工具栏/内容区左边缘对齐，次要或危险操作收进菜单；工作区壳已有页面名时不重复同名大标题，也不跨层级堆叠重复副标题、装饰说明、版本号、技术标识或同权重主按钮，删除说明小字前先确认不承载费用/授权/错误/未保存状态并清理残留空盒。父 flex/grid 管理固定头尾，内容区设 `min-height: 0`，整页或浮层只保留一个主要纵向滚动容器；折叠侧栏、移动导航或详情浮层关闭后不得残留占位宽度。
 - **单一样式所有者与表单状态真实性**：同一属性族只保留一个主要所有者（`Primitive/Semantic token → 基础组件与第三方适配 → 工作区壳与产品模式 → 页面根选择器`），页面 CSS 限定在页面根选择器内（不假设懒加载样式随路由卸载消失），禁止新增 `*-final`、`*-lock`、文件尾部兜底覆盖或跨页 `!important`，过渡优先动 `opacity`/`transform`（禁 `transition: all`）；状态用 `data-state`、`aria-selected`、`aria-pressed` 或明确变体类表达，不绑中文 `aria-label` 或 `> div:first-child`，同一点击只由一层反馈。发现/安装/持有/详情按真实 ID、版本与关联判定身份（不按同名推断）；折叠高级项保留原值且校验报错自动展开定位，提交期间防重入，异步结果不回写已切换对象或已关闭表单，错误态不伪装成空态，真实完成后才提示成功。
@@ -85,6 +96,7 @@ BeefTV（`glanderness/BeefTV`）是面向 AI 影视与短剧创作的本地优�
 ## 7. 文档、脱敏与防止屎山
 
 - 根 `README.md`（中文准稿）只保留定位、概览、快速开始、部署、安全与文档入口，每次修改同步更新 `README.en.md` 并保留顶部语言切换；详细专题写进 `docs/content/docs/`（功能与代码地图见 `overview/features.mdx`、`backend/code-map.mdx`），API、数据表、SSE、资源存储、部署或安全变化时同步对应专题文档，未确认状态留在任务或 PR 中。
+- `README.md` 与 `README.en.md` 顶部的「最近更新 / Recent updates」每版控制在 1–2 行内，应用内更新日志（`web/src/components/layout/app-changelog.zh.ts`）同样面向普通用户编写：只写重要且用户能直接感知的新增功能与体验修复，使用易懂的日常语言，不堆砌内部接口路径、状态码、依赖包名、字段名或重构细节；完整工程变更留在 `CHANGELOG.md` 与 GitHub Release。
 - 公开文档默认中文、不写过期日期，命令/端口/环境变量以当前脚本和 Compose 为准；文档、代码、提交说明与 PR 描述严禁出现密码、Token、Cookie、真实账号、机器路径、会话编号、飞书表号、内部授权记录、预算金额、线上日志号或客户/内部人名，也不绑定旧上游网关品牌名（统一用 `BeefTV 官方算力`）。提交格式：`<type>(<scope>): <业务模块> - <变更摘要>`（`type` 为 `feat|fix|refactor|perf|docs|test|build|ci|chore|revert`）。团队内部评审与发版审批另存私有工作区，AI 代理默认不自行合并 PR 或直接发版。
 - **防止屎山守则**：
   - 同一个业务结论只在一处计算；修 bug 前先查同类规则散落几处，有多处先合并再修。

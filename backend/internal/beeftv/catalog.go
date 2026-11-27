@@ -217,16 +217,6 @@ func clearBeefTVModels(store *workspace.ProviderConfig) error {
 	return store.SaveLocalModelConfig(body)
 }
 
-func catalogCapability(model CatalogModel) string {
-	capability, _ := catalogCapabilityAndProtocol(model)
-	return capability
-}
-
-func catalogProtocol(model CatalogModel) string {
-	_, protocol := catalogCapabilityAndProtocol(model)
-	return protocol
-}
-
 func catalogCapabilityAndProtocol(model CatalogModel) (capability, protocol string) {
 	if audio, ok := model.MediaCapabilities["audio"]; ok && model.MediaCapabilitiesVersion != "" && len(audio.Operations) > 0 {
 		return "audio", "openai-audio"
@@ -385,34 +375,6 @@ func containsAnyString(values, candidates []string) bool {
 		}
 	}
 	return false
-}
-
-func mergeModelIDs(existing any, incoming []any) []any {
-	seen := map[string]bool{}
-	result := make([]any, 0)
-	appendID := func(value any) {
-		id, _ := value.(string)
-		id = strings.TrimSpace(id)
-		if id == "" || seen[id] {
-			return
-		}
-		seen[id] = true
-		result = append(result, id)
-	}
-	switch items := existing.(type) {
-	case []any:
-		for _, item := range items {
-			appendID(item)
-		}
-	case []string:
-		for _, item := range items {
-			appendID(item)
-		}
-	}
-	for _, item := range incoming {
-		appendID(item)
-	}
-	return result
 }
 
 func mergeProfiles(existing any, incoming []any) []any {

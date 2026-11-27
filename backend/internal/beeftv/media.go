@@ -18,6 +18,7 @@ import (
 
 const MediaProtocolHeader = "X-BeefAPI-Media-Protocol"
 const MediaProtocolVersion = "managed-media-v1"
+const UploadPurposeMediaTool = "media_tool"
 
 type MediaDiscovery struct {
 	Version              string                          `json:"version"`
@@ -57,6 +58,7 @@ type LocalMediaReference struct {
 	StorageKey string
 	DataURL    string
 	MIME       string
+	Purpose    string
 	Bytes      int64
 	MaxBytes   int64
 }
@@ -220,9 +222,6 @@ func (c *MediaClient) httpClient() *http.Client {
 		return c.Client
 	}
 	return outbound.OutboundHTTPClient(5 * time.Minute)
-}
-func (c *MediaClient) validURL(raw string) error {
-	return c.validURLContext(context.Background(), raw)
 }
 func (c *MediaClient) validURLContext(ctx context.Context, raw string) error {
 	if !c.AllowHTTPTest {

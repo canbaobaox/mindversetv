@@ -2,10 +2,12 @@
 // 与模型请求前后的钩子装配进官方 Durable Registry。
 import crypto from 'node:crypto';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { createModels } from '@earendil-works/pi-ai/models';
 import { defineExtension, defineTool, GenerationTask, hook } from '@earendil-works/pi-durable';
+import { createToolSearchExtension } from '@earendil-works/pi-durable/tool-search';
+import { createCodemodeExtension } from '@earendil-works/pi-durable/codemode';
 import { officialNativeHistory } from './native-history.mjs';
 import { downgradeUnpinnedAssistantMessages } from './media-content.mjs';
+import { adaptProviderPromptCache } from './prompt-cache.mjs';
 import { SYSTEM_PROMPT } from './system-prompt.mjs';
 import { SKILL_LOAD_PARAMETERS, createSkillCatalogSection, expandSkillContent, loadPinnedSkills, loadedSkillRecord,
   normalizeSkillCatalog, sameSkillPin, skillsToLoad, activeSkillProjection, guardSkillModelRequests } from './skill-resource.mjs';
@@ -17,6 +19,26 @@ import { normalizeModelTransportError } from './model-transport-error.mjs';
 const CTX = BACKGROUND_CONTEXT;
 const fail = (reason) => Object.assign(new Error(reason), { reason });
 const requestSignature = (messages) => crypto.createHash('sha256').update(JSON.stringify(messages)).digest('hex');
+
+// 低频/扩展工具按需经官方 tool_search 或 codemode 发现，保持默认对话提示词精简与高缓存命中。
+const DEFERRED_HOST_TOOL_LABELS = new Set([
+  'business.list',
+  'business.call',
+  'project.bible.get',
+  'project.bible.update',
+  'skill.market.search',
+  'skill.market.get',
+  'skill.market.file',
+  'skill.publish.prepare',
+  'skill.publish.status',
+  'skill.draft',
+]);
+// 需要用户确认卡或控制本轮终止的工具只由模型直接调用，避免被 codemode 脚本文本吞掉。
+const MODEL_ONLY_HOST_TOOL_LABELS = new Set([
+  'canvas.generation.propose',
+  'skill.script.run',
+  'plan.update',
+]);
 
 export const supplementMarker = (id) => `[BEEFTV_INPUT:${id}]`;
 
@@ -155,7 +177,7 @@ export function createDurableSkillController({ skills, state, update, lock, offi
 
   async function changeSkillContext(entry, change) {
     return lock(entry.canvasId, async () => {
-      if (entry.busy || (await state(entry)).active) throw fail('session_busy');
+      if (entry.busy || entry.compacting || (await state(entry)).active) throw fail('session_busy');
       await flushPendingSkillRollback(entry);
       await resetPendingScope(entry, await readSkillContext(entry, ''));
       await skills.changeContext(entry, change, '');
@@ -197,6 +219,7 @@ export async function installDurableExtensions({
   runWithBudget,
   getModels,
   extensions,
+  codemodeSandbox = null,
 }) {
   const { readSkillContext, resolveActiveSkills, prepareSkillContext } = skillController;
   const skillHashPattern = /^[a-f0-9]{64}$/;
@@ -293,12 +316,17 @@ export async function installDurableExtensions({
       : tool.label === 'skill.script.run'
         ? '。首次运行需用户确认并结束本轮；plan_update 可与本调用同一次响应发出。'
         : ''), parameters: tool.parameters,
-    replay: durableToolReplay(tool), executionMode: 'sequential',
+    replay: durableToolReplay(tool),
+    executionMode: tool.readOnly === true && tool.label !== 'canvas.generation.propose' && tool.label !== 'skill.script.run' ? 'parallel' : 'sequential',
+    ...(DEFERRED_HOST_TOOL_LABELS.has(tool.label) ? { deferred: true } : {}),
+    ...(MODEL_ONLY_HOST_TOOL_LABELS.has(tool.label) ? { callers: ['model'] } : {}),
     ...(['media.overview', 'media.inspect', 'media.check', 'media.review'].includes(tool.label)
       ? { outputLimits: { maxBytes: 64 * 1024 * 1024, maxLines: 100000 } }
-      : ['skill.load', 'skill.file'].includes(tool.label)
-        ? { outputLimits: { maxBytes: 128 * 1024, maxLines: 4000 } }
-        : {}),
+      : tool.label === 'file.read'
+        ? { outputLimits: { maxBytes: 16 * 1024 * 1024, maxLines: 4000 } }
+        : ['skill.load', 'skill.file'].includes(tool.label)
+          ? { outputLimits: { maxBytes: 128 * 1024, maxLines: 4000 } }
+          : {}),
     execute: async (args, api, context) => {
       if (entry.generation.aborted) throw fail('aborted');
       if (entry.generation.pendingInputError) throw fail(entry.generation.pendingInputError.reason);
@@ -328,9 +356,17 @@ export async function installDurableExtensions({
     },
   }));
   let selectedHostTools = tools;
+  const toolSearchExt = createToolSearchExtension();
+  const codemodeExt = codemodeSandbox
+    ? createCodemodeExtension({ sandbox: codemodeSandbox, models: false, inlineBudget: 0 })
+    : null;
+  const builtinExtensionTools = [
+    ...(toolSearchExt.tools || []),
+    ...(codemodeExt?.tools || []),
+  ];
   entry.pluginExtensions = [];
   entry.pluginTools = [];
-  entry.toolNames = tools.map((tool) => tool.name);
+  entry.toolNames = [...tools, ...builtinExtensionTools].map((tool) => tool.name);
 
   function wrapPluginExtensionForEntry(rawExtension) {
     if (!rawExtension || typeof rawExtension !== 'object') return null;
@@ -344,19 +380,29 @@ export async function installDurableExtensions({
       parameters: pluginTool.parameters || { type: 'object', properties: {} },
       replay: durableToolReplay(pluginTool),
       executionMode: pluginTool.executionMode || 'sequential',
+      ...(pluginTool.deferred === true ? { deferred: true } : {}),
+      ...(Array.isArray(pluginTool.callers) && pluginTool.callers.length > 0 ? { callers: pluginTool.callers } : {}),
+      ...(pluginTool.structuredOutputSchema ? { structuredOutputSchema: pluginTool.structuredOutputSchema } : {}),
       execute: async (args, api, context) => {
         if (entry.generation.aborted) throw fail('aborted');
         if (entry.generation.pendingInputError) throw fail(entry.generation.pendingInputError.reason);
         if (entry.generation.pendingInput?.state === 'pending') throw fail('supplement_preparation_pending');
         if (entry.turn?.turnId) await authorization(entry, entry.turn.turnId);
+        const currentMode = entry.permissionMode || entry.generation?.permissionMode || 'canvas';
+        const toolIsReadOnly = pluginTool.readOnly === true;
+        if (currentMode === 'read-only' && !toolIsReadOnly) {
+          const err = new Error(`scope_denied: 本轮助手只能读取（禁止调用 ${pluginTool.name}）`);
+          err.reason = 'scope_denied';
+          throw err;
+        }
         const started = Date.now();
         // Plugin tools reach business operations only through this nested call,
         // so the turn's permission mode is enforced here, once, for every plugin.
         const wrappedApi = {
           ...api,
           executeTool: async (toolName, toolParams, callContext = context, options = {}) => {
-            const currentMode = entry.permissionMode || entry.generation?.permissionMode || 'canvas';
-            if (currentMode === 'read-only' && !entry.readOnlyToolNames?.has(toolName)) {
+            const activeMode = entry.permissionMode || entry.generation?.permissionMode || 'canvas';
+            if (activeMode === 'read-only' && !entry.readOnlyToolNames?.has(toolName)) {
               const err = new Error(`scope_denied: 本轮助手只能读取（禁止调用 ${toolName}）`);
               err.reason = 'scope_denied';
               throw err;
@@ -377,7 +423,11 @@ export async function installDurableExtensions({
             isError,
             ms: Date.now() - started,
           });
-          return { ...rawResult, output };
+          return {
+            ...rawResult,
+            output,
+            ...(rawResult?.structuredOutput !== undefined ? { structuredOutput: rawResult.structuredOutput } : {}),
+          };
         } catch (error) {
           entry.log.push({
             toolCallId: String(api?.callId || api?.taskId || '') || null,
@@ -414,13 +464,17 @@ export async function installDurableExtensions({
     }
     entry.pluginExtensions = nextWrapped;
     entry.pluginTools = nextWrapped.flatMap((ext) => ext.tools || []);
-    entry.toolNames = [...selectedHostTools, ...entry.pluginTools].map((tool) => tool.name);
+    entry.toolNames = [...selectedHostTools, ...builtinExtensionTools, ...entry.pluginTools].map((tool) => tool.name);
   }
 
   const operationExtension = defineExtension({
     name: 'beeftv.operations.v1',
     tools,
     hooks: [hook(GenerationTask, {
+      beforeProviderRequest: ({ model, payload }) => {
+        const adapted = adaptProviderPromptCache(payload, model?.api, { sessionId: entry.sessionId });
+        return adapted === payload ? undefined : { payload: adapted };
+      },
       afterResponse: async (message, ...rest) => {
         normalizeModelTransportError(message, ...rest);
         // 本次响应是否带提方案调用：同批的 plan_update 也要请求结束本轮，否则官方 Durable 因为
@@ -590,12 +644,14 @@ export async function installDurableExtensions({
   });
 
   registry.install(operationExtension);
+  registry.install(toolSearchExt);
+  if (codemodeExt) registry.install(codemodeExt);
   entry.configurePermission = async (mode) => {
     entry.generation.permissionMode = mode;
     const projected = [...buildTools(canvasId, entry.log, entry.generation, entry.turn, sessionId), ...hostTools()];
     const byName = new Map(projected.map((t) => [t.name, t]));
     selectedHostTools = tools.filter((t) => byName.has(t.name)).map((t) => ({ ...t, parameters: byName.get(t.name).parameters }));
-    const activeTools = [...selectedHostTools, ...entry.pluginTools];
+    const activeTools = [...selectedHostTools, ...builtinExtensionTools, ...entry.pluginTools];
     entry.toolNames = activeTools.map((tool) => tool.name);
     registry.install(defineExtension({ ...operationExtension, tools: selectedHostTools }));
     if (entry.root) {
@@ -606,13 +662,13 @@ export async function installDurableExtensions({
     }
   };
   entry.reloadPluginExtensions = async (newExtensions) => {
-    if (entry.busy) {
+    if (entry.busy || entry.compacting) {
       entry.pendingPluginExtensions = Array.isArray(newExtensions) ? [...newExtensions] : [];
       return;
     }
     entry.pendingPluginExtensions = null;
     applyPluginExtensionsToRegistry(newExtensions);
-    const activeTools = [...selectedHostTools, ...entry.pluginTools];
+    const activeTools = [...selectedHostTools, ...builtinExtensionTools, ...entry.pluginTools];
     if (entry.root) {
       await entry.root.configure({
         tools: activeTools,
@@ -632,40 +688,10 @@ export async function installDurableExtensions({
   applyPluginExtensionsToRegistry(await extensions(entry));
 
   let models = await getModels(entry);
-  // 渠道缓存亲和性：把 Durable 会话 ID 作为上游缓存路由键。
-  // Anthropic 走 metadata.user_id；OpenAI 兼容网关走 prompt_cache_key（仅在模型 compat 开启时）。
-  if (models && typeof models.getProviders === 'function') {
-    const bound = createModels();
-    for (const provider of models.getProviders()) {
-      const wrap = (fn) => (model, context, options) => {
-        const callerOnPayload = options?.onPayload;
-        const nextOptions = {
-          ...options,
-          sessionId: entry.sessionId,
-          ...(model?.api === 'anthropic-messages' ? { metadata: { ...options?.metadata, user_id: entry.sessionId } } : {}),
-          onPayload: async (payload, currentModel) => {
-            let next = callerOnPayload ? (await callerOnPayload(payload, currentModel)) ?? payload : payload;
-            if (
-              (currentModel || model)?.api === 'openai-completions' &&
-              (currentModel || model)?.compat?.promptCacheKeyMode === 'enabled' &&
-              options?.cacheRetention !== 'none' &&
-              next &&
-              typeof next === 'object' &&
-              !next.prompt_cache_key
-            ) {
-              next = { ...next, prompt_cache_key: entry.sessionId };
-            }
-            return next;
-          },
-        };
-        return fn.call(provider, model, context, nextOptions);
-      };
-      bound.setProvider({ ...provider, stream: wrap(provider.stream), streamSimple: wrap(provider.streamSimple) });
-    }
-    models = bound;
-  }
   if (skills) {
     models = guardSkillModelRequests(models, async (model, request, signal) => {
+      // 空闲手动压缩只做历史摘要，不处于任何 Go 对话回合内，不校验已结束回合授权与技能上下文。
+      if (entry.compacting && !entry.busy) return;
       await authorization(entry, entry.turn.turnId);
       const projection = await resolveActiveSkills(entry, signal);
       if (entry.generation.preparedRequests?.has(requestSignature(request.messages))) {
@@ -679,5 +705,5 @@ export async function installDurableExtensions({
     });
   }
 
-  return { tools: [...selectedHostTools, ...entry.pluginTools], models };
+  return { tools: [...selectedHostTools, ...builtinExtensionTools, ...entry.pluginTools], models };
 }

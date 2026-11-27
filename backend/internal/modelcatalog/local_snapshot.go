@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/outbound"
 	"infinite-canvas/backend/internal/pricing"
 	"infinite-canvas/backend/internal/protocol"
 	"infinite-canvas/backend/internal/providerpreset"
@@ -131,41 +132,6 @@ func ParseLocalChannelModels(body []byte) []LocalChannelModel {
 	return result
 }
 
-func FilterLocalChannelModels(items []LocalChannelModel, intent *ModelRequestIntent) []LocalChannelModel {
-	result := make([]LocalChannelModel, 0, len(items))
-	for _, item := range items {
-		if !item.Enabled || item.Model == "" || !GenerationModeSupported(item.Capability) {
-			continue
-		}
-		if intent != nil && (item.Protocol == "" || (normalizeCapability(intent.Capability) != "" && normalizeCapability(item.Capability) != normalizeCapability(intent.Capability))) {
-			continue
-		}
-		if intent != nil {
-			cm := localSnapshotChannelModel(item)
-			matched, err := ChannelModelMatchesIntent(&cm, intent)
-			if err != nil || !matched {
-				continue
-			}
-		}
-		result = append(result, item)
-	}
-	return result
-}
-
-func localSnapshotChannelModel(item LocalChannelModel) model.ChannelModel {
-	cm := model.ChannelModel{ModelKey: item.Model, Capability: item.Capability, Protocol: model.ChannelInterfaceType(item.Protocol), Enabled: true}
-	if item.CapabilityConfig != nil {
-		if raw, err := json.Marshal(item.CapabilityConfig); err == nil {
-			cm.CapabilityConfigJSON = string(raw)
-		}
-	} else if defaults := DefaultModelCapabilityConfigForModel(item.Protocol, item.Model); defaults != nil {
-		if raw, err := json.Marshal(defaults); err == nil {
-			cm.CapabilityConfigJSON = string(raw)
-		}
-	}
-	return cm
-}
-
 // PublicPrices returns the validated quotes a public catalog may show: the
 // video quote, and the price row only on the managed channel that wrote it.
 // Arbitrary profile fields are never forwarded.
@@ -271,4 +237,53 @@ func PublicCatalogFromLocalSnapshot(body []byte, workflow ...WorkflowLookup) (*C
 	}
 	response := NewCatalogResponse(CatalogSourceSystem, nil, channels)
 	return &response, nil
+}
+
+// LocalChannelConfig extracts a single channel's runtime connection fields from a local model config snapshot.
+// Only the managed system channel carries channelId so custom BYOK channels remain admitted as custom channels.
+func LocalChannelConfig(body []byte, channelID string) (map[string]any, bool, error) {
+	var snapshot struct {
+		Channels []struct {
+			ID                   string                    `json:"id"`
+			BaseURL              string                    `json:"baseUrl"`
+			APIKey               string                    `json:"apiKey"`
+			SecretKey            string                    `json:"secretKey"`
+			CredentialRef        string                    `json:"credentialRef"`
+			APIFormat            string                    `json:"apiFormat"`
+			InterfaceType        string                    `json:"interfaceType"`
+			ReferenceAssetOrigin string                    `json:"referenceAssetOrigin"`
+			Headers              []outbound.OutboundHeader `json:"headers"`
+		} `json:"channels"`
+	}
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		return nil, false, err
+	}
+	for _, channel := range snapshot.Channels {
+		if channel.ID != channelID {
+			continue
+		}
+		config := map[string]any{
+			"baseUrl":       channel.BaseURL,
+			"apiKey":        channel.APIKey,
+			"apiFormat":     channel.APIFormat,
+			"interfaceType": channel.InterfaceType,
+		}
+		if channel.SecretKey != "" {
+			config["secretKey"] = channel.SecretKey
+		}
+		if channel.CredentialRef != "" {
+			config["credentialRef"] = channel.CredentialRef
+		}
+		if channel.ID == managedChannelID {
+			config["channelId"] = channel.ID
+		}
+		if origin := strings.TrimSpace(channel.ReferenceAssetOrigin); origin != "" {
+			config["referenceAssetOrigin"] = origin
+		}
+		if len(channel.Headers) > 0 {
+			config["headers"] = channel.Headers
+		}
+		return config, true, nil
+	}
+	return nil, false, nil
 }

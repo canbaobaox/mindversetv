@@ -1,10 +1,37 @@
 import { canonicalize } from "json-canonicalize";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 
+const OPEN_RECOVERY_PLACEHOLDER_ERROR = "正在从任务中心恢复生成状态...";
+
+/**
+ * Strip editor-only open/bookkeeping decorations from a node so content hashes,
+ * document equality (`sameCanvasDocument`/`sameCanvasContent`), and incremental
+ * patches (`buildCanvasDocumentPatch`) all agree on what counts as an actual edit.
+ */
+export function stripCanvasNodeBookkeeping<T>(node: T): T {
+    if (!node || typeof node !== "object") return node;
+    const record = node as Record<string, unknown>;
+    const hasTimestamps = "createdAt" in record || "updatedAt" in record;
+    const rawMeta = record.metadata as Record<string, unknown> | undefined;
+    const hasOpenPlaceholder = Boolean(
+        rawMeta &&
+        rawMeta.status === "loading" &&
+        rawMeta.errorDetails === OPEN_RECOVERY_PLACEHOLDER_ERROR,
+    );
+    if (!hasTimestamps && !hasOpenPlaceholder) return node;
+    const { createdAt: _createdAt, updatedAt: _updatedAt, ...rest } = record;
+    if (hasOpenPlaceholder && rawMeta) {
+        const { errorDetails: _placeholder, ...cleanMeta } = rawMeta;
+        return { ...rest, metadata: cleanMeta } as T;
+    }
+    return rest as T;
+}
+
 // These fields describe local viewing / synchronization, not an edit to the document.
 export function canvasContentSnapshot(project: CanvasProject) {
     const { viewport: _viewport, updatedAt: _updatedAt, revision: _revision, remoteContentHash: _hash, ...content } = project;
-    return { ...content, projectId: content.projectId || undefined };
+    const nodes = Array.isArray(content.nodes) ? content.nodes.map((node) => stripCanvasNodeBookkeeping(node)) : content.nodes;
+    return { ...content, nodes, projectId: content.projectId || undefined };
 }
 
 export function normalizeCanvasProjectGraph(project: CanvasProject): CanvasProject {
@@ -51,8 +78,7 @@ export async function canvasContentHash(project: CanvasProject) {
  *
  * 两处刻意容忍的不对称，都不代表用户编辑过文档：
  * 1. 画布外观偏好（appearance/backgroundMode/showImageInfo）：服务端由客户端决定是否写入，
- *    外部写入产生的画布常常没有它们；套用外部 revision 时本机外观也不会被覆盖
- *    （见 canvas-external-revision.ts）。
+ *    外部写入产生的画布常常没有它们；套用远端快照时本机视口与外观也不会被覆盖。
  * 2. 一侧缺失、另一侧为空值：应用自己会给 nodes/connections/chatSessions/activeChatId
  *    这类字段补默认空值。只有「缺失 vs 非空值」才算差异，因此 folderId 从无到有、
  *    projectId/canvasTitle 被设置、节点被删除都会如实识别。

@@ -13,7 +13,9 @@ import { findGenerationTaskByOperation, listGenerationTasks, recoverTask, subscr
 import { useTaskDetails } from "@/hooks/use-task-details";
 import { readNodeLiveTaskTelemetry } from "@/stores/use-generation-task-telemetry";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { resolveCanvasWorkspaceProjectTitle } from "@/lib/canvas/canvas-workspace-project";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { CANVAS_LEAVE_ABORT_REASON } from "./canvas-generation-executor-types";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { canvasNodeNeedsGenerationRecovery, consumeGenerationRecoveryRestore, isGenerationRecoveryRestored, MISSING_GENERATION_TASK_IDENTITY_DETAILS } from "@/lib/canvas/canvas-project-generation";
 import { generationFailureMetadata } from "@/lib/generation-error";
@@ -350,8 +352,10 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                         url: boundNode.metadata.content,
                         storageKey: boundNode.metadata.storageKey,
                         title: boundNode.title,
+                        projectName: resolveCanvasWorkspaceProjectTitle(useCanvasStore.getState().projects, capturedCanvasId),
                         mediaType,
                         mimeType: boundNode.metadata.mimeType,
+                        onError: (err) => message.warning(err instanceof Error && err.message.trim() ? `自动下载未完成：${err.message}` : "自动下载未完成，请检查存储设置中的自动下载目录"),
                     });
                 }
             } catch (error) {
@@ -366,7 +370,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 }
             }
         },
-        [nodesRef, projectId, setNodes],
+        [message, nodesRef, projectId, setNodes],
     );
 
     const retrieveTaskResult = useCallback(async (task: GenerationTask) => {
@@ -388,12 +392,15 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 if (signal.aborted) return;
                 message.success("视频已取回并放回画布，未重新生成");
             } else {
-                message.info("原任务仍在处理中，请稍后再取回结果");
+                const reason = recoveredTask.recoveryLastError || (recoveredTask.errorCode === "download_failed" ? recoveredTask.error : undefined);
+                if (reason) message.error(reason);
+                else message.info("原任务仍未取回，请查看任务状态");
             }
             void queryClient.invalidateQueries({ queryKey: ["task-details", projectId, task.id] });
         } catch (error) {
             if (!signal.aborted) message.error(error instanceof Error ? error.message : "暂时无法取回结果，请稍后再试");
         } finally {
+            if (!signal.aborted) void queryClient.invalidateQueries({ queryKey: ["canvas-active-tasks", projectId] });
             if (retrievalRef.current === retrieval) {
                 retrievalRef.current = null;
                 setRetrievingTaskId(null);
@@ -736,8 +743,8 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     useEffect(
         () => () => {
             void recoveryCoordinatorRef.current?.abortAndDrain();
-            consumerControllerRef.current.abort();
-            generationRequestsRef.current.forEach((request) => request.controller.abort());
+            consumerControllerRef.current.abort(CANVAS_LEAVE_ABORT_REASON);
+            generationRequestsRef.current.forEach((request) => request.controller.abort(CANVAS_LEAVE_ABORT_REASON));
             generationRequestsRef.current.clear();
         },
         [projectId],

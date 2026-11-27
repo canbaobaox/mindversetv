@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import { describe, expect, test } from "bun:test";
 
+import { NodeExternalHeader } from "../src/components/canvas/node-external-header";
+import { canvasThemes } from "../src/lib/canvas-theme";
 import { canvasNodeRenderPadding, resolveActiveCanvasMediaNodeId } from "../src/lib/canvas/canvas-performance-mode";
 import { canvasGestureRenderPadding, shouldRefreshCanvasVirtualization } from "../src/lib/canvas/canvas-viewport-render-sync";
 import { videoMetadata } from "../src/lib/canvas/canvas-generation-task-sync";
@@ -11,6 +15,8 @@ import { collectImageStorageKeys } from "../src/services/image-storage";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 import { detectVideoAudioTrack, detectVideoAudioTrackFromBlob, detectVideoAudioTrackFromUrl } from "../src/lib/video-poster";
 import { normalizeVideoPlayerMimeType, resolveEffectiveVideoHasAudio } from "../src/lib/video-player-policy";
+import { canvasVideoPreviewNeedsHydration } from "../src/services/canvas-video-preview";
+import { setDirectMediaAssetsEnabled } from "../src/services/media-asset-url";
 import { readStyleSheet } from "./helpers/app-styles";
 
 const canvasNodeContentSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node-content.tsx"), "utf8");
@@ -48,7 +54,23 @@ describe("canvas media activation", () => {
 
 describe("canvas dimension header rendering", () => {
     test("tracks live viewport scale without React width commits", () => {
-        expect(canvasNodeSource).toContain("var(--canvas-live-scale,");
+        const headerMarkup = renderToStaticMarkup(createElement(NodeExternalHeader, {
+            node: node("image", CanvasNodeType.Image),
+            scale: 0.5,
+            dimensionLabel: null,
+            active: false,
+            editable: true,
+            editing: false,
+            draft: "image",
+            theme: canvasThemes.dark,
+            onDraftChange: () => {},
+            onEdit: () => {},
+            onCommit: () => {},
+            onCancel: () => {},
+        }));
+        expect(headerMarkup).toContain("data-canvas-live-scale");
+        expect(headerMarkup).toContain("var(--canvas-live-scale, 0.5)");
+        expect(headerMarkup).toContain("var(--canvas-live-inverse-scale, 2)");
         expect(globalStylesSource).toContain("width: var(--canvas-node-header-width)");
         expect(globalStylesSource).toContain("calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))");
     });
@@ -109,14 +131,20 @@ describe("large canvas media rendering", () => {
         expect(inactivePreviewSource).toContain("!node.metadata?.storageKey && !node.metadata?.content");
         expect(inactivePreviewSource).not.toContain("updateMetadata");
         expect(canvasVideoPreviewSource).not.toContain("uploadImage");
-        expect(canvasNodeContentSource).toContain("canvasVideoPreviewNeedsHydration(node)");
+        setDirectMediaAssetsEnabled(true);
+        try {
+            const videoNode = { metadata: { storageKey: "resource:vid-1", content: "/api/resources/vid-1/file" } };
+            expect(canvasVideoPreviewNeedsHydration(videoNode)).toBe(false);
+            expect(canvasVideoPreviewNeedsHydration(videoNode, { ignoreServerPoster: true })).toBe(true);
+        } finally {
+            setDirectMediaAssetsEnabled(null);
+        }
         expect(canvasNodeContentSource).not.toContain("hydrateMediaPreview");
         expect(inactivePreviewSource).not.toContain("<video");
         expect(inactivePreviewSource).toContain("<VideoPreviewPlayButton");
         expect(canvasNodeContentSource).toContain("useVideoPlaybackUrl(node, mediaActive)");
         expect(canvasNodeContentSource).toContain("onMediaPlayRequest?.(node.id)");
         expect(canvasNodeContentSource).toContain('autoPlay preload="metadata"');
-        expect(canvasNodeContentSource).toContain("scheduleResourceBlobCache(node.metadata?.storageKey || \"\")");
     });
 
     test("allows failed or empty first-frame requests to retry", () => {

@@ -1,4 +1,4 @@
-// Durable 1.5.0 会话视图监听、回合恢复、停止围栏与结算：
+// Durable 1.6.0 会话视图监听、回合恢复、停止围栏与结算：
 // 使用官方 Conversation.watch 与 LiveDoc 驱动流式事件投影，保持与 durable-session-owner 解耦。
 import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/context';
 import { AssistantEntry, CompactionEntry, LiveDoc, ToolResultEntry, UserEntry } from '@earendil-works/pi-durable';
@@ -133,10 +133,25 @@ export function createDurableTurnLifecycle({
     const planView = entry.turn.plan || active.plan || null;
     // 思考是权威值：即使为空也要写进终态和历史，界面才能区分「没有思考」与「字段缺失」并清掉旧内容。
     const reasoning = durableReasoningSegments(turnEntries);
+    let lastEntryId = turnEntries.at(-1)?.id ?? settled.answer ?? settled.entry ?? null;
+    if (lastEntryId != null && viewEntries.length) {
+      // terminate: true 回合（如 canvas.generation.propose / skill.script.run）的 settled.answer 指向
+      // 助手 toolCall 条目，对应的 toolResult 条目紧跟其后；分叉点必须包含这些尾部 toolResult，避免悬空 toolCall。
+      const answerIdx = viewEntries.findIndex((item) => item.id === lastEntryId);
+      if (answerIdx >= 0) {
+        for (let i = answerIdx + 1; i < viewEntries.length; i += 1) {
+          const next = viewEntries[i];
+          const isToolResult = Array.isArray(next?.model) && next.model.length > 0 && next.model.every((m) => m?.role === 'toolResult');
+          if (!isToolResult) break;
+          lastEntryId = next.id;
+        }
+      }
+    }
     return { ...publicDurableTurn(active), ...completion, reasoning,
       toolCalls: [...entry.log], change: turnChange(entry.turn), proposals: [...entry.turn.proposals],
       scriptProposals: [...(entry.turn.scriptProposals || [])],
       ...(planView ? { plan: planView } : {}),
+      ...(lastEntryId != null ? { lastEntryId } : {}),
       status: settled.status, sessionId: entry.sessionId };
   }
 

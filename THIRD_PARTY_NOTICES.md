@@ -22,7 +22,7 @@ Versions are locked by `web/bun.lock`.
 | BSD-2-Clause | `mammoth` |
 | ISC | `idb`, `lucide-react` |
 | OFL-1.1 | `@fontsource-variable/inter`, `@fontsource-variable/jetbrains-mono` |
-| MIT | `@fal-ai/client`, `@fix-webm-duration/fix` |
+| MIT | `@fix-webm-duration/fix` |
 | MIT | `@ant-design/icons`, `@ant-design/x`, `@codemirror/lang-json`, `@excalidraw/excalidraw`, `@ffmpeg/ffmpeg`, `@ffmpeg/util`, `@lobehub/icons`, `@react-three/drei`, `@react-three/fiber`, `@tanstack/react-query`, `@tanstack/react-virtual`, `@tiptap/core`, `@tiptap/extension-character-count`, `@tiptap/extension-color`, `@tiptap/extension-highlight`, `@tiptap/extension-placeholder`, `@tiptap/extension-text-align`, `@tiptap/extension-text-style`, `@tiptap/extensions`, `@tiptap/pm`, `@tiptap/react`, `@tiptap/starter-kit`, `@uiw/react-codemirror`, `@vidstack/react`, `antd`, `axios`, `clsx`, `copy-to-clipboard`, `dayjs`, `fflate`, `file-saver`, `json-canonicalize`, `leafer-ui`, `motion`, `nanoid`, `react`, `react-dom`, `react-markdown`, `react-router`, `recharts`, `remark-gfm`, `shadcn`, `tailwind-merge`, `tailwindcss`, `three`, `three-stdlib`, `tw-animate-css`, `zustand` |
 
 Development-only packages are not shipped in the application. Their declared
@@ -62,7 +62,7 @@ do not resolve the separate question of combination compatibility.
 
 The direct dependencies declared in `agent-host/package.json` are
 `@earendil-works/pi-coding-agent`, `@earendil-works/pi-durable`,
-`@earendil-works/pi-ai`, and `@earendil-works/chord`, pinned to 1.5.0. Their
+`@earendil-works/pi-ai`, and `@earendil-works/chord`, pinned to 1.6.0. Their
 package metadata declares MIT. Retain
 their original notices and the licenses of their transitive dependencies
 when distributing that runtime. The frontend dependency-name audit does not
@@ -76,7 +76,7 @@ Versions are locked by `backend/go.sum`.
 | --- | --- |
 | Apache-2.0 | `github.com/aws/aws-sdk-go-v2`, `github.com/volcengine/volc-sdk-golang`, `go.opentelemetry.io/otel`, `go.opentelemetry.io/otel/sdk`, `go.opentelemetry.io/otel/trace` |
 | MIT / Apache-2.0 | `github.com/modelcontextprotocol/go-sdk` |
-| BSD-3-Clause | `github.com/google/uuid`, `golang.org/x/image`, `golang.org/x/net`, `golang.org/x/sync`, `golang.org/x/sys` |
+| BSD-3-Clause | `github.com/google/uuid`, `golang.org/x/image`, `golang.org/x/net`, `golang.org/x/sync`, `golang.org/x/sys`, `golang.org/x/text` |
 | BSD-2-Clause | `github.com/pkg/browser` |
 | MIT | `github.com/gin-gonic/gin`, `github.com/goccy/go-yaml`, `github.com/google/jsonschema-go`, `github.com/mattn/go-sqlite3`, `github.com/wailsapp/wails/v2`, `gorm.io/driver/sqlite`, `gorm.io/gorm` |
 

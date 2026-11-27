@@ -11,18 +11,28 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { createDurableSessionStore, durableLifecycleState, durableStreamEvents, isCorruptSessionArtifactError, isDurableSessionId, publicDurableTurn, TRANSIENT_UNRESUMABLE_REASONS } from './durable-session-owner.mjs';
 import { createDurableTurnProjection } from './durable-turn-projection.mjs';
 import { createDurableTurnBudget } from './durable-turn-budget.mjs';
-import { parseHostBaseUrlEnv, providerRegistration, providerUnavailableReason, resolveHostModelRequestUrl,
+import { parseHostBaseUrlEnv, parseHostHeadersEnv, providerRegistration, providerUnavailableReason,
   turnContextPrefix, unflushedSessionHistory, toolCallCapabilityContext } from './canvas-turn.mjs';
-import { budgetError, spendModelRequest } from './request-budget.mjs';
 import { createDurableRequestBudget } from './durable-request-budget.mjs';
 import { createOperationBridge } from './operation-bridge.mjs';
 import { createLegacyHistory } from './session-owner.mjs';
-import { adaptMediaRequest, attachmentContent, trustedMediaSources, mediaCapabilityContext } from './media-content.mjs';
-import {nativeSourceKey} from './native-history.mjs';
+import { attachmentContent, mediaCapabilityContext } from './media-content.mjs';
 import { createNativePartStore } from './native-part-store.mjs';
-import { fetchModelWithProgressIdle } from './model-stream-idle.mjs';
 import { createDispatchDiagnostics } from './dispatch-diagnostics.mjs';
 import { createPluginPackageController } from './plugin-packages.mjs';
+import { createMcpServerController } from './mcp-servers.mjs';
+import { installModelFetchProxy } from './model-fetch-proxy.mjs';
+import { handleEventsRoute } from './events-route.mjs';
+import { openHostTelemetry } from './durable-telemetry.mjs';
+import {
+  authorized as checkAuthorized,
+  instanceOK as checkInstanceOK,
+  instanceProof as computeInstanceProof,
+  readJsonBody,
+  respond,
+  respondStoreError as writeStoreError,
+  sendLine,
+} from './http-utils.mjs';
 
 // SDK imports install npm undici's direct dispatcher. Restore Node's public env
 // proxy support after imports, before any SDK/ops request or fetch wrapper runs.
@@ -48,13 +58,13 @@ const MODEL_ID = (process.env.BEEFTV_AGENT_MODEL || '').trim();
 const MODEL_API = (process.env.BEEFTV_AGENT_API || 'openai-completions').trim();
 const { baseUrl: BASE_URL, isRaw: IS_RAW_BASE_URL } = parseHostBaseUrlEnv(process.env.BEEFTV_AGENT_BASE_URL || '');
 const API_KEY = process.env.BEEFTV_AGENT_API_KEY || '';
-// Thinking shares this ceiling with the answer (pi-ai adds its budget within it).
-const MAX_OUTPUT_TOKENS = Number(process.env.BEEFTV_AGENT_MAX_TOKENS || 16384);
-const CONTEXT_WINDOW = Number(process.env.BEEFTV_AGENT_CONTEXT_WINDOW || 200000);
-const MAX_REQUESTS_PER_TURN = Number(process.env.BEEFTV_AGENT_MAX_REQUESTS_PER_TURN || 40);
-const MAX_TOOL_STEPS_PER_TURN = Number(process.env.BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN || 40);
+const CUSTOM_HEADERS = parseHostHeadersEnv(process.env.BEEFTV_AGENT_HEADERS || '');
+// 仅在渠道显式声明上限或环境变量注入时覆盖，未配置时交给内置目录模型默认值。
+const MAX_OUTPUT_TOKENS = Number(process.env.BEEFTV_AGENT_MAX_TOKENS || 0);
+const CONTEXT_WINDOW = Number(process.env.BEEFTV_AGENT_CONTEXT_WINDOW || 0);
+const MAX_REQUESTS_PER_TURN = Number(process.env.BEEFTV_AGENT_MAX_REQUESTS_PER_TURN || 0);
+const MAX_TOOL_STEPS_PER_TURN = Number(process.env.BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN || 0);
 const LIFETIME_REQUEST_BUDGET = Number(process.env.BEEFTV_AGENT_TOTAL_REQUEST_BUDGET || 0);
-const MAX_BODY_BYTES = 64 * 1024;
 const READ_ONLY_MODE = process.env.BEEFTV_AGENT_READ_ONLY === '1';
 const PROVIDER_ID = 'beeftv';
 
@@ -94,10 +104,8 @@ async function initializeModel() {
   }
 }
 
-const outbound = [];
 const ledgerPath = path.join(DATA_DIR, 'agent-requests.jsonl');
 const dispatchDiagnostics = createDispatchDiagnostics(ledgerPath, RUN_ID);
-let dispatched = 0;
 
 const lifetimeBudgetPath = path.join(DATA_DIR, 'agent-request-budget.json');
 const lifetimeBudget = createDurableRequestBudget({ limit: LIFETIME_REQUEST_BUDGET, file: lifetimeBudgetPath });
@@ -105,73 +113,18 @@ const lifetimeBudget = createDurableRequestBudget({ limit: LIFETIME_REQUEST_BUDG
 const turnBudgetContext = new AsyncLocalStorage();
 const nativePartStore = createNativePartStore({directory:path.join(DATA_DIR,'native-parts')});
 
-const BASE_ORIGIN = BASE_URL ? new URL(BASE_URL).origin : '';
-const realFetch = globalThis.fetch;
-globalThis.fetch = async (input, options = {}) => {
-  const raw = typeof input === 'string' ? input : input.url;
-  const resolvedRaw = resolveHostModelRequestUrl(raw, { baseUrl: BASE_URL, isRaw: IS_RAW_BASE_URL, api: MODEL_API });
-  if (resolvedRaw !== raw) {
-    input = typeof input === 'string' ? resolvedRaw : new Request(resolvedRaw, input);
-  }
-  let parsed = null;
-  try { parsed = new URL(resolvedRaw); } catch { parsed = null; }
-  const isModelCall = !!BASE_ORIGIN && parsed && parsed.origin === BASE_ORIGIN;
-  if (isModelCall) {
-    // Transform at the real dispatch boundary; extension errors are caught by pi.
-    const budget = turnBudgetContext.getStore();
-    let historicalKind='素材';
-    try {
-    if (options.body) {
-      const payload = JSON.parse(options.body);
-      const mediaOptions = {api:MODEL_API,modelId:MODEL_ID,nativePartStore,unpinnedSignatures:budget?.unpinnedSignatures};
-      for (const source of trustedMediaSources(payload,mediaOptions)) {
-        historicalKind=source.mediaKind;
-        if (!budget?.turnId || !budget.canvasId) throw new Error('media_authorization_missing');
-        let actual;
-        if(budget.sessionId) {
-          const pinned=budget.nativeHistory?.origins.get(`${source.toolCallId}:${nativeSourceKey(source)}`);
-          if(!pinned || (source.originTurnId && source.originTurnId!==pinned.originTurnId)) throw new Error('native_history_requires_reference');
-          const {toolCallId,originTurnId,...nativeSource}=source;
-          await ops.opsRequest('POST',`/assistant/runtime/turns/${encodeURIComponent(pinned.originTurnId)}/bind-session`,{sessionId:budget.sessionId,historical:pinned.historical,currentTurnId:budget.turnId,source:nativeSource});
-          actual=await ops.opsRequest('POST',`/assistant/runtime/turns/${encodeURIComponent(budget.turnId)}/native-rehydrate`,{sessionId:budget.sessionId,originTurnId:pinned.originTurnId,source:nativeSource});
-        } else {
-          actual=(await ops.opsRequest('POST','/ops/media.overview',{params:{canvasId:source.canvasId,
-            ...(source.nodeId ? {nodeId:source.nodeId}:{assetId:source.assetId}),resourceId:source.resourceId}},undefined,budget.turnId)).result;
-        }
-        if (actual.source.version !== source.version) throw new Error('media_content_changed');
-      }
-      options = {...options,body:JSON.stringify(adaptMediaRequest(payload,mediaOptions))};
-    }
-    } catch(error) {
-      const failure={reason:error.reason || 'native_history_unavailable',message:`历史${historicalKind}已不可用，请在新对话重新添加这份素材后再试。`};
-      if(budget) budget.failure=failure;
-      return new Response(JSON.stringify({error:{message:failure.message,type:'invalid_request_error',code:failure.reason}}),{status:400,headers:{'Content-Type':'application/json'}});
-    }
-    if (budget?.generation?.aborted || options.signal?.aborted) {
-      throw Object.assign(new Error('aborted'),{name:'AbortError'});
-    }
-    if (budget?.generation && !budget.generation.durable) budget.generation.modelEpoch = budget.generation.intentEpoch;
-    const turn = spendModelRequest(budget);
-    if (!turn.allowed) {
-      if (budget) budget.failure = turn;
-      throw budgetError(turn);
-    }
-    const lifetime = lifetimeBudget.reserve();
-    if (!lifetime.allowed) {
-      if (budget) { budget.requests -= 1; budget.failure = lifetime; }
-      throw budgetError(lifetime);
-    }
-    dispatched += 1;
-    let bodyModel = null;
-    try { bodyModel = JSON.parse(options.body || '{}').model || null; } catch { /* 非 JSON body */ }
-    const entry = { at: new Date().toISOString(), dispatchIndex: dispatched, origin: parsed.origin, path: parsed.pathname, model: bodyModel,
-      turnId: budget?.turnId, canvasId: budget?.canvasId, sessionId: budget?.sessionId, requestId: budget?.requestId };
-    outbound.push(entry);
-    if (outbound.length > 200) outbound.shift();
-    dispatchDiagnostics.record(entry);
-  }
-  return isModelCall ? fetchModelWithProgressIdle(input, options, {fetch: realFetch}) : realFetch(input, options);
-};
+const { outbound, getDispatched } = installModelFetchProxy({
+  baseUrl: BASE_URL,
+  isRawBaseUrl: IS_RAW_BASE_URL,
+  modelApi: MODEL_API,
+  modelId: MODEL_ID,
+  customHeaders: CUSTOM_HEADERS,
+  turnBudgetContext,
+  nativePartStore,
+  lifetimeBudget,
+  dispatchDiagnostics,
+  getOps: () => ops,
+});
 
 const ops = createOperationBridge({
   opsUrl: OPS_URL,
@@ -186,8 +139,18 @@ const ops = createOperationBridge({
 
 const legacy = createLegacyHistory({ sessionRoot: SESSION_ROOT, workspaceRoot: WORKSPACE_ROOT });
 
+const getReservedToolNames = () => new Set([
+  ...ops.descriptors.keys(),
+  'plan_update',
+  'skill_load',
+  'canvas_timeline_deliver',
+  'tool_search',
+  'codemode',
+  'read_mcp_resource',
+]);
+
 const pluginController = createPluginPackageController({
-  getReservedToolNames: () => new Set([...ops.descriptors.keys(), 'plan_update', 'skill_load', 'canvas_timeline_deliver']),
+  getReservedToolNames,
   fetchEnabledPackages: async () => {
     const data = await ops.opsRequest('GET', '/plugins/packages/enabled');
     return Array.isArray(data?.packages) ? data.packages : Array.isArray(data) ? data : [];
@@ -199,15 +162,41 @@ const pluginController = createPluginPackageController({
   },
 });
 
+const mcpController = createMcpServerController({
+  getReservedToolNames,
+  dataDir: DATA_DIR,
+  cwd: WORKSPACE_ROOT,
+  fetchEnabledServers: async () => {
+    const data = await ops.opsRequest('GET', '/assistant/runtime/mcp-servers');
+    return data && typeof data === 'object' ? data : { fingerprint: '', servers: [] };
+  },
+});
+
+const combinedExtensions = () => [...pluginController.getExtensions(), ...mcpController.getExtensions()];
+
+const hostTelemetry = await openHostTelemetry(DATA_DIR);
+
 const durable = createDurableSessionStore({
   sessionRoot: SESSION_ROOT, workspaceRoot: WORKSPACE_ROOT, buildTools: ops.buildTools,
   legacy,
-  extensions: () => pluginController.getExtensions(),
+  telemetry: hostTelemetry.telemetry,
+  extensions: () => combinedExtensions(),
   getModels: entry => {
     const models = createModels();
     const provider = modelRuntime?.getProvider(PROVIDER_ID);
     if (!provider) return models;
     const budgeted = fn => (...args) => {
+      if (entry.compacting && !entry.busy) {
+        const compactBudget = {
+          sessionId: entry.sessionId,
+          canvasId: entry.canvasId,
+          requestId: 'compact',
+          maxRequests: 0,
+          requests: 0,
+          generation: { durable: true, aborted: false },
+        };
+        return turnBudgetContext.run(compactBudget, () => fn.call(provider, ...args));
+      }
       if (!entry.budget) entry.budget = createDurableTurnBudget(entry,{maxRequests:MAX_REQUESTS_PER_TURN,maxToolSteps:MAX_TOOL_STEPS_PER_TURN});
       entry.budget.sessionId=entry.sessionId; entry.budget.nativeHistory=entry.nativeHistory;
     entry.budget.generation = entry.generation;
@@ -236,7 +225,14 @@ const durable = createDurableSessionStore({
         !Number.isSafeInteger(canvas.revision) || canvas.revision < 0 ||
         (canvas.nodes != null && !Array.isArray(canvas.nodes)) ||
         (canvas.connections != null && !Array.isArray(canvas.connections))) throw new Error('invalid_canvas_read_result');
-    return { ...canvas, nodes: canvas.nodes ?? [], connections: canvas.connections ?? [] };
+    return {
+      ...canvas,
+      nodes: canvas.nodes ?? [],
+      connections: canvas.connections ?? [],
+      ...(typeof result?.creativeBibleDigest === 'string' && result.creativeBibleDigest.trim()
+        ? { creativeBibleDigest: result.creativeBibleDigest.trim() }
+        : {}),
+    };
   },
   authorizeTurn: async ({canvasId, turnId,sessionId}) => {
     const state = await ops.opsRequest('GET', `/assistant/runtime/turns/${encodeURIComponent(turnId)}`);
@@ -316,99 +312,15 @@ async function waitForDurableProjection(entry) {
   } finally { clearTimeout(timer); }
 }
 
-function sendLine(res, payload) { res.write(JSON.stringify(payload) + '\n'); }
-
-function instanceProof() {
-  if (!INSTANCE_NONCE) return '';
-  return crypto.createHash('sha256').update(INSTANCE_NONCE).digest('hex').slice(0, 16);
-}
-
-function timingSafeMatch(got, expected) {
-  const a = Buffer.from(String(got ?? ''));
-  const b = Buffer.from(String(expected ?? ''));
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-function instanceOK(req) {
-  if (!INSTANCE_NONCE) return true;
-  return timingSafeMatch(req.headers['x-beeftv-instance-nonce'] || '', INSTANCE_NONCE);
-}
-
-function authorized(req) {
-  if (!instanceOK(req)) return { ok: false, reason: 'instance_mismatch' };
-  if (!timingSafeMatch(req.headers['x-beeftv-agent-token'] || '', HOST_TOKEN)) return { ok: false, reason: 'unauthorized' };
-  const origin = String(req.headers.origin || '');
-  if (ALLOWED_ORIGIN && origin && origin !== ALLOWED_ORIGIN) return { ok: false, reason: 'origin_rejected' };
-  const host = String(req.headers.host || '');
-  const hostAllowed = /^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)
-    || (Boolean(LISTEN_PIPE) && /^pipe-[0-9a-f]{16}\.invalid$/.test(host));
-  if (!hostAllowed) return { ok: false, reason: 'host_rejected' };
-  return { ok: true };
-}
-
-async function readBody(req) {
-  let size = 0; const chunks = [];
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) { const error = new Error('body too large'); error.tooLarge = true; throw error; }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-async function readJsonBody(req) {
-  const raw = await readBody(req);
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw Object.assign(new Error('invalid_request'), { reason: 'invalid_request' });
-    }
-    return parsed;
-  } catch (error) {
-    if (error?.reason === 'invalid_request') throw error;
-    throw Object.assign(new Error('invalid_request'), { reason: 'invalid_request' });
-  }
-}
-
-function respond(res, status, payload) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(payload));
-}
-
-function respondStoreError(res, error) {
-  if (error?.reason === 'invalid_request') {
-    respond(res, 400, { code: 400, reason: 'invalid_request' });
-    return true;
-  }
-  if (['skill_context_revision_conflict','skill_context_request_conflict','skill_scope_reset_pending','skill_context_changed','session_not_running','supplement_preparation_pending','submission_request_conflict'].includes(error?.reason)) {
-    respond(res,409,{code:409,reason:error.reason});return true;
-  }
-  if (['invalid_skill_context_action','invalid_skill_context_request','invalid_skill_selection'].includes(error?.reason)) {
-    respond(res,400,{code:400,reason:error.reason});return true;
-  }
-  if (error?.reason === 'session_busy') { respond(res, 409, { code: 409, reason: 'session_busy' }); return true; }
-  if (error?.reason === 'session_not_current') { respond(res, 409, { code: 409, reason: 'session_not_current' }); return true; }
-  if (error?.reason === 'session_not_found') { respond(res, 404, { code: 404, reason: 'session_not_found' }); return true; }
-  if (error?.reason === 'session_pointer_failed') {
-    respond(res, 500, { code: 500, reason: 'session_pointer_failed', message: String(error.message || error) });
-    return true;
-  }
-  if (error?.reason === 'session_pointer_unavailable') {
-    respond(res, 503, { code: 503, reason: 'session_pointer_unavailable' });
-    return true;
-  }
-  if (error?.reason === 'session_store_closed') {
-    respond(res, 503, { code: 503, reason: 'session_store_closed' });
-    return true;
-  }
-  if (isCorruptSessionArtifactError(error)) {
-    respond(res, 409, { code: 409, reason: error.reason || 'corrupt_session_manifest' });
-    return true;
-  }
-  return false;
-}
+const instanceProof = () => computeInstanceProof(INSTANCE_NONCE);
+const instanceOK = (req) => checkInstanceOK(req, INSTANCE_NONCE);
+const authorized = (req) => checkAuthorized(req, {
+  instanceNonce: INSTANCE_NONCE,
+  hostToken: HOST_TOKEN,
+  allowedOrigin: ALLOWED_ORIGIN,
+  listenPipe: LISTEN_PIPE,
+});
+const respondStoreError = (res, error) => writeStoreError(res, error, isCorruptSessionArtifactError);
 
 function anySessionBusy() {
   for (const entry of durable.sessions.values()) if (durable.isEntryBusy(entry)) return true;
@@ -430,23 +342,26 @@ const server = http.createServer(async (req, res) => {
       sessions: durable.sessions.size, busy: anySessionBusy(), model: MODEL?.id || MODEL_ID, api: MODEL_API,
       baseUrl: MODEL?.baseUrl || BASE_URL, persistence: persistenceSummary, runId: RUN_ID,
       instance: proof || undefined,
-      requests: { dispatched, perTurnRequests: MAX_REQUESTS_PER_TURN, perTurnToolSteps: MAX_TOOL_STEPS_PER_TURN,
+      requests: { dispatched: getDispatched(), perTurnRequests: MAX_REQUESTS_PER_TURN, perTurnToolSteps: MAX_TOOL_STEPS_PER_TURN,
         lifetimeBudget: lifetimeBudget.limit, lifetimeUsed: lifetimeBudget.used },
       operations: ops.descriptors.size, readOnly: READ_ONLY_MODE, lastOutbound: outbound.at(-1) || null });
     return;
   }
   if (req.method === 'GET' && url.pathname === '/tools') {
-    const synced = await pluginController.syncIfChanged().catch(() => ({ changed: false }));
-    if (synced.changed) {
-      await durable.reloadPluginExtensions(pluginController.getExtensions()).catch(() => {});
+    const [syncedPlugins, syncedMcp] = await Promise.all([
+      pluginController.syncIfChanged().catch(() => ({ changed: false })),
+      mcpController.syncIfChanged().catch(() => ({ changed: false })),
+    ]);
+    if (syncedPlugins.changed || syncedMcp.changed) {
+      await durable.reloadPluginExtensions(combinedExtensions()).catch(() => {});
     }
     const canvasId = url.searchParams.get('canvasId') || '';
     const entry = canvasId ? durable.sessions.get(canvasId) : null;
-    const pluginToolNames = pluginController.getToolNames();
+    const extensionToolNames = [...pluginController.getToolNames(), ...mcpController.getToolNames()];
     respond(res, 200, {
       canvasId,
-      activeTools: entry ? entry.toolNames : pluginToolNames,
-      known: [...new Set([...ops.descriptors.keys(), ...pluginToolNames])],
+      activeTools: entry ? entry.toolNames : extensionToolNames,
+      known: [...new Set([...ops.descriptors.keys(), ...extensionToolNames])],
     });
     return;
   }
@@ -461,7 +376,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/plugins/reload') {
       const body = await readJsonBody(req);
       const reloaded = await pluginController.reload(Array.isArray(body.packages) ? body.packages : undefined);
-      await durable.reloadPluginExtensions(pluginController.getExtensions());
+      await durable.reloadPluginExtensions(combinedExtensions());
       respond(res, 200, { ok: true, packages: reloaded.packages, errors: reloaded.errors });
       return;
     }
@@ -577,6 +492,17 @@ const server = http.createServer(async (req, res) => {
       await durable.releaseIdleSession(canvasId);
       legacy.writeCurrentSessionId(canvasId, sessionId);
       respond(res, 200, { sessionId });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/sessions/fork') {
+      const body = await readJsonBody(req);
+      const canvasId = String(body.canvasId || '').trim();
+      const sessionId = String(body.sessionId || '').trim();
+      const turnId = String(body.turnId || '').trim();
+      if (!canvasId || !sessionId || !turnId) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
+      if (await isLiveEntryBusy(canvasId)) { respond(res, 409, { code: 409, reason: 'session_busy' }); return; }
+      const forked = await durable.forkSession(canvasId, { sessionId, turnId });
+      respond(res, 200, forked);
       return;
     }
     if (req.method === 'DELETE' && (url.pathname === '/sessions' || url.pathname.startsWith('/sessions/'))) {
@@ -740,83 +666,55 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
     }
-    if (req.method === 'POST' && url.pathname === '/events') {
+    if (req.method === 'GET' && url.pathname === '/mcp-servers') {
+      respond(res, 200, { servers: mcpController.getStatus() });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/mcp-servers/reload') {
+      const reloaded = await mcpController.reload();
+      await durable.reloadPluginExtensions(combinedExtensions()).catch(() => {});
+      respond(res, 200, { ok: true, servers: reloaded.servers });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/mcp-servers/') && url.pathname.endsWith('/test')) {
+      const body = await readJsonBody(req);
+      const result = await mcpController.testServer(body?.server);
+      respond(res, 200, result);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/session-config') {
       const body = await readJsonBody(req);
       const canvasId = String(body.canvasId || '').trim();
-      const message = String(body.message || '').trim();
-      const cleanKind = String(body.kind || 'event').replace(/[^a-z0-9_-]/gi, '_');
-      const maxEventMessageLen = cleanKind === 'skill_script_completed' ? 48000 : 8000;
-      if (!canvasId || !message || message.length > maxEventMessageLen) {
-        respond(res, 400, { code: 400, reason: 'invalid_request' }); return;
-      }
-      const requestedSessionId = String(body.sessionId || '').trim();
-      const currentSessionId = currentId(canvasId);
-      if (
-        (cleanKind === 'task_completed' || cleanKind === 'skill_script_completed') &&
-        !providerReason &&
-        !READ_ONLY_MODE &&
-        currentSessionId &&
-        isDurableSessionId(currentSessionId) &&
-        (!requestedSessionId || requestedSessionId === currentSessionId)
-      ) {
-        const entry = await durable.ensureCurrentSession(canvasId, currentSessionId).catch(() => null);
-        const wakeBusy = entry ? (await durable.busyState(canvasId)).busy : true;
-        if (entry && !wakeBusy) {
-          const requestId = String(body.requestId || crypto.randomUUID()).trim();
-          const rawTurnId = String(body.turnId || '').trim().toLowerCase();
-          const turnId = /^[0-9a-f]{8,64}$/.test(rawTurnId)
-            ? rawTurnId
-            : crypto.createHash('sha256').update(`wake:${canvasId}:${requestId}`).digest('hex').slice(0, 24);
-          let openedTurn = false;
-          try {
-            await ops.opsRequest('POST', '/assistant/runtime/turns', {
-              turnId,
-              canvasId,
-              permissionMode: 'canvas',
-              sessionId: entry.sessionId,
-            });
-            openedTurn = true;
-            const wakeText = `<canvas_event kind="${cleanKind}">\n${message}\n</canvas_event>`;
-            const content = [{
-              type: 'text',
-              text: `${turnContextPrefix({ canvasId })}\n${mediaCapabilityContext({ api: MODEL_API, modelId: MODEL_ID })}\n${toolCallCapabilityContext({ api: MODEL_API, modelId: MODEL_ID })}\n${wakeText}`,
-            }];
-            const submission = await durable.submit(entry, {
-              turnId,
-              requestId: `event:${requestId}`,
-              content,
-              userText: String(body.userText || message).trim() || message,
-              revisionBefore: Number(body.revisionBefore || 0),
-              permissionMode: 'canvas',
-            }, {
-              onSubmitted: (sub) => { followDurable(entry, sub); },
-            });
-            if (submission) {
-              respond(res, 202, {
-                accepted: true,
-                woken: true,
-                sessionId: entry.sessionId,
-                turnId,
-                requestId: `event:${requestId}`,
-              });
-              return;
-            }
-            await ops.opsRequest('POST', `/assistant/runtime/turns/${encodeURIComponent(turnId)}/complete`, {}).catch(() => null);
-          } catch {
-            if (openedTurn) {
-              await ops.opsRequest('POST', `/assistant/runtime/turns/${encodeURIComponent(turnId)}/complete`, {}).catch(() => null);
-            }
-          }
-        }
-      }
-      const result = await durable.recordEvent(canvasId, {
-        sessionId: requestedSessionId,
-        requestId: body.requestId,
-        kind: body.kind || 'event',
-        message,
-        data: body.data && typeof body.data === 'object' ? body.data : {},
+      const sessionId = String(body.sessionId || '').trim();
+      const thinkingLevel = String(body.thinkingLevel || '').trim().toLowerCase();
+      if (!canvasId || !thinkingLevel) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
+      const result = await durable.configureSession(canvasId, { sessionId, thinkingLevel });
+      respond(res, 200, result);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/compact') {
+      const body = await readJsonBody(req);
+      const canvasId = String(body.canvasId || '').trim();
+      const sessionId = String(body.sessionId || '').trim();
+      const instructions = typeof body.instructions === 'string' ? body.instructions.slice(0, 4000) : '';
+      if (!canvasId) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
+      if (providerReason) { respond(res, 503, { code: 503, reason: providerReason }); return; }
+      const result = await durable.compactSession(canvasId, { sessionId, instructions });
+      respond(res, 200, result);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/events') {
+      await handleEventsRoute(req, res, {
+        durable,
+        ops,
+        currentId,
+        followDurable,
+        getProviderReason: () => providerReason,
+        readOnlyMode: READ_ONLY_MODE,
+        modelApi: MODEL_API,
+        modelId: MODEL_ID,
       });
-      respond(res, 202, result); return;
+      return;
     }
     if (req.method === 'POST' && url.pathname === '/chat') {
       const body = await readJsonBody(req);
@@ -836,9 +734,12 @@ const server = http.createServer(async (req, res) => {
       if(authority.canvasId!==canvasId || authority.open===false) throw Object.assign(new Error('turn_not_open'),{reason:'turn_not_open'});
       body.permissionMode=authority.permissionMode || 'canvas';
       if (!body.continuationId) {
-        const synced = await pluginController.syncIfChanged().catch(() => ({ changed: false }));
-        if (synced.changed) {
-          await durable.reloadPluginExtensions(pluginController.getExtensions()).catch(() => {});
+        const [syncedPlugins, syncedMcp] = await Promise.all([
+          pluginController.syncIfChanged().catch(() => ({ changed: false })),
+          mcpController.syncIfChanged().catch(() => ({ changed: false })),
+        ]);
+        if (syncedPlugins.changed || syncedMcp.changed) {
+          await durable.reloadPluginExtensions(combinedExtensions()).catch(() => {});
         }
       }
       // 只有 Durable 一套执行运行时：选中的是 Durable 会话就直接接上；否则（旧 JSONL 会话或尚无会话）
@@ -902,6 +803,8 @@ async function shutdown() {
   } catch (error) {
     console.error(`agent-host: 关闭时释放会话失败 ${error?.message || error}`);
   }
+  await mcpController.closeAll().catch(() => {});
+  await hostTelemetry.close();
   await new Promise((resolve) => server.close(() => resolve()));
   process.exit(0);
 }
@@ -917,8 +820,11 @@ await initializeModel();
 try {
   const count = await ops.loadDescriptors();
   console.error(`agent-host: 载入 ${count} 个操作（readOnly=${READ_ONLY_MODE}）`);
-  // Same sync every turn uses: a Go without plugin packages just leaves the list empty.
+  // Same sync every turn uses: a Go without plugin packages or MCP config just leaves them empty.
   await pluginController.syncIfChanged();
+  await mcpController.syncIfChanged().catch((error) => {
+    console.error(`agent-host: MCP 初始化同步失败（稍后可重试）：${error?.message || error}`);
+  });
 }
 catch (error) { console.error(`agent-host: 能力发现失败（稍后可重试）：${error?.message || error}`); }
 function onListen() {

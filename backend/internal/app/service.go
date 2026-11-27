@@ -51,11 +51,10 @@ type Service struct {
 	coordinator              *platform.Coordinator
 	platform                 *platform.Service
 	platformOnce             sync.Once
-	taskTerminalCoordinator  *taskTerminalCoordinator
-	taskRouteExecutor        *taskRouteExecutor
-	taskWorkerCoordinator    *taskWorkerCoordinator
-	taskLifecycleCoordinator *taskLifecycleCoordinator
-	runtimeErr               error
+	taskTerminalCoordinator *taskTerminalCoordinator
+	taskRouteExecutor       *taskRouteExecutor
+	taskWorkerCoordinator   *taskWorkerCoordinator
+	runtimeErr              error
 	localResourceStorage     bool
 	pluginRuntime            *pluginRuntime
 	pluginRuntimeErr         error
@@ -94,6 +93,7 @@ type Service struct {
 	generationDeliveryMedia  taskdelivery.Media
 	generationDelivery       *taskdelivery.Deliverer
 	deliveryMu               sync.Mutex
+	deliveryWakeup           taskdelivery.RecoveryWakeup
 	deliveryProgress         *deliveryProgressRegistry
 	deliveryProgressOnce     sync.Once
 	referenceProgress        sync.Map
@@ -177,7 +177,6 @@ func newService(repo *repository.Repository, dataDir string, options serviceOpti
 	service.taskTerminalCoordinator = newTaskTerminalCoordinator(service)
 	service.taskRouteExecutor = newTaskRouteExecutor(service)
 	service.taskWorkerCoordinator = newTaskWorkerCoordinator(service)
-	service.taskLifecycleCoordinator = newTaskLifecycleCoordinator(service)
 	service.skills = skills.New(service.repo, service.dataDir, service.runWorkerLoop)
 	service.prompts = prompts.New(service.repo)
 	service.projects = localproject.New(repo, localproject.Dependencies{})
@@ -324,7 +323,7 @@ func (s *Service) RetryTask(userID string, id string) (*model.Task, error) {
 
 func (s *Service) CancelTask(ctx context.Context, userID string, id string) (*model.Task, error) {
 	if task, err := s.repo.TaskForUser(userID, id); err == nil && task.Status == model.TaskStatusSucceeded {
-		return s.pauseGenerationDownload(*task, "delivery_paused")
+		return s.pauseGenerationDownload(*task, model.TaskStageDeliveryPaused)
 	}
 	return s.taskDomain().Cancel(ctx, userID, id)
 }

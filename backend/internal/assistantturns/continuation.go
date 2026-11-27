@@ -58,7 +58,7 @@ func continuationView(row model.AssistantContinuation) ContinuationView {
 }
 
 func (s *Service) ArmContinuation(userID string, input ContinuationInput) (*ContinuationView, error) {
-	if len(input.NodeIDs) == 0 || len(input.NodeIDs) > 8 || (input.Kind != "image" && input.Kind != "video" && input.Kind != "audio") || !strings.HasPrefix(input.ProposalID, "gp-") {
+	if len(input.NodeIDs) == 0 || (input.Kind != "image" && input.Kind != "video" && input.Kind != "audio" && input.Kind != "mixed") || !strings.HasPrefix(input.ProposalID, "gp-") {
 		return nil, continuationError("invalid")
 	}
 	sum := sha256.Sum256([]byte(userID + "\x00" + input.SourceTurnID + "\x00" + input.ProposalID))
@@ -113,7 +113,12 @@ func (s *Service) ArmContinuation(userID string, input ContinuationInput) (*Cont
 			owned[n.ID] = n.Type
 		}
 		for _, id := range input.NodeIDs {
-			if owned[id] != input.Kind {
+			nodeType := owned[id]
+			if input.Kind == "mixed" {
+				if nodeType != "image" && nodeType != "video" && nodeType != "audio" {
+					return continuationError("target_changed")
+				}
+			} else if nodeType != input.Kind {
 				return continuationError("target_changed")
 			}
 		}
@@ -165,7 +170,7 @@ func (s *Service) RegisterContinuationManifest(userID, id string, manifest Conti
 				found = true
 			}
 		}
-		if !found || len(manifest.Submissions) == 0 || len(manifest.Submissions) > 8 {
+		if !found || len(manifest.Submissions) == 0 {
 			return continuationError("invalid")
 		}
 		prefix := "proposal:" + row.ProposalID + ":" + manifest.SourceNodeID
@@ -175,7 +180,7 @@ func (s *Service) RegisterContinuationManifest(userID, id string, manifest Conti
 			if len(manifest.Submissions) > 1 {
 				want = fmt.Sprintf("%s:%d", prefix, i)
 			}
-			if submission.OperationID != want || len(submission.OutputNodeIDs) == 0 || len(submission.OutputNodeIDs) > 8 {
+			if submission.OperationID != want || len(submission.OutputNodeIDs) == 0 {
 				return continuationError("invalid")
 			}
 			for _, node := range submission.OutputNodeIDs {
@@ -251,7 +256,14 @@ func (s *Service) continuationResults(tx *gorm.DB, row *model.AssistantContinuat
 			if err != nil {
 				return nil, nil, err
 			}
-			if task.Type != "canvas_"+row.Kind {
+			taskKind := row.Kind
+			if row.Kind == "mixed" {
+				derived := strings.TrimPrefix(task.Type, "canvas_")
+				if derived != "image" && derived != "video" && derived != "audio" {
+					return nil, nil, continuationError("task_mismatch")
+				}
+				taskKind = derived
+			} else if task.Type != "canvas_"+row.Kind {
 				return nil, nil, continuationError("task_mismatch")
 			}
 			var input struct {
@@ -272,7 +284,7 @@ func (s *Service) continuationResults(tx *gorm.DB, row *model.AssistantContinuat
 				return nil, nil, continuationError("task_mismatch")
 			}
 			ids = append(ids, task.ID)
-			inspection, err := InspectTaskTargetsInTx(tx, row.UserID, task, row.Kind, input.Metadata.NodeID, targets, func(nodeID string) (map[string]any, bool) {
+			inspection, err := InspectTaskTargetsInTx(tx, row.UserID, task, taskKind, input.Metadata.NodeID, targets, func(nodeID string) (map[string]any, bool) {
 				meta, exists := nodes[nodeID]
 				return meta, exists
 			})
@@ -402,11 +414,6 @@ func (s *Service) ClaimContinuation(userID, id string, prepare func(*gorm.DB, *m
 		}
 		assets, tasks := AssociatedReferences(raw)
 		rec := Record{TurnID: row.TurnID, UserID: userID, CanvasID: row.CanvasID, DurableSessionID: row.SessionID, PermissionMode: row.PermissionMode, RevisionBefore: DocumentRevision(doc), CreatedAt: s.now(), State: StateOpen, Document: raw, SelectedNodeIDs: selected, AssociatedAssetIDs: assets, AssociatedTaskIDs: uniqueSorted(append(tasks, ids...))}
-		var source model.AssistantTurn
-		if err := tx.First(&source, "turn_id = ?", row.SourceTurnID).Error; err != nil {
-			return err
-		}
-		rec.GenerationAuthorizationJSON = source.GenerationAuthorizationJSON
 		if _, err = s.store.Insert(tx, recordToModel(rec, s.now())); err != nil {
 			return err
 		}

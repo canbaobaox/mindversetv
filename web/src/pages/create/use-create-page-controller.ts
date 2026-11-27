@@ -8,13 +8,12 @@ import { createReferenceLinkResolver } from "@/components/generation-reference-l
 import { explainGenerationError, generationErrorMessage } from "@/lib/generation-error";
 import { confirmCreationRetryIfNeeded } from "@/lib/generation-failure-ux";
 import { normalizeTaskOutcome } from "@/lib/task-outcome";
-import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue } from "@/lib/model-capabilities";
 import { hasDeclaredModelCapability, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import type { Skill } from "@/services/api/skills";
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
+import { savedVideoSettings, useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -62,12 +61,10 @@ export function useCreatePageController() {
     const userId = useUserStore((state) => state.user?.id);
     const navigate = useNavigate();
     const brandName = useAppearanceStore((state) => state.appearance.brandName);
-    const localMode = isLocalWorkspaceMode();
     const config = useEffectiveConfig();
     const composerPreferencesHydrated = useCreationPreferencesStore((state) => state.hydrated);
     const rememberMode = useCreationPreferencesStore((state) => state.rememberMode);
     const rememberImageSettings = useCreationPreferencesStore((state) => state.rememberImageSettings);
-    const rememberVideoSettings = useCreationPreferencesStore((state) => state.rememberVideoSettings);
     const initialComposerPreferences = useCreationPreferencesStore.getState().preferences;
     useEffect(() => {
         syncActiveClientPlugins();
@@ -122,7 +119,6 @@ export function useCreatePageController() {
 
     const conversationsState = useCreateConversations({
         demoConversation,
-        localMode,
         userId,
         navigate,
         toast,
@@ -138,9 +134,6 @@ export function useCreatePageController() {
         hydrated,
         activeConversation,
         historyConversations,
-        conflictOpen,
-        setConflictOpen,
-        parkedDraftId,
         historyOpen,
         setHistoryOpen,
         openingCanvas,
@@ -150,9 +143,6 @@ export function useCreatePageController() {
         startNewConversation,
         continueOnCanvas,
         selectConversation,
-        useSavedConflictVersion,
-        restoreParkedDraft,
-        overwriteSavedWithDraft,
         confirmDeleteConversation,
         renameConversationTitle,
     } = conversationsState;
@@ -224,11 +214,6 @@ export function useCreatePageController() {
             if (saved.image.quality) setQuality(saved.image.quality);
             if (saved.image.count) setCount(saved.image.count);
         }
-        if (nextMode === "video" && saved.video) {
-            if (saved.video.ratio) setRatio(saved.video.ratio);
-            if (saved.video.seconds) setSeconds(saved.video.seconds);
-            if (saved.video.videoQuality) setVideoQuality(saved.video.videoQuality);
-        }
         setComposerPreferencesInitialized(true);
     }, [composerPreferencesHydrated, composerPreferencesInitialized, requestedMode]);
 
@@ -253,7 +238,7 @@ export function useCreatePageController() {
 
     useEffect(() => {
         if (!composerPreferencesHydrated || !composerPreferencesInitialized || mode !== "video") return;
-        const saved = useCreationPreferencesStore.getState().preferences.video;
+        const saved = savedVideoSettings(useCreationPreferencesStore.getState().preferences, selectedModel, config.videoModel);
         const normalized = normalizeVideoValue(videoProfile, {
             seconds: saved?.seconds || String(videoProfile.duration.default),
             ratio: saved?.ratio,
@@ -306,20 +291,14 @@ export function useCreatePageController() {
     const setComposerRatio = (value: string) => {
         setRatio(value);
         if (mode === "image") rememberImageSettings({ ratio: value });
-        if (mode === "video") rememberVideoSettings({ ratio: value });
     };
     const setComposerSeconds = (value: string) => {
         setSeconds(value);
         setComposerNotice("");
-        if (mode === "video") rememberVideoSettings({ seconds: value });
     };
     const setComposerQuality = (value: string) => {
         setQuality(value);
         if (mode === "image") rememberImageSettings({ quality: value });
-    };
-    const setComposerVideoQuality = (value: string) => {
-        setVideoQuality(value);
-        if (mode === "video") rememberVideoSettings({ videoQuality: value });
     };
     const setComposerCount = (value: string) => {
         setCount(value);
@@ -340,6 +319,7 @@ export function useCreatePageController() {
                 id: asset.id,
                 title: asset.title,
                 category: asset.category || "other",
+                folderId: asset.folderId,
                 kindLabel: asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "图片",
                 asset,
                 searchText: (asset.tags || []).join(" "),
@@ -503,7 +483,6 @@ export function useCreatePageController() {
         setVideoQuality(nextSettings.videoQuality);
         setCount(nextSettings.count);
         if (nextMode === "image") rememberImageSettings({ ratio: nextSettings.ratio, quality: nextSettings.quality, count: nextSettings.count });
-        if (nextMode === "video") rememberVideoSettings({ ratio: nextSettings.ratio, seconds: nextSettings.seconds, videoQuality: nextSettings.videoQuality });
     };
 
     const retryFailedMessage = async (item: CreationMessage, index: number) => {
@@ -517,6 +496,7 @@ export function useCreatePageController() {
         const confirmed = await confirmCreationRetryIfNeeded({
             category: explanation.category,
             outcome,
+            providerCancelStatus: item.providerCancelStatus,
             modalConfirm: modal?.confirm,
             onEditDraft: () => {
                 if (!promptRef.current.trim()) restoreMessageDraft(previous);
@@ -614,7 +594,7 @@ export function useCreatePageController() {
         quality,
         setQuality: setComposerQuality,
         videoQuality,
-        setVideoQuality: setComposerVideoQuality,
+        setVideoQuality,
         count,
         setCount: setComposerCount,
         textStreaming,
@@ -637,9 +617,6 @@ export function useCreatePageController() {
         historyOpen,
         setHistoryOpen,
         historyConversations,
-        conflictOpen,
-        setConflictOpen,
-        parkedDraftId,
         libraryOpen,
         setLibraryOpen,
         libraryItems,
@@ -663,9 +640,6 @@ export function useCreatePageController() {
         startNewConversation,
         continueOnCanvas,
         selectConversation,
-        useSavedConflictVersion,
-        restoreParkedDraft,
-        overwriteSavedWithDraft,
         confirmDeleteConversation,
         renameConversationTitle,
         retryFailedMessage,

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"infinite-canvas/backend/internal/assets"
 	"infinite-canvas/backend/internal/beeftv"
 	"net/http"
 	"strings"
@@ -19,7 +20,11 @@ func RunAudioTask(ctx context.Context, input Input) (map[string]interface{}, err
 		voice := metadataString(input.Metadata, "resolvedCharacterVoiceKey")
 		hasOmniReference := len(input.ReferenceImages) > 0 || len(input.ReferenceAudios) > 0 || strings.TrimSpace(input.Config.AudioInstructions) != ""
 		if (voice == "" && !hasOmniReference) || (voice != "" && strings.TrimSpace(input.Config.AudioVoice) != voice) {
-			return nil, RequestPreparationError{Cause: errors.New("角色配音缺少已解析的声音绑定")}
+			return nil, RequestPreparationError{Cause: PreparationUserError{
+				Category: CategoryInvalidParams,
+				Reason:   "角色配音缺少已解析的声音绑定",
+				Action:   "请先为该角色配置音色或重新选择角色后重试",
+			}}
 		}
 	}
 	if client, unified, err := useManagedMediaEnvelope(ctx, input.Config, "audio"); err != nil {
@@ -35,7 +40,11 @@ func RunAudioTask(ctx context.Context, input Input) (map[string]interface{}, err
 	}
 	ctx = EnsureOfficialProtocolAdapter(ctx, input.Config.InterfaceType)
 	if _, ok := DeclarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); !ok {
-		return nil, RequestPreparationError{Cause: fmt.Errorf("音频协议插件未安装或已停用：%s", input.Config.InterfaceType)}
+		return nil, RequestPreparationError{Cause: PreparationUserError{
+			Category: CategoryInvalidParams,
+			Reason:   fmt.Sprintf("当前音频协议插件未安装或已停用（%s）", input.Config.InterfaceType),
+			Action:   "请在设置中启用对应协议插件或切换模型后重试",
+		}}
 	}
 	return RunDeclarativeProtocolTask(ctx, input)
 }
@@ -74,9 +83,18 @@ func DecodeProviderDataURL(value string) (string, []byte, error) {
 	if !ok || !strings.HasPrefix(header, "data:") || !strings.HasSuffix(strings.ToLower(header), ";base64") {
 		return "", nil, errors.New("data URL 格式无效")
 	}
+	if int64(len(encoded)) > int64(base64.StdEncoding.EncodedLen(int(assets.MaxInlineMediaBytes))) {
+		return "", nil, errors.New("内联媒体数据超过 256 MiB 上限")
+	}
 	mimeType := strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")
 	data, err := base64.StdEncoding.DecodeString(encoded)
-	return mimeType, data, err
+	if err != nil {
+		return "", nil, err
+	}
+	if int64(len(data)) > assets.MaxInlineMediaBytes {
+		return "", nil, errors.New("内联媒体数据超过 256 MiB 上限")
+	}
+	return mimeType, data, nil
 }
 
 func ValidateGeneratedAudio(declared string, data []byte, format string) (string, error) {

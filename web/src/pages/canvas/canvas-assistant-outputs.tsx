@@ -1,7 +1,9 @@
 import { Button } from "antd";
+import { Download, Eye, EyeOff, FileText } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useResourceVideoPlayback } from "@/hooks/use-resource-video-playback";
 import { queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
-import { getResourceBlob, getResourcePlaybackBlob, resourceStorageKey } from "@/services/api/resources";
+import { getResourceBlob, resourceStorageKey } from "@/services/api/resources";
 import { downloadOwnedOrBrowserMedia, isWailsNativeShell } from "@/services/desktop-media-save";
 import type { AssistantTurnOutput } from "@/services/api/agent-assistant";
 
@@ -15,10 +17,144 @@ export function assistantOutputResource(task: GenerationTask | undefined): strin
     } catch { return null; }
 }
 
+const TEXT_PREVIEW_EXT_RE = /\.(md|markdown|txt|srt|vtt|ass|csv|tsv|json|yaml|yml|xml|html|svg|js|ts|py|sh|css)$/i;
+const MAX_INLINE_PREVIEW_CHARS = 24_000;
+
+function formatDeliverableBytes(bytes?: number): string {
+    if (!bytes || bytes <= 0) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isPreviewableDeliverable(fileName: string, mimeType?: string): boolean {
+    const mime = (mimeType || "").toLowerCase();
+    if (mime.startsWith("text/") || mime.includes("json") || mime.includes("xml") || mime.includes("yaml") || mime.includes("subrip") || mime.includes("javascript")) {
+        return true;
+    }
+    return TEXT_PREVIEW_EXT_RE.test(fileName);
+}
+
 export function CanvasAssistantOutputs({ outputs }: { outputs: AssistantTurnOutput[] }) {
     const videos = outputs.filter((output): output is Extract<AssistantTurnOutput, {kind:"video"}> => output.kind === "video");
     const projects = outputs.filter((output): output is Extract<AssistantTurnOutput, {kind:"project"}> => output.kind === "project");
-    return <><CanvasAssistantVideoOutputs outputs={videos} />{projects.map(output => <AssistantProjectDownload key={output.resourceId} output={output} />)}</>;
+    const files = outputs.filter((output): output is Extract<AssistantTurnOutput, {kind:"file"}> => output.kind === "file");
+    return (
+        <>
+            <CanvasAssistantVideoOutputs outputs={videos} />
+            {projects.map(output => <AssistantProjectDownload key={output.resourceId} output={output} />)}
+            {files.map(output => (
+                <AssistantFileDeliverableCard
+                    key={output.resourceId}
+                    resourceId={output.resourceId}
+                    fileName={output.fileName}
+                    mimeType={output.mimeType}
+                    bytes={output.bytes}
+                />
+            ))}
+        </>
+    );
+}
+
+export function AssistantFileDeliverableCard({
+    resourceId,
+    fileName,
+    mimeType,
+    bytes,
+    title = "交付文件",
+}: {
+    resourceId?: string;
+    fileName: string;
+    mimeType?: string;
+    bytes?: number;
+    title?: string;
+}) {
+    const [feedback, setFeedback] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewText, setPreviewText] = useState<string | null>(null);
+    const canPreview = Boolean(resourceId && isPreviewableDeliverable(fileName, mimeType));
+    const sizeLabel = formatDeliverableBytes(bytes);
+
+    async function download() {
+        if (!resourceId) return;
+        let url = "";
+        setLoading(true);
+        setFeedback("");
+        try {
+            if (!isWailsNativeShell()) {
+                const blob = await getResourceBlob(resourceStorageKey(resourceId));
+                if (!blob) throw Error("missing deliverable");
+                url = URL.createObjectURL(blob);
+            }
+            const result = await downloadOwnedOrBrowserMedia({ fileName, resourceId, browserUrl: url || undefined });
+            if (result === "saved") setFeedback("文件已保存");
+        } catch {
+            setFeedback("文件下载未完成，请重试");
+        } finally {
+            setLoading(false);
+            if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+    }
+
+    async function togglePreview() {
+        if (!resourceId) return;
+        if (previewOpen) {
+            setPreviewOpen(false);
+            return;
+        }
+        setPreviewOpen(true);
+        if (previewText !== null) return;
+        setPreviewLoading(true);
+        setFeedback("");
+        try {
+            const blob = await getResourceBlob(resourceStorageKey(resourceId));
+            if (!blob) throw Error("missing deliverable");
+            const raw = await blob.text();
+            setPreviewText(raw.length > MAX_INLINE_PREVIEW_CHARS ? `${raw.slice(0, MAX_INLINE_PREVIEW_CHARS)}\n\n…（预览已截断，请下载查看完整内容）` : raw);
+        } catch {
+            setPreviewOpen(false);
+            setFeedback("预览读取失败，请直接下载查看");
+        } finally {
+            setPreviewLoading(false);
+        }
+    }
+
+    const dotIdx = fileName.lastIndexOf(".");
+    const rawExt = dotIdx > 0 && dotIdx < fileName.length - 1 ? fileName.slice(dotIdx + 1) : "";
+    const extLabel = /^[a-z0-9]{1,6}$/i.test(rawExt) ? rawExt.toUpperCase() : "";
+    const metaParts = [extLabel, title, sizeLabel].filter(Boolean).join(" · ");
+
+    return (
+        <div className="canvas-assistant-card">
+            <div className="canvas-assistant-deliverable-head">
+                <span className="canvas-assistant-deliverable-badge" aria-hidden="true">
+                    <FileText size={16} />
+                </span>
+                <div className="canvas-assistant-deliverable-info">
+                    <span className="canvas-assistant-deliverable-name">{fileName}</span>
+                    <span className="canvas-assistant-meta">{metaParts}</span>
+                </div>
+            </div>
+            {resourceId ? (
+                <div className="canvas-assistant-card-actions">
+                    <Button size="small" icon={<Download size={13} />} loading={loading} onClick={() => void download()}>下载文件</Button>
+                    {canPreview ? (
+                        <Button size="small" icon={previewOpen ? <EyeOff size={13} /> : <Eye size={13} />} loading={previewLoading} onClick={() => void togglePreview()}>
+                            {previewOpen ? "收起预览" : "预览内容"}
+                        </Button>
+                    ) : null}
+                </div>
+            ) : (
+                <span className="canvas-assistant-meta">仅保留在本地脚本输出目录</span>
+            )}
+            {previewOpen && previewText !== null ? (
+                <pre className="canvas-assistant-deliverable-preview">{previewText}</pre>
+            ) : null}
+            {feedback ? <span className="canvas-assistant-meta" role="status">{feedback}</span> : null}
+        </div>
+    );
 }
 
 function AssistantProjectDownload({output}: {output: Extract<AssistantTurnOutput,{kind:"project"}>}) {
@@ -46,10 +182,9 @@ function CanvasAssistantVideoOutputs({ outputs }: { outputs: Extract<AssistantTu
     const currentIdentity = useRef(identity);
     currentIdentity.current = identity;
     const [records, setRecords] = useState<{ identity: string; tasks: Record<string, GenerationTask>; unread: string[] }>({ identity: "", tasks: {}, unread: [] });
-    const [playback, setPlayback] = useState<{ identity: string; taskId: string; url: string; loading?: boolean; error?: boolean } | null>(null);
+    const [activePlay, setActivePlay] = useState<{ identity: string; taskId: string } | null>(null);
     const [feedback, setFeedback] = useState<{ identity: string; text: string } | null>(null);
     const ownedURLs = useRef(new Set<string>());
-    const playerURL = useRef("");
     const requestSerial = useRef(0);
     const [retry, setRetry] = useState(0);
     useEffect(() => {
@@ -76,10 +211,12 @@ function CanvasAssistantVideoOutputs({ outputs }: { outputs: Extract<AssistantTu
     }, [identity, signature, retry]);
     useEffect(() => {
         const urls = ownedURLs.current;
-        return () => { requestSerial.current++; for (const url of urls) URL.revokeObjectURL(url); urls.clear(); playerURL.current = ""; };
+        return () => { requestSerial.current++; for (const url of urls) URL.revokeObjectURL(url); urls.clear(); };
     }, [identity]);
     const tasks = records.identity === identity ? records.tasks : {};
-    const shownPlayback = playback?.identity === identity ? playback : null;
+    const playingTaskId = activePlay?.identity === identity ? activePlay.taskId : "";
+    const playingResourceId = playingTaskId ? assistantOutputResource(tasks[playingTaskId]) : null;
+    const videoPlayback = useResourceVideoPlayback(playingResourceId ? resourceStorageKey(playingResourceId) : "", "", Boolean(playingResourceId));
     const last = outputs.at(-1);
     const lastReady = last && assistantOutputResource(tasks[last.taskId]);
     const lastTask = last ? tasks[last.taskId] : undefined;
@@ -88,22 +225,13 @@ function CanvasAssistantVideoOutputs({ outputs }: { outputs: Extract<AssistantTu
         : lastTask.status === "queued" || lastTask.status === "running" ? "这是之前已完成的版本；后一次正在合成。"
         : lastTask.status === "failed" || lastTask.status === "cancelled" ? "这是之前已完成的版本；后一次合成未完成。"
         : lastTask.status === "succeeded" ? "这是之前已完成的版本；后一次成片暂不可用。" : "这是之前已完成的版本；后一次合成结果尚未确认。";
-    async function play(taskId: string) {
-        const resourceId = assistantOutputResource(tasks[taskId]);
-        if (!resourceId) return;
-        const serial = ++requestSerial.current;
-        setPlayback({ identity, taskId, url: "", loading: true });
-        try {
-            const blob = await getResourcePlaybackBlob(resourceStorageKey(resourceId));
-            if (serial !== requestSerial.current || currentIdentity.current !== identity) return;
-            if (!blob) throw Error("missing media");
-            const url = URL.createObjectURL(blob);
-            if (playerURL.current) { URL.revokeObjectURL(playerURL.current); ownedURLs.current.delete(playerURL.current); }
-            playerURL.current = url; ownedURLs.current.add(url);
-            setPlayback({ identity, taskId, url });
-        } catch {
-            if (serial === requestSerial.current && currentIdentity.current === identity) setPlayback({ identity, taskId, url: "", error: true });
+    function play(taskId: string) {
+        if (!assistantOutputResource(tasks[taskId])) return;
+        if (playingTaskId === taskId) {
+            videoPlayback.retry();
+            return;
         }
+        setActivePlay({ identity, taskId });
     }
     async function download(taskId: string, title: string) {
         const resourceId = assistantOutputResource(tasks[taskId]);
@@ -136,10 +264,9 @@ function CanvasAssistantVideoOutputs({ outputs }: { outputs: Extract<AssistantTu
         return <div key={output.taskId} className="canvas-assistant-card">
             <strong>{title}</strong><span role="status">{status}</span>
             {ready && output.taskId !== last?.taskId ? <span className="canvas-assistant-meta">{lastReady ? "之前的版本" : previousNotice}</span> : null}
-            {ready ? <div className="canvas-assistant-card-actions"><Button size="small" loading={shownPlayback?.taskId === output.taskId && shownPlayback.loading} onClick={() => void play(output.taskId)}>播放成片</Button><Button size="small" autoInsertSpace={false} onClick={() => void download(output.taskId, title)}>下载</Button></div> : null}
+            {ready ? <div className="canvas-assistant-card-actions"><Button size="small" loading={playingTaskId === output.taskId && videoPlayback.loading} onClick={() => play(output.taskId)}>播放成片</Button><Button size="small" autoInsertSpace={false} onClick={() => void download(output.taskId, title)}>下载</Button></div> : null}
             {unread ? <Button size="small" onClick={() => setRetry(value => value + 1)}>重读状态</Button> : null}
-            {shownPlayback?.taskId === output.taskId && shownPlayback.url ? <Suspense fallback={<span>正在读取播放器…</span>}><Player src={shownPlayback.url} title={title} mimeType="video/mp4" autoPlay compactControls className="w-full" /></Suspense> : null}
-            {shownPlayback?.taskId === output.taskId && shownPlayback.error ? <span role="status">暂时无法播放，请重新读取成片。</span> : null}
+            {playingTaskId === output.taskId && videoPlayback.error ? <span role="status">暂时无法播放，请重新读取成片。</span> : playingTaskId === output.taskId && videoPlayback.url ? <Suspense fallback={<span>正在读取播放器…</span>}><Player key={videoPlayback.url} src={videoPlayback.url} title={title} mimeType="video/mp4" autoPlay compactControls className="w-full" onError={() => { if (!videoPlayback.requestCompatible()) videoPlayback.fail(); }} /></Suspense> : null}
         </div>;
     })}{feedback?.identity === identity ? <span role="status">{feedback.text}</span> : null}</div>;
 }

@@ -16,13 +16,13 @@ function renderDuration(seconds: string, continuous: boolean) {
     return renderToStaticMarkup(<VideoSettingsPanel config={config} theme={canvasThemes.dark} onConfigChange={() => {}} />);
 }
 
-test("shared video settings preserve exact H3 fractional duration in both inputs", () => {
+test("shared video settings show a saved H3 fractional duration until the user selects a whole second", () => {
     for (const seconds of ["0.925", "10.92"]) {
         const html = renderDuration(seconds, true);
-        expect(html.match(/value="\d+(?:\.\d+)?"/g)?.filter((value) => value === `value="${seconds}"`)).toHaveLength(2);
-        expect(html).toContain('min="0.92"');
-        expect(html).toContain('step="any"');
-        expect(html).toContain('inputMode="decimal"');
+        expect(html).toContain(`aria-valuetext="${seconds} 秒"`);
+        expect(html).toContain('min="1"');
+        expect(html).toContain('step="1"');
+        expect(html).not.toContain('type="number"');
     }
 });
 
@@ -30,7 +30,7 @@ test("integer H3 duration keeps the shared whole-second controls", () => {
     const html = renderDuration("5", false);
     expect(html).toContain('min="5"');
     expect(html).toContain('step="1"');
-    expect(html).toContain('inputMode="numeric"');
+    expect(html).toContain('type="range"');
     expect(html).not.toContain('step="any"');
 });
 
@@ -52,10 +52,10 @@ test("H3 resolutions display low to high while preserving the 768P default and s
     }
 });
 
-test("saved middle frame settings can be cleared across H3 models while supported end frames stay quiet", () => {
+test("saved middle/end frame settings can be cleared when capability disables them while supported frames stay quiet", () => {
     const metadata = { videoEndFrameNodeId: "end", videoMiddleFrameNodeId: "middle", videoMiddleFrameTime: 2.5 };
-    for (const model of ["minimax-h3-max", "minimax-h3-max-turbo", "minimax-h3-max-style-vhs"]) {
-        expect(renderToStaticMarkup(<CanvasH3UnsupportedFrames model={model} metadata={metadata} onChange={() => {}} />)).toContain("清除不支持的帧设置");
-    }
-    expect(renderToStaticMarkup(<CanvasH3UnsupportedFrames model="minimax-h3-max" metadata={{ videoEndFrameNodeId: "end" }} onChange={() => {}} />)).toBe("");
+    expect(renderToStaticMarkup(<CanvasH3UnsupportedFrames metadata={metadata} middleFrameSupported={false} endFrameSupported={true} onChange={() => {}} />)).toContain("清除不支持的帧设置");
+    expect(renderToStaticMarkup(<CanvasH3UnsupportedFrames metadata={{ videoEndFrameNodeId: "end" }} middleFrameSupported={false} endFrameSupported={false} onChange={() => {}} />)).toContain("清除不支持的帧设置");
+    expect(renderToStaticMarkup(<CanvasH3UnsupportedFrames metadata={{ videoEndFrameNodeId: "end" }} middleFrameSupported={false} endFrameSupported={true} onChange={() => {}} />)).toBe("");
+    expect(renderToStaticMarkup(<CanvasH3UnsupportedFrames metadata={metadata} middleFrameSupported={true} endFrameSupported={true} onChange={() => {}} />)).toBe("");
 });

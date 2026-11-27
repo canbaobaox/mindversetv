@@ -7,15 +7,37 @@ import (
 	"testing"
 )
 
-// testdata/enterprise-catalog.json holds the media rows BeefTV 官方算力 published at
-// /api/enterprise/catalog on 2026-11-03.
+// testdata/enterprise-catalog.json holds published media pricing rows used by estimator tests.
+func parseCatalogFixture(body []byte) (map[string]json.RawMessage, bool) {
+	var payload struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Currency string            `json:"currency"`
+			Models   []json.RawMessage `json:"models"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &payload) != nil || !payload.Success || payload.Data.Currency != "CNY" {
+		return nil, false
+	}
+	rows := make(map[string]json.RawMessage, len(payload.Data.Models))
+	for _, raw := range payload.Data.Models {
+		var row struct {
+			ModelName string `json:"model_name"`
+		}
+		if json.Unmarshal(raw, &row) == nil && strings.TrimSpace(row.ModelName) != "" {
+			rows[strings.TrimSpace(row.ModelName)] = raw
+		}
+	}
+	return rows, true
+}
+
 func catalogTable(t *testing.T, model string) *Table {
 	t.Helper()
 	body, err := os.ReadFile("testdata/enterprise-catalog.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, ok := ParseCatalog(body)
+	rows, ok := parseCatalogFixture(body)
 	if !ok {
 		t.Fatal("catalog fixture did not parse")
 	}
@@ -199,5 +221,22 @@ func TestQuoteSeedream55ChargesFirstReferenceAndUses2601123PixelThreshold(t *tes
 	layersWithRef := Quote(table, Target{Kind: "image", Size: "2K", Layers: true, ReferenceImages: 1})
 	if layersWithRef.Amount != nil || layersWithRef.Basis != "图层拆分按实际拆出的图层数计费，每层 ¥0.0237 + 参考图 1 张 × ¥0.0054" {
 		t.Fatalf("layers with 1 paid reference got %+v", layersWithRef)
+	}
+}
+
+func TestQuoteVideoReferenceInvoiceAppliesToReferenceVideo(t *testing.T) {
+	table, ok := Normalize(json.RawMessage(`{
+		"mode": "per_request",
+		"display_kind": "video",
+		"per_second_cny": {"768p": 0.4882608},
+		"video_input_per_second_cny": {"768p": 0},
+		"reference_invoice": {"usd_cny": 6.7814, "reserve_usd": 2}
+	}`))
+	if !ok {
+		t.Fatal("reference invoice video row did not normalize")
+	}
+	got := Quote(table, Target{Kind: "video", Resolution: "768p", Seconds: 5, ReferenceVideos: 1})
+	if got.Amount != nil || got.Reserve == nil || *got.Reserve != 20.3442 || got.Label != "先扣 ¥20.34" {
+		t.Fatalf("expected fal reference invoice reserve for reference video, got %+v", got)
 	}
 }

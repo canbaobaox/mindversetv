@@ -11,7 +11,7 @@ import (
 
 type LegacyUpscaleInput struct {
 	Model, MediaType, SourceURL, OutputFormat string
-	Factor                                    int
+	Factor                                    float64
 	Width, Height                             int
 	DurationSeconds, FrameRate                float64
 	EstimateOnly                              bool
@@ -34,6 +34,7 @@ type UpstreamUpscaleModelCapability struct {
 type UpstreamUpscaleCapabilities struct {
 	SupportedModels []UpstreamUpscaleModelCapability `json:"supported_models"`
 	MaxVideoSeconds int                              `json:"max_video_seconds"`
+	MaxVideoBytes   int64                            `json:"max_video_bytes,omitempty"`
 	Billing         json.RawMessage                  `json:"billing,omitempty"`
 }
 type LegacyUpscaleTask struct {
@@ -55,6 +56,9 @@ func LegacyUpscaleBody(input LegacyUpscaleInput) map[string]any {
 			body["image_url"] = input.SourceURL
 		}
 		body["output_format"], body["face_enhancement"] = format, false
+		if input.EstimateOnly && input.Width > 0 && input.Height > 0 {
+			body["width"], body["height"] = input.Width, input.Height
+		}
 	} else {
 		if input.SourceURL != "" {
 			body["video_url"] = input.SourceURL
@@ -138,6 +142,14 @@ func (c *MediaClient) LegacyUpscaleContent(ctx context.Context, id string, limit
 	req.Header.Del(MediaProtocolHeader)
 	data, header, err := c.sendWith(c.storageClient("超分结果重定向次数过多"), req, limit)
 	return data, header.Get("Content-Type"), err
+}
+
+func (c *MediaClient) LegacyUpscaleContentToFile(ctx context.Context, id, destDir string, limit int64) (string, string, int64, error) {
+	path, err := LegacyUpscaleTaskPath(id)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return c.downloadStorageToFile(ctx, path, "超分结果重定向次数过多", destDir, limit)
 }
 func (c *MediaClient) CancelLegacyUpscale(ctx context.Context, id string) error {
 	path, err := LegacyUpscaleTaskPath(id)

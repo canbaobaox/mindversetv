@@ -37,6 +37,14 @@ let failCuratedRemote = false;
 let failNpmSearch = false;
 let serveMyxsaiKey = false;
 let myxsaiBalance = { balance: 28.5, currency: "CNY", hasBalance: true };
+let networkProxyMode: "system" | "direct" = "system";
+let networkProxyEffectiveMode: "system" | "environment" | "direct" = "system";
+let failNetworkProxyGet = false;
+let failNetworkProxySave = false;
+let holdNetworkProxySave = false;
+let networkProxySaveGate = createGate();
+let networkProxyRestartPending = false;
+let networkProxyPutModes: string[] = [];
 
 beforeEach(() => {
     connectionState = "disconnected";
@@ -55,6 +63,14 @@ beforeEach(() => {
     failNpmSearch = false;
     serveMyxsaiKey = false;
     myxsaiBalance = { balance: 28.5, currency: "CNY", hasBalance: true };
+    networkProxyMode = "system";
+    networkProxyEffectiveMode = "system";
+    failNetworkProxyGet = false;
+    failNetworkProxySave = false;
+    holdNetworkProxySave = false;
+    networkProxySaveGate = createGate();
+    networkProxyRestartPending = false;
+    networkProxyPutModes = [];
 });
 
 beforeAll(async () => {
@@ -85,6 +101,8 @@ beforeAll(async () => {
                 }));
                 builder.onResolve({ filter: /^@\/components\/model-logo$/ }, () => ({ path: "model-logo", namespace: "test-icons" }));
                 builder.onLoad({ filter: /.*/, namespace: "test-icons" }, () => ({ contents: "export function ModelLogo() { return null; }", loader: "js" }));
+                builder.onResolve({ filter: /^@\/lib\/workspace-route-modules$/ }, () => ({ path: "workspace-route-modules", namespace: "test-preload" }));
+                builder.onLoad({ filter: /.*/, namespace: "test-preload" }, () => ({ contents: "export function preloadWorkspaceRoute() {}", loader: "js" }));
                 builder.onResolve({ filter: /^@\// }, (args) => ({ path: Bun.resolveSync("../src/" + args.path.slice(2), import.meta.dir) }));
             },
         }],
@@ -177,6 +195,36 @@ beforeAll(async () => {
                 }
                 return ok({ items: [] });
             }
+            if (path === "/api/workspace/network-proxy") {
+                if (req.method === "PUT") {
+                    const body = (await req.json()) as { mode?: string };
+                    networkProxyPutModes.push(String(body.mode ?? ""));
+                    if (holdNetworkProxySave) {
+                        await networkProxySaveGate.enter();
+                    }
+                    if (failNetworkProxySave) {
+                        return Response.json({ code: 500, msg: "网络代理设置保存失败" }, { status: 500 });
+                    }
+                    networkProxyMode = body.mode === "direct" ? "direct" : "system";
+                    networkProxyEffectiveMode = networkProxyMode === "direct" ? "direct" : "system";
+                    return ok({
+                        mode: networkProxyMode,
+                        effectiveMode: networkProxyEffectiveMode,
+                        autoConfigOnly: false,
+                        assistantRestarted: !networkProxyRestartPending,
+                        assistantRestartPending: networkProxyRestartPending,
+                    });
+                }
+                if (failNetworkProxyGet) {
+                    return Response.json({ code: 500, msg: "读取网络代理设置失败" }, { status: 500 });
+                }
+                return ok({
+                    mode: networkProxyMode,
+                    effectiveMode: networkProxyEffectiveMode,
+                    autoConfigOnly: false,
+                    assistantRestartPending: networkProxyRestartPending,
+                });
+            }
             if (path.startsWith("/api/")) return ok({ items: [], plugins: [], states: {} });
             return new Response('<html><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/harness.css"><div id="root"></div><script type="module" src="/harness.js"></script></html>', {
                 headers: { "Content-Type": "text/html" },
@@ -256,6 +304,72 @@ test("opening sidebar account modal never auto-starts a connection; account pane
         await page.close();
     }
 }, 30000);
+
+
+test("general settings switches network proxy mode, recovers from load errors, and never wedges saving across tab switches", async () => {
+    failNetworkProxyGet = true;
+    const page = await browser.newPage({ viewport: { width: 960, height: 760 } });
+    try {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.goto(server.url.toString());
+        await page.getByRole("button", { name: "账户设置", exact: true }).click();
+        const modal = page.locator(".account-settings-modal");
+        await modal.waitFor();
+        await modal.getByRole("button", { name: "通用设置", exact: true }).click();
+        await modal.getByRole("alert").filter({ hasText: "读取网络代理设置失败" }).waitFor();
+
+        // Retry button recovers cleanly from an initial load failure.
+        failNetworkProxyGet = false;
+        await modal.getByRole("button", { name: /^重\s*试$/ }).click();
+        await modal.getByText("当前已跟随系统代理。", { exact: false }).waitFor();
+
+        const proxyControl = modal.getByRole("radiogroup", { name: "网络代理" });
+        networkProxyRestartPending = true;
+        await proxyControl.getByText("不使用代理", { exact: true }).click();
+        await modal.getByText("BeefTV 与内置助手均直连", { exact: false }).waitFor();
+        await modal.getByText("助手当前正忙或正在重启，空闲后将自动应用新设置。").waitFor();
+        expect(networkProxyPutModes).toEqual(["direct"]);
+
+        // Save error renders in destructive color inline without duplicating error toasts.
+        failNetworkProxySave = true;
+        await proxyControl.getByText("跟随系统", { exact: true }).click();
+        const errorAlert = modal.getByRole("alert").filter({ hasText: "网络代理设置保存失败" });
+        await errorAlert.waitFor();
+        const errorColors = await errorAlert.evaluate((node) => {
+            const probe = document.createElement("span");
+            probe.style.color = "var(--destructive)";
+            node.parentElement?.appendChild(probe);
+            const destructiveColor = getComputedStyle(probe).color;
+            probe.remove();
+            return { actual: getComputedStyle(node).color, expected: destructiveColor };
+        });
+        expect(errorColors.actual).toBe(errorColors.expected);
+        expect(await page.locator(".ant-message-error").count()).toBe(0);
+        expect(networkProxyMode).toBe("direct");
+
+        // Switching tabs while a PUT is in flight must never leave the Segmented stuck disabled.
+        failNetworkProxySave = false;
+        networkProxyRestartPending = false;
+        holdNetworkProxySave = true;
+        await proxyControl.getByText("跟随系统", { exact: true }).click();
+        await networkProxySaveGate.entered;
+        await modal.getByRole("button", { name: "账号与余额", exact: true }).click();
+        await modal.getByRole("button", { name: "通用设置", exact: true }).click();
+        networkProxySaveGate.release();
+        await modal.getByText("当前已跟随系统代理。", { exact: false }).waitFor();
+        await page.waitForFunction(() => {
+            const el = document.querySelector('.account-settings-modal [role="radiogroup"][aria-label="网络代理"]');
+            return Boolean(el && !el.classList.contains("ant-segmented-disabled"));
+        });
+        holdNetworkProxySave = false;
+        await proxyControl.getByText("不使用代理", { exact: true }).click();
+        await modal.getByText("BeefTV 与内置助手均直连", { exact: false }).waitFor();
+        expect(networkProxyMode).toBe("direct");
+    } finally {
+        await page.close();
+    }
+}, 30000);
+
 
 test("catalog_failed keeps authenticated account identity/wallet and retries backend catalog finalize", async () => {
     connectionState = "catalog_failed";
@@ -344,6 +458,76 @@ test("collapsing sidebar resets expanded social links without stealing focus fro
         await collapseBtn.click();
         const contactBtn = page.getByRole("button", { name: "联系我们" });
         expect(await contactBtn.getAttribute("aria-expanded")).toBe("false");
+    } finally {
+        await page.close();
+    }
+}, 30000);
+
+test("social links show matching tooltips above the icons without changing their destinations", async () => {
+    const page = await browser.newPage({ viewport: { width: 960, height: 760 } });
+    try {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.goto(new URL("?utility", server.url).toString());
+        await page.getByRole("button", { name: "联系我们" }).click();
+
+        const website = page.getByRole("link", { name: "打开 BeefTV 官网" });
+        const officialX = page.getByRole("link", { name: "打开官方X账号" });
+        const github = page.getByRole("link", { name: "打开 BeefTV GitHub 仓库" });
+        for (const [link, label, href] of [
+            [website, "BeefTV 官网", "https://beeftv.app/"],
+            [github, "点点 star", "https://github.com/glanderness/BeefTV"],
+            [officialX, "官方X账号", "https://x.com/beefnoode"],
+        ] as const) {
+            expect(await link.getAttribute("href")).toBe(href);
+            expect(await link.getAttribute("title")).toBeNull();
+            await link.hover();
+            const tooltip = page.locator(".app-workspace-sidebar-tooltip").getByText(label, { exact: true });
+            await tooltip.waitFor({ state: "visible" });
+            const linkBounds = (await link.boundingBox())!;
+            await page.waitForFunction(({ label, linkTop }) =>
+                Array.from(document.querySelectorAll(".app-workspace-sidebar-tooltip .app-workspace-sidebar-tooltip-content")).some((hint) =>
+                    hint.textContent?.trim() === label && hint.getBoundingClientRect().bottom < linkTop,
+                ), { label, linkTop: linkBounds.y }, { timeout: 5000 });
+        }
+        await website.focus();
+        await page.locator(".app-workspace-sidebar-tooltip").getByText("BeefTV 官网", { exact: true }).waitFor({ state: "visible" });
+    } finally {
+        await page.close();
+    }
+}, 30000);
+
+test("sidebar utility icons show the shared tooltip above the control", async () => {
+    const page = await browser.newPage({ viewport: { width: 960, height: 760 } });
+    try {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.addInitScript(() => {
+            if (new URLSearchParams(location.search).has("browser")) return;
+            const update = async () => ({ status: "available", currentVersion: "v2.3.1", latestVersion: "v99.0.0" });
+            window.go = { main: { DesktopApp: { UpdateStatus: update, CheckForUpdate: update, DownloadUpdate: async () => { throw Error("Unexpected download"); }, InstallUpdate: async () => { throw Error("Unexpected install"); } } } } as typeof window.go;
+        });
+        await page.goto(new URL("?utility", server.url).toString());
+        const update = page.getByRole("button", { name: /下载并安装更新/ });
+        const theme = page.getByRole("button", { name: /切换到[浅深]色模式/ });
+        const themeLabel = (await theme.getAttribute("aria-label"))!;
+        for (const [button, label] of [[update, "当前有可用更新"], [theme, themeLabel]] as const) {
+            expect(await button.getAttribute("title")).toBeNull();
+            await button.hover();
+            const tooltip = page.locator(".app-workspace-sidebar-tooltip").getByText(label, { exact: true });
+            await tooltip.waitFor({ state: "visible" });
+            const control = (await button.boundingBox())!;
+            await page.waitForFunction(({ label, controlTop }) =>
+                Array.from(document.querySelectorAll(".app-workspace-sidebar-tooltip .app-workspace-sidebar-tooltip-content")).some((hint) =>
+                    hint.textContent?.trim() === label && hint.getBoundingClientRect().bottom < controlTop,
+                ), { label, controlTop: control.y }, { timeout: 5000 });
+        }
+        await theme.click();
+        const switchedLabel = themeLabel === "切换到浅色模式" ? "切换到深色模式" : "切换到浅色模式";
+        await page.locator(".app-workspace-sidebar-tooltip").getByText(switchedLabel, { exact: true }).waitFor({ state: "visible" });
+        await page.goto(new URL("?utility&browser", server.url).toString());
+        const unavailable = page.getByRole("button", { name: "当前环境不支持自动更新" });
+        expect(await unavailable.isDisabled()).toBe(true);
+        await page.locator(".app-workspace-update-trigger").hover();
+        await page.locator(".app-workspace-sidebar-tooltip").getByText("当前环境不支持自动更新", { exact: true }).waitFor({ state: "visible" });
     } finally {
         await page.close();
     }

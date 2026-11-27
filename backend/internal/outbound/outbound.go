@@ -167,7 +167,7 @@ func NormalizeOutboundHeaders(headers []OutboundHeader) ([]OutboundHeader, error
 			return nil, BadAuthRequest("自定义请求头不能重复：" + name)
 		}
 		if !validOutboundHeaderValue(value) {
-			return nil, BadAuthRequest("请求头 " + name + " 的值包含非法控制字符")
+			return nil, BadAuthRequest("请求头 " + name + " 的值仅支持标准 ASCII 可见字符")
 		}
 		if len(name) > 128 || len(value) > 4096 {
 			return nil, BadAuthRequest("单个自定义请求头名称或值过长")
@@ -189,15 +189,6 @@ func ApplyOutboundHeaders(req *http.Request, headers []OutboundHeader) {
 	for _, item := range headers {
 		req.Header.Set(item.Name, item.Value)
 	}
-}
-
-func EncodeOutboundHeadersJSON(headers []OutboundHeader) (string, error) {
-	normalized, err := NormalizeOutboundHeaders(headers)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(normalized)
-	return string(data), err
 }
 
 func ParseOutboundHeadersJSON(raw string) ([]OutboundHeader, error) {
@@ -246,7 +237,7 @@ func validOutboundHeaderName(name string) bool {
 func validOutboundHeaderValue(value string) bool {
 	for index := 0; index < len(value); index++ {
 		char := value[index]
-		if char == '\t' || char >= 32 && char != 127 {
+		if char == '\t' || (char >= 32 && char <= 126) {
 			continue
 		}
 		return false
@@ -256,7 +247,7 @@ func validOutboundHeaderValue(value string) bool {
 
 func blockedOutboundHeader(name string) bool {
 	switch name {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie", "host", "content-length", "content-type", "accept", "connection", "proxy-connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "forwarded", "x-goog-api-key":
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "host", "content-length", "content-type", "accept", "connection", "proxy-connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "forwarded", "x-api-key", "x-goog-api-key", "x-beeftv-agent-token":
 		return true
 	}
 	return strings.HasPrefix(name, "x-canvas-") || strings.HasPrefix(name, "x-forwarded-")
@@ -356,11 +347,6 @@ func dialValidatedAddresses(ctx context.Context, network, port string, addresses
 
 func configuredProxyAddress(address string) bool {
 	return desktopnet.ConfiguredProxyAddress(address)
-}
-
-func ValidateOutboundHost(host string) error {
-	_, err := resolveOutboundHost(context.Background(), host)
-	return err
 }
 
 func validateCustomRelayHost(host string) error {

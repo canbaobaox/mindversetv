@@ -71,14 +71,7 @@ mock.module("@/stores/canvas/use-canvas-store", () => ({
     recordCanvasStorageDocument: () => {},
     commitPendingCanvasStorePersistenceLocked: async () => {},
     pendingCanvasStorePersistence: () => false,
-    registerCanvasGenerationPersistenceAttempt: () => {},
-    applyExternalCanvasRevision: () => ({ kind: "keep-local", projectId: "", candidate: {}, localRevision: 0, remoteRevision: 0 }),
-    acceptCanvasExternalRevisionCandidate: () => undefined,
-    clearCanvasExternalRevisionConflict: () => {},
     canvasDurableSnapshot: () => undefined,
-    canvasExternalRevisionConflict: () => undefined,
-    canvasExternalRevisionVersion: () => 0,
-    subscribeCanvasExternalRevision: () => () => {},
     recordCanvasDocumentBase: (proj: any) => {
         bases.set(proj.id, { revision: proj.revision ?? 0, snapshot: proj });
     },
@@ -146,6 +139,28 @@ mock.module("@/services/api/operations", () => ({
             },
         };
     },
+    patchCanvasDocument: async (input: any) => {
+        commitStarted += 1;
+        await commitGate;
+        commits.push({
+            opId: input.operationId,
+            expectedRevision: input.baseRevision,
+            document: structuredClone(input),
+        });
+        const revision = (input.baseRevision ?? 0) + 1;
+        return {
+            op: "canvas.document.patch",
+            opId: input.operationId,
+            replayed: false,
+            caller: "manual",
+            revision,
+            result: {
+                canvasId: input.canvasId,
+                revision,
+                updatedAt: "2026-09-24T09:00:00.000Z",
+            },
+        };
+    },
 }));
 
 class MockCanvasJournalError extends Error {
@@ -183,6 +198,7 @@ mock.module("@/services/canvas-operation-journal", () => ({
             };
         }),
     clearCanvasPendingProjection: async () => undefined,
+    markCanvasJournalForceHistorySnapshot: async () => undefined,
     abandonCanvasInFlight: async () => {},
     clearCanvasOperationJournal: async (id: string) => {
         journalMemory.delete(id);

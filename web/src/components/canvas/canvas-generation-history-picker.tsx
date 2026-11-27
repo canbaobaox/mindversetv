@@ -12,6 +12,7 @@ import {
     canvasGenerationHistorySelectStillValid,
     insertableCanvasGenerationHistoryTasks,
     generationHistoryVideoSource,
+    survivingGenerationHistoryImageOutputs,
     type CanvasGenerationHistorySelectGate,
 } from "@/lib/canvas/canvas-generation-history";
 import { generationTaskMode } from "@/lib/canvas/canvas-generation-task-sync";
@@ -158,7 +159,7 @@ function HistoryMediaPreview({ task }: { task: GenerationTask }) {
     const playback = useResourceVideoPlayback(media?.storageKey || "", media?.url || "", Boolean(media));
     if (error || playback.error) return <div className="flex size-full flex-col items-center justify-center gap-2 text-xs text-foreground/60" role="status">预览加载失败<Button size="small" type="text" onClick={event => { event.stopPropagation(); if (error) setRetry(value => value + 1); else playback.retry(); }}>重新加载</Button></div>;
     if (!playback.url) return <div className="grid size-full place-items-center"><Spin size="small" /></div>;
-    return <video src={playback.url} aria-label="生成视频预览" muted playsInline autoPlay preload="metadata" className="size-full object-cover" onError={() => { if (!playback.requestCompatible()) playback.fail(); }} />;
+    return <video src={playback.url} aria-label="生成视频预览" muted playsInline autoPlay preload="metadata" className="size-full object-cover" {...playback.videoFallbackProps} />;
 }
 
 function historyTaskDay(task: GenerationTask) {
@@ -172,7 +173,7 @@ function modeLabel(mode: string) {
 
 export function generationHistoryPreviewImageSrc(task: GenerationTask) {
     const mode = generationTaskMode(task);
-    if (mode === "audio") return "";
+    if (mode === "audio" || (mode === "image" && survivingGenerationHistoryImageOutputs(task) !== undefined)) return "";
     const inline = mode === "video"
         ? inlineImagePreviewSrc(task.previewPosterUrl || previewPosterFromResult(task))
         : inlineImagePreviewSrc(task.previewPosterUrl || task.previewUrl || previewFromResult(task));
@@ -197,6 +198,11 @@ function inlineImagePreviewSrc(value: string) {
 }
 
 function imagePreviewStorageKey(task: GenerationTask) {
+    const surviving = survivingGenerationHistoryImageOutputs(task);
+    if (surviving !== undefined) {
+        const resourceId = surviving[0]?.resourceId?.trim();
+        return resourceId ? resourceStorageKey(resourceId) : "";
+    }
     const output = task.outputs?.find((item) => item.mediaType === "image" && (item.outputIndex ?? 0) === 0 && item.resourceId?.trim());
     if (output?.resourceId) return resourceStorageKey(output.resourceId.trim());
     const preview = task.previewPosterUrl || task.previewUrl || previewFromResult(task);

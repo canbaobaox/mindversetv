@@ -121,6 +121,10 @@ func recordFromModel(row *model.AssistantTurn) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	referencedResources, err := decodeStringList(row.ReferencedResourceIDs)
+	if err != nil {
+		return Record{}, err
+	}
 	associatedAssets, err := decodeStringList(row.AssociatedAssetIDs)
 	if err != nil {
 		return Record{}, err
@@ -143,25 +147,25 @@ func recordFromModel(row *model.AssistantTurn) (Record, error) {
 		seen[pin.SkillID] = true
 	}
 	rec := Record{
-		ContinuationInvalidated:     row.ContinuationInvalidated,
-		GenerationAuthorizationJSON: row.GenerationAuthorizationJSON,
+		ContinuationInvalidated: row.ContinuationInvalidated,
 
-		DurableNativeSources: row.DurableNativeSources,
-		DurableSessionID:     row.DurableSessionID,
-		PermissionMode:       Mode(row.PermissionMode),
-		TurnID:               row.TurnID,
-		UserID:               row.UserID,
-		CanvasID:             row.CanvasID,
-		RevisionBefore:       row.RevisionBefore,
-		CreatedAt:            row.CreatedAt,
-		State:                row.State,
-		SelectedNodeIDs:      selected,
-		ReferencedAssetIDs:   referencedAssets,
-		ReferencedCanvasIDs:  referencedCanvas,
-		AssociatedAssetIDs:   associatedAssets,
-		AssociatedTaskIDs:    associatedTasks,
-		SkillPins:            SortedSkillPins(pins),
-		Undone:               row.Undone,
+		DurableNativeSources:  row.DurableNativeSources,
+		DurableSessionID:      row.DurableSessionID,
+		PermissionMode:        Mode(row.PermissionMode),
+		TurnID:                row.TurnID,
+		UserID:                row.UserID,
+		CanvasID:              row.CanvasID,
+		RevisionBefore:        row.RevisionBefore,
+		CreatedAt:             row.CreatedAt,
+		State:                 row.State,
+		SelectedNodeIDs:       selected,
+		ReferencedAssetIDs:    referencedAssets,
+		ReferencedCanvasIDs:   referencedCanvas,
+		ReferencedResourceIDs: referencedResources,
+		AssociatedAssetIDs:    associatedAssets,
+		AssociatedTaskIDs:     associatedTasks,
+		SkillPins:             SortedSkillPins(pins),
+		Undone:                row.Undone,
 	}
 	if !ValidMode(rec.PermissionMode) {
 		return Record{}, errCorruptStored()
@@ -191,28 +195,28 @@ func recordToModel(rec Record, now time.Time) *model.AssistantTurn {
 	pinsJSON, _ := json.Marshal(SortedSkillPins(rec.SkillPins))
 	snapshotsJSON, _ := json.Marshal(rec.CanvasSnapshots)
 	row := &model.AssistantTurn{
-		ContinuationInvalidated:     rec.ContinuationInvalidated,
-		GenerationAuthorizationJSON: rec.GenerationAuthorizationJSON,
+		ContinuationInvalidated: rec.ContinuationInvalidated,
 
-		DurableNativeSources: rec.DurableNativeSources,
-		DurableSessionID:     rec.DurableSessionID,
-		PermissionMode:       Mode(rec.PermissionMode),
-		CanvasSnapshotsJSON:  string(snapshotsJSON),
-		TurnID:               rec.TurnID,
-		UserID:               rec.UserID,
-		CanvasID:             rec.CanvasID,
-		RevisionBefore:       rec.RevisionBefore,
-		CreatedAt:            rec.CreatedAt,
-		UpdatedAt:            now,
-		State:                rec.effectiveState(),
-		SelectedNodeIDs:      encodeStringList(rec.SelectedNodeIDs),
-		ReferencedAssetIDs:   encodeStringList(rec.ReferencedAssetIDs),
-		ReferencedCanvasIDs:  encodeStringList(rec.ReferencedCanvasIDs),
-		AssociatedAssetIDs:   encodeStringList(rec.AssociatedAssetIDs),
-		AssociatedTaskIDs:    encodeStringList(rec.AssociatedTaskIDs),
-		SkillPinsJSON:        string(pinsJSON),
-		Undone:               rec.Undone,
-		Document:             string(rec.Document),
+		DurableNativeSources:  rec.DurableNativeSources,
+		DurableSessionID:      rec.DurableSessionID,
+		PermissionMode:        Mode(rec.PermissionMode),
+		CanvasSnapshotsJSON:   string(snapshotsJSON),
+		TurnID:                rec.TurnID,
+		UserID:                rec.UserID,
+		CanvasID:              rec.CanvasID,
+		RevisionBefore:        rec.RevisionBefore,
+		CreatedAt:             rec.CreatedAt,
+		UpdatedAt:             now,
+		State:                 rec.effectiveState(),
+		SelectedNodeIDs:       encodeStringList(rec.SelectedNodeIDs),
+		ReferencedAssetIDs:    encodeStringList(rec.ReferencedAssetIDs),
+		ReferencedCanvasIDs:   encodeStringList(rec.ReferencedCanvasIDs),
+		ReferencedResourceIDs: encodeStringList(rec.ReferencedResourceIDs),
+		AssociatedAssetIDs:    encodeStringList(rec.AssociatedAssetIDs),
+		AssociatedTaskIDs:     encodeStringList(rec.AssociatedTaskIDs),
+		SkillPinsJSON:         string(pinsJSON),
+		Undone:                rec.Undone,
+		Document:              string(rec.Document),
 	}
 	if rec.CreatedAt.IsZero() {
 		row.CreatedAt = now

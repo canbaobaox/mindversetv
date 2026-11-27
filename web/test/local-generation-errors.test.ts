@@ -43,6 +43,14 @@ test("local runtime preserves remote upload, object storage, and HTTP 403 causes
         expect(msg).not.toContain("没有使用该模型的权限");
     }
 
+    // Backend-authored storage failures tagged with reference_upload_failed preserve code-specific hints verbatim.
+    expect(
+        generationErrorMessage({
+            code: "reference_upload_failed",
+            message: "对象存储签名校验失败（HTTP 403，SignatureDoesNotMatch），本次尚未开始生成。请检查 Secret Access Key、区域代码（如 ap-guangzhou / auto）及本机系统时间后重试。",
+        }),
+    ).toBe("对象存储签名校验失败（HTTP 403，SignatureDoesNotMatch），本次尚未开始生成。请检查 Secret Access Key、区域代码（如 ap-guangzhou / auto）及本机系统时间后重试。");
+
     for (const unreadable of [
         "素材已上传，但公网地址不可读取（HTTP 403），请检查公开读取设置",
         new ApiError("素材已上传，但公网地址不可读取（HTTP 403），请检查公开读取设置", { status: 403 }),

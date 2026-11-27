@@ -3,7 +3,6 @@ import { generationTaskMetadata, runCanvasGenerationTaskToConsumer } from "@/lib
 import { removeCanvasNodes } from "@/lib/canvas/canvas-project-domain";
 import { cancelIncompleteImageBatch } from "@/lib/canvas/canvas-image-batch-retry";
 import { isolateCopiedNodeMetadata } from "@/lib/canvas/canvas-node-copy";
-import { prepareInPlaceMediaVersion } from "@/lib/canvas/canvas-media-versions";
 import { assistantProposalProgress } from "@/pages/canvas/canvas-assistant-copy";
 import { canvasGenerationFailureMetadata, canvasGenerationTaskNodes, canvasTaskFailureMetadata } from "@/pages/canvas/canvas-generation-failure";
 import { canReloadCanvasNodeResource, isNodeRegenerateBlocked } from "@/lib/task-outcome";
@@ -132,9 +131,9 @@ test("image submission waits for the target node save and shares one submission 
 });
 
 for (const [error, guidance] of [
-    [new ApiError("保存冲突", { status: 409, reason: "conflict" }), "请点击画布顶部的保存状态"],
-    [new ApiError("版本过期", { status: 409, reason: "stale_revision" }), "请点击画布顶部的保存状态"],
-    [new CanvasBackendSubmitPausedError(), "请点击画布顶部的保存状态"],
+    [new ApiError("保存冲突", { status: 409, reason: "conflict" }), "并发更新"],
+    [new ApiError("版本过期", { status: 409, reason: "stale_revision" }), "并发更新"],
+    [new CanvasBackendSubmitPausedError(), "画布正在删除"],
     [new Error("disk failure"), "画布尚未保存"],
 ] as const) {
     test(`a rejected target save creates no paid task: ${error.name}`, async () => {
@@ -159,8 +158,6 @@ test("a target deleted while saving stops before submission and is not recreated
 test("abort and a canvas owner change during save cannot proceed to a paid task", async () => {
     const controller = new AbortController();
     await expect(persistCanvasGenerationTarget({ ...input, signal: controller.signal }, async () => { controller.abort(); })).rejects.toMatchObject({ name: "AbortError" });
-    const refNode = { id: "ref-image", type: CanvasNodeType.Image, title: "参考图", position: { x: 0, y: 0 }, width: 320, height: 320, metadata: { status: "success" as const, storageKey: "resource:res-ref", content: "/api/resources/res-ref/file" } };
-    useCanvasStore.setState({ projects: [{ ...structuredClone(project), nodes: [...project.nodes, refNode] }] });
     let current = true;
     let persistAttempts = 0;
     await expect(
@@ -168,19 +165,14 @@ test("abort and a canvas owner change during save cannot proceed to a paid task"
             {
                 ...input,
                 isCurrent: () => current,
-                ensureNodeAsset: async () => {
-                    current = false;
-                    return { assetId: "asset-ref", created: false, linkedToProject: false, confirmed: true };
-                },
             },
             async () => {
                 persistAttempts += 1;
-                throw new ApiError("画布媒体尚未进入素材库，请等待同步完成后重试", { status: 400 });
+                current = false;
             },
         ),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(persistAttempts).toBe(1);
-    expect(useCanvasStore.getState().projects[0]?.nodes.find((item) => item.id === "ref-image")?.metadata?.assetId).toBeUndefined();
 
     let hookCurrent = true;
     let hookPersistAttempts = 0;
@@ -190,17 +182,13 @@ test("abort and a canvas owner change during save cannot proceed to a paid task"
             {
                 ...input,
                 clientOperationId: "test-image-save-owner-change",
-                ensureNodeAsset: async () => {
-                    hookCurrent = false;
-                    return { assetId: "asset-ref", created: false, linkedToProject: false, confirmed: true };
-                },
             } as Parameters<typeof runCanvasGenerationTaskToConsumer>[0],
             {
                 isCurrent: () => hookCurrent,
                 prepareTarget: (options) =>
                     persistCanvasGenerationTarget(options, async () => {
                         hookPersistAttempts += 1;
-                        throw new ApiError("画布媒体尚未进入素材库，请等待同步完成后重试", { status: 400 });
+                        hookCurrent = false;
                     }),
                 bindTask: () => undefined,
                 consumeTask: async () => undefined,
@@ -312,8 +300,6 @@ test("executor retains original batch outputs after layout deletion, cancellatio
     const finished = receipts.map(node => outputs.includes(node.id) ? { ...node, metadata: { ...node.metadata, taskStatus: "succeeded", status: "success" as const, content: "resource:ready" } } : node);
     expect(assistantProposalProgress(proposal, finished).ready).toBe(true);
     expect(isolateCopiedNodeMetadata(root, new Map()).generationOutputNodeIds).toBeUndefined();
-    const snapshot = prepareInPlaceMediaVersion([{ ...root, metadata: { ...root.metadata, content: "resource:ready" } }], root.id).find(node => node.id !== root.id)!;
-    expect(snapshot.metadata?.generationOutputNodeIds).toBeUndefined();
     const regenerated = await createTargets(root, finished, "2");
     expect(regenerated.find(node => node.id === root.id)?.metadata?.generationOutputNodeIds?.some(id => outputs.includes(id))).toBe(false);
     const single = await createTargets(root, finished, "1");

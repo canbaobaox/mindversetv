@@ -1,10 +1,11 @@
-import { acceptCanvasExternalRevisionCandidate, applyExternalCanvasRevision, canvasDocumentBase, canvasExternalRevisionConflict, clearCanvasDocumentBase, flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { canvasDocumentBase, clearCanvasDocumentBase, flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { ApiError, http } from "@/services/api/request";
-import { commitCanvasDocument } from "@/services/api/operations";
+import { commitCanvasDocument, patchCanvasDocument } from "@/services/api/operations";
+import { buildCanvasDocumentPatch } from "@/lib/canvas/canvas-document-patch";
 import { notifyCanvasRefresh } from "@/services/local-workspace-sync";
-import { canvasBackendSubmitPaused, CanvasBackendSubmitPausedError, clearCanvasBackendSaveProgress, handleRejectedCanvasBackendSave, isCanvasRevisionConflict, isCanvasSubmitControlError, preserveCanvasConflictDraft, resumeCanvasBackendSubmit } from "@/services/canvas-revision-conflict";
-import { CanvasJournalError, clearCanvasOperationJournal, loadCanvasOperationJournal, newCanvasCommitOperationId, peekCanvasOperationJournal, recordConfirmedCanvasCommit, updateCanvasOperationJournal } from "@/services/canvas-operation-journal";
+import { CanvasBackendSubmitPausedError, clearCanvasBackendSaveProgress, isCanvasRevisionConflict, isCanvasSubmitControlError } from "@/services/canvas-revision-conflict";
+import { CanvasJournalError, clearCanvasOperationJournal, loadCanvasOperationJournal, newCanvasCommitOperationId, peekCanvasOperationJournal, recordConfirmedCanvasCommit, updateCanvasOperationJournal, type CanvasCommitPayload } from "@/services/canvas-operation-journal";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { normalizeCanvasProjectGraph, sameCanvasDocument } from "@/lib/canvas/canvas-content";
@@ -13,14 +14,13 @@ import { settleInFlightGenerationOverlay } from "@/lib/canvas/canvas-document-re
 import { traceCanvasGraph } from "@/lib/canvas/canvas-graph-trace";
 import {
     hydrateLocalCanvasProjectsFromBackend,
+    isNotFoundApiError,
     openLocalCanvasProjectFromBackend,
     readLocalCanvasProjectFromBackend,
     restoreLocalCanvasProjectFromHistory,
 } from "./local-workspace-hydration";
 import {
     alignLiveAfterConfirmedRemote,
-    holdExternalCanvasRevisionForEditor,
-    pauseForExternalCandidate,
     persistProjectedCanvas,
     reconcileRemoteCanvasUnlocked,
     replayPendingCanvasProjection,
@@ -33,12 +33,16 @@ import {
     canvasDeleting,
     CanvasProjectionError,
     canvasProjectionLocks,
-    canvasSubmitBlocked,
     confirmRemoteDocument,
+    flushAllPendingCanvasOverlapWrites,
+    flushPendingCanvasOverlapWrite,
     getUnconfirmedCanvasDiagnostic,
     hasUnconfirmedCanvasEdits,
     incompleteCanvasProjection,
+    markCanvasMergeOverlap,
     openLocalCanvasProject,
+    pendingForceHistorySnapshotEpochs,
+    pendingOverlapJournalWrites,
     publishCanvasSaveProgress,
     recordServerConfirmedCanvas,
     saveKey,
@@ -55,8 +59,8 @@ export {
     CanvasProjectionError,
     getUnconfirmedCanvasDiagnostic,
     hasUnconfirmedCanvasEdits,
-    holdExternalCanvasRevisionForEditor,
     hydrateLocalCanvasProjectsFromBackend,
+    markCanvasMergeOverlap,
     openLocalCanvasProject,
     openLocalCanvasProjectFromBackend,
     readLocalCanvasProjectFromBackend,
@@ -120,12 +124,31 @@ function syncLocalCanvasProject(id: string): Promise<void> {
     return tail;
 }
 
-async function applyAcceptedCanvasSave(id: string, submitted: CanvasProject, saved: CanvasSaveSummary, ackOperationId?: string) {
+async function applyAcceptedCanvasSave(
+    id: string,
+    submitted: CanvasProject,
+    saved: CanvasSaveSummary,
+    ackOperationId?: string,
+    ackedForceHistorySnapshotEpoch?: number,
+) {
     const scope = getActiveUserScope();
+    const key = saveKey(scope, id);
+    if (ackedForceHistorySnapshotEpoch) {
+        await flushPendingCanvasOverlapWrite(id, scope);
+    }
     const confirmed = saved.revision != null ? { ...submitted, revision: saved.revision, updatedAt: saved.updatedAt ?? submitted.updatedAt } : submitted;
-    const pendingExternal = canvasExternalRevisionConflict(scope, id);
-    const journal = await recordConfirmedCanvasCommit(confirmed, scope, ackOperationId ? { ackOperationId } : {});
+    const journal = await recordConfirmedCanvasCommit(confirmed, scope, {
+        ...(ackOperationId ? { ackOperationId } : {}),
+        ...(ackedForceHistorySnapshotEpoch ? { clearForceHistorySnapshotEpoch: ackedForceHistorySnapshotEpoch } : {}),
+    });
     recordServerConfirmedCanvas(journal.confirmedSnapshot ?? confirmed, scope);
+    if (ackedForceHistorySnapshotEpoch) {
+        const currentMemEpoch = pendingForceHistorySnapshotEpochs.get(key) ?? 0;
+        const currentJournalEpoch = journal.pendingForceHistorySnapshotEpoch ?? 0;
+        if (currentMemEpoch <= ackedForceHistorySnapshotEpoch && currentJournalEpoch <= ackedForceHistorySnapshotEpoch) {
+            pendingForceHistorySnapshotEpochs.delete(key);
+        }
+    }
     useCanvasStore.setState((state) => ({
         projects: state.projects.map((current) => current.id === id
             ? {
@@ -135,9 +158,6 @@ async function applyAcceptedCanvasSave(id: string, submitted: CanvasProject, sav
             }
             : current),
     }));
-    if (!pendingExternal && !canvasExternalRevisionConflict(scope, id)) {
-        resumeCanvasBackendSubmit(id, scope);
-    }
     const pending = journal.pendingProjection;
     if (pending) {
         const savedRevision = saved.revision ?? confirmed.revision ?? 0;
@@ -150,19 +170,16 @@ async function applyAcceptedCanvasSave(id: string, submitted: CanvasProject, sav
     });
 }
 
-async function putCanvasProjectToBackend(id: string, project: CanvasProject, endpoint: string, projectForSave: CanvasProject) {
-    try {
-        const response = await http.put<{ project: CanvasSaveSummary }>(
-            endpoint,
-            { project: projectForSave },
-            {},
-        );
-        if (!response.project || response.project.id !== id) throw new Error("画布保存回执无效，修改仍保留在本地，请重试");
-        return response.project;
-    } catch (error) {
-        await handleRejectedCanvasBackendSave(id, project, error, getActiveUserScope());
-        throw error;
-    }
+const MAX_COMMIT_REBASE_ATTEMPTS = 4;
+
+async function putCanvasProjectToBackend(id: string, endpoint: string, projectForSave: CanvasProject) {
+    const response = await http.put<{ project: CanvasSaveSummary }>(
+        endpoint,
+        { project: projectForSave },
+        {},
+    );
+    if (!response.project || response.project.id !== id) throw new Error("画布保存回执无效，修改仍保留在本地，请重试");
+    return response.project;
 }
 
 function isInitialCanvasCreate(project: CanvasProject, scope: string) {
@@ -179,47 +196,66 @@ async function commitLiveCanvasDocumentUnlocked(id: string) {
     const scope = getActiveUserScope();
     await replayPendingCanvasProjection(id, scope, { throwOnFailure: true });
     const journal = await loadCanvasOperationJournal(id, scope);
-    // 一次提交过程最多因 revision 过时读取并合并一次服务端最新内容；再被拒就暂停。
-    let rebaseAllowed = true;
+    let retriesLeft = MAX_COMMIT_REBASE_ATTEMPTS;
     let sent = false;
     if (journal.inFlight) {
-        const outcome = await sendCanvasDocumentCommit(id, journal.inFlight.operationId, journal.inFlight.payload, rebaseAllowed);
-        if (outcome === "rebased") rebaseAllowed = false;
+        const outcome = await sendCanvasDocumentCommit(id, journal.inFlight.operationId, journal.inFlight.payload, retriesLeft > 0);
+        if (outcome === "rebased") retriesLeft -= 1;
         sent = true;
     }
-    if (canvasDeleting.has(saveKey(scope, id)) || canvasSubmitBlocked(id, scope)) {
+    if (canvasDeleting.has(saveKey(scope, id))) {
         const live = openLocalCanvasProject(id);
         const current = peekCanvasOperationJournal(id, scope);
         if (sent && live && current?.confirmedSnapshot && sameCanvasDocument(current.confirmedSnapshot, live) && !current.inFlight) return;
-        throw new CanvasBackendSubmitPausedError(canvasDeleting.has(saveKey(scope, id)) ? "画布正在删除，未提交" : "画布有未处理的外部改动，本次未提交");
+        throw new CanvasBackendSubmitPausedError("画布正在删除，未提交");
     }
-    const outcome = await queueAndSendLiveCanvasDocument(id, peekCanvasOperationJournal(id, scope)?.confirmedSnapshot ?? null, rebaseAllowed);
-    if (outcome !== "rebased") return;
-    // 合并干净：带着新的 expectedRevision 重试一次，这次不再允许合并。
-    await queueAndSendLiveCanvasDocument(id, peekCanvasOperationJournal(id, scope)?.confirmedSnapshot ?? null, false);
+    for (;;) {
+        const confirmed = peekCanvasOperationJournal(id, scope)?.confirmedSnapshot ?? null;
+        const outcome = await queueAndSendLiveCanvasDocument(id, confirmed, retriesLeft > 0);
+        if (outcome !== "rebased") return;
+        retriesLeft -= 1;
+    }
 }
 
 async function queueAndSendLiveCanvasDocument(id: string, confirmed: CanvasProject | null, rebaseAllowed: boolean): Promise<CanvasCommitOutcome | undefined> {
     const scope = getActiveUserScope();
     const project = openLocalCanvasProject(id);
     if (!project) return undefined;
+    if (project.summaryOnly) {
+        throw new Error("画布尚未完整加载，请先打开画布后再保存");
+    }
     const settled = confirmed
         ? settleInFlightGenerationOverlay({ base: confirmed, local: project, remote: confirmed })
         : project;
     if (settled !== project) applyLiveCanvasProject(id, settled, false);
     if (isInitialCanvasCreate(settled, scope)) {
-        const saved = await putCanvasProjectToBackend(id, settled, `/canvas-projects/${encodeURIComponent(id)}`, settled);
-        if (!saved) return undefined;
-        await applyAcceptedCanvasSave(id, settled, saved);
-        return "accepted";
+        try {
+            const saved = await putCanvasProjectToBackend(id, `/canvas-projects/${encodeURIComponent(id)}`, settled);
+            if (!saved) return undefined;
+            await applyAcceptedCanvasSave(id, settled, saved);
+            return "accepted";
+        } catch (error) {
+            if (rebaseAllowed && isCanvasRevisionConflict(error) && await rebaseAfterRejectedCanvasCommit(id, 0)) {
+                return "rebased";
+            }
+            throw error;
+        }
     }
+    await flushPendingCanvasOverlapWrite(id, scope);
     const queued = await updateCanvasOperationJournal(id, scope, (current) => {
         if (current.inFlight) return;
         if (current.confirmedSnapshot && sameCanvasDocument(current.confirmedSnapshot, settled) && !current.inFlight) return;
         const expectedRevision = current.confirmedRevision || settled.revision || 0;
+        const forceEpoch = Math.max(
+            current.pendingForceHistorySnapshotEpoch ?? 0,
+            pendingForceHistorySnapshotEpochs.get(saveKey(scope, id)) ?? 0,
+        );
+        const patch = current.confirmedSnapshot ? buildCanvasDocumentPatch(current.confirmedSnapshot, settled, { forceHistorySnapshot: forceEpoch > 0 }) : null;
+        if (current.confirmedSnapshot && !patch) return;
         const operationId = newCanvasCommitOperationId();
         return {
             ...current,
+            ...(forceEpoch > 0 ? { pendingForceHistorySnapshotEpoch: forceEpoch } : {}),
             inFlight: {
                 operationId,
                 expectedRevision,
@@ -227,6 +263,8 @@ async function queueAndSendLiveCanvasDocument(id: string, confirmed: CanvasProje
                     canvasId: id,
                     expectedRevision,
                     document: structuredClone(settled),
+                    ...(patch ? { patch: structuredClone(patch) } : {}),
+                    ...(forceEpoch > 0 ? { forceHistorySnapshotEpoch: forceEpoch } : {}),
                 },
             },
         };
@@ -239,9 +277,8 @@ async function queueAndSendLiveCanvasDocument(id: string, confirmed: CanvasProje
 type CanvasCommitOutcome = "accepted" | "rebased";
 
 /**
- * 被 revision 过时拒绝后读一次服务端最新文档并尝试三路合并。
- * 只有读到比被拒的 expectedRevision 更新的版本、且合并干净时返回 true，
- * 调用方据此带新的 expectedRevision 重试一次；读到的版本没有前进时重试必然再被拒，直接暂停。
+ * 遇到极少数并发 revision 过时拒绝时读一次服务端最新文档并做确定性合并，
+ * 随后带着推进后的 revision 重试。
  */
 async function rebaseAfterRejectedCanvasCommit(id: string, rejectedRevision: number) {
     let remote: CanvasProject;
@@ -263,12 +300,54 @@ async function rebaseAfterRejectedCanvasCommit(id: string, rejectedRevision: num
 async function sendCanvasDocumentCommit(
     id: string,
     operationId: string,
-    payload: { canvasId: string; expectedRevision: number; document: CanvasProject },
+    payload: CanvasCommitPayload,
     rebaseAllowed = false,
 ): Promise<CanvasCommitOutcome> {
     traceCanvasGraph("repository.submit", { document: payload.document, confirmed: canvasDocumentBase(id, getActiveUserScope())?.snapshot });
     const scope = getActiveUserScope();
     try {
+        if (payload.patch) {
+            const result = await patchCanvasDocument({
+                operationId,
+                ...payload.patch,
+            });
+            const revision = result.revision || result.result?.revision;
+            const mergedDoc = result.result?.document
+                ? normalizeCanvasProjectGraph({
+                    ...(result.result.document as unknown as CanvasProject),
+                    id,
+                    revision: revision ?? payload.document.revision,
+                })
+                : undefined;
+            const acceptedDoc = mergedDoc ?? payload.document;
+            const saved: CanvasSaveSummary = {
+                id,
+                title: result.result?.title ?? acceptedDoc.title,
+                createdAt: acceptedDoc.createdAt,
+                updatedAt: result.result?.updatedAt ?? acceptedDoc.updatedAt,
+                revision,
+            };
+            const ackedForceEpoch = payload.patch.forceHistorySnapshot
+                ? (payload.forceHistorySnapshotEpoch ?? 1)
+                : undefined;
+            await applyAcceptedCanvasSave(id, acceptedDoc, saved, operationId, ackedForceEpoch);
+            if (mergedDoc) {
+                const liveNow = openLocalCanvasProject(id);
+                const aligned = alignLiveAfterConfirmedRemote({
+                    id,
+                    scope,
+                    remote: mergedDoc,
+                    base: payload.document,
+                    hadLive: Boolean(liveNow),
+                    onApplied: notifyCanvasRefresh,
+                });
+                await flushPendingCanvasOverlapWrite(id, scope);
+                if (aligned && liveNow && !sameCanvasDocument(aligned, mergedDoc)) {
+                    scheduleLocalCanvasBackendSync(id);
+                }
+            }
+            return "accepted";
+        }
         const result = await commitCanvasDocument({
             operationId,
             canvasId: payload.canvasId,
@@ -291,7 +370,6 @@ async function sendCanvasDocumentCommit(
                 return { ...current, inFlight: null };
             });
             if (rebaseAllowed && await rebaseAfterRejectedCanvasCommit(id, payload.expectedRevision)) return "rebased";
-            await handleRejectedCanvasBackendSave(id, payload.document, error, scope);
             throw error;
         }
         if (!shouldKeepCanvasCommitIdentity(error)) {
@@ -326,6 +404,9 @@ export async function persistCanvasDocument(id: string, patch: CanvasDocumentPer
     const scope = getActiveUserScope();
     const localMode = isLocalWorkspaceMode();
     const previous = useCanvasStore.getState().openProject(id);
+    if (previous?.summaryOnly) {
+        throw new Error("画布尚未完整加载，请先打开画布后再保存");
+    }
     useCanvasStore.getState().updateProject(id, patch);
     const attempted = useCanvasStore.getState().openProject(id);
     try {
@@ -382,6 +463,13 @@ export async function adoptServerConfirmedGenerationPatch(rawProject: CanvasProj
             }
             const live = openLocalCanvasProject(project.id);
             if (!live) return undefined;
+            if (live.summaryOnly) {
+                applyLiveCanvasProject(project.id, project, false);
+                void flushCanvasStorePersistence().catch((error) => {
+                    console.error("画布本地缓存写入失败，生成结果已保存到桌面数据库", { id: project.id, error });
+                });
+                return project;
+            }
             // 同一份绑定回执也可能晚于编辑器的 loading/error 状态：
             // 版本没变仍须结算同任务结果，不解除已有冲突或覆盖用户编辑。
             const settled = settleInFlightGenerationOverlay({ base: journal.confirmedSnapshot, local: live, remote: project });
@@ -396,11 +484,6 @@ export async function adoptServerConfirmedGenerationPatch(rawProject: CanvasProj
         const liveAtStart = openLocalCanvasProject(project.id);
         const existed = Boolean(liveAtStart);
         const base = journal.pendingProjection?.base ?? journal.confirmedSnapshot ?? canvasDocumentBase(project.id, journalScope)?.snapshot ?? null;
-        const dirty = Boolean(liveAtStart && (!base || !sameCanvasDocument(base, liveAtStart)));
-        if (dirty && !base) {
-            pauseForExternalCandidate(project.id, project, journalScope);
-            return liveAtStart ?? undefined;
-        }
         let confirmed;
         try {
             confirmed = await confirmRemoteDocument(project, journalScope);
@@ -417,6 +500,7 @@ export async function adoptServerConfirmedGenerationPatch(rawProject: CanvasProj
             remote: project,
             base,
             hadLive: existed,
+            onApplied: notifyCanvasRefresh,
         });
         if (!openLocalCanvasProject(project.id)) return undefined;
         await persistProjectedCanvas(project.id, journalScope, confirmed.pendingProjection?.identity, { throwOnFailure: true });
@@ -450,6 +534,8 @@ export function resetLocalCanvasBackendSaveState() {
     backendSaveTails.clear();
     canvasProjectionLocks.clear();
     canvasDeleting.clear();
+    pendingForceHistorySnapshotEpochs.clear();
+    pendingOverlapJournalWrites.clear();
     serverConfirmedCanvasSnapshots.clear();
     setCanvasProjectionStoreFlushForTest(null);
 }
@@ -498,60 +584,13 @@ export async function refreshLocalCanvasProjectIfChanged(id: string) {
     }
 }
 
-/**
- * 用户显式选择以最新内容为准：用冲突时保留的远端候选替换本地文档。
- *
- * 候选本身就是服务端已确认的内容，因此这里只把它落到本地并更新基线，
- * 不再回写一次服务端（回写只会平白推进 revision，甚至在服务端又变化时被拒）。
- * 替换前先把本地内容存成草稿；草稿没存成就不替换。
- * 提交被拒但还没有候选时，先读一次服务端最新内容作为候选。
- */
-export async function acceptExternalCanvasRevision(id: string) {
-    return withCanvasProjection(getActiveUserScope(), id, () => acceptExternalCanvasRevisionUnlocked(id));
-}
-
-async function acceptExternalCanvasRevisionUnlocked(id: string) {
-    const scope = getActiveUserScope();
-    if (!canvasExternalRevisionConflict(scope, id) && canvasBackendSubmitPaused(id, scope) && openLocalCanvasProject(id)) {
-        const remote = await readLocalCanvasProjectFromBackend(id);
-        if (remote.id === id && openLocalCanvasProject(id)) applyExternalCanvasRevision(remote, { hasUnsyncedEdits: true, scope });
-    }
-    const conflict = canvasExternalRevisionConflict(scope, id);
-    if (!conflict) return undefined;
-    const candidate = conflict.candidate;
-    const live = openLocalCanvasProject(id);
-    if (live && !sameCanvasDocument(live, candidate)) {
-        await preserveCanvasConflictDraft(id, live, scope, { required: true });
-    }
-    const journal = await recordConfirmedCanvasCommit(candidate, scope, { unflushedProjection: true });
-    await updateCanvasOperationJournal(id, scope, (current) => {
-        if (!current.inFlight) return;
-        return { ...current, inFlight: null };
-    });
-    recordServerConfirmedCanvas(journal.confirmedSnapshot ?? candidate, scope);
-    const decision = acceptCanvasExternalRevisionCandidate(id, {
-        scope,
-        onApplied: (project) => {
-            notifyCanvasRefresh(project, undefined);
-        },
-    });
-    if (!decision || decision.kind !== "apply") return undefined;
-    resumeCanvasBackendSubmit(id, scope);
-    await persistProjectedCanvas(id, scope, journal.pendingProjection?.identity, { throwOnFailure: false });
-    return decision.project;
-}
-
-/** 该画布是否存在被本地编辑挡住的外部改动。 */
-export function pendingExternalCanvasRevision(id: string) {
-    return canvasExternalRevisionConflict(getActiveUserScope(), id);
-}
-
 export async function flushLocalWorkspace() {
-    await flushCanvasStorePersistence();
+    await Promise.all([flushCanvasStorePersistence(), flushAllPendingCanvasOverlapWrites()]);
 }
 
 export async function flushLocalCanvasBackendSaves(): Promise<void> {
     const scope = getActiveUserScope();
+    await flushAllPendingCanvasOverlapWrites(scope);
     const prefix = `${scope}\0`;
     for (const [key, timer] of [...backendSaveTimers.entries()]) {
         if (!key.startsWith(prefix)) continue;
@@ -589,38 +628,89 @@ async function waitForCanvasBackendIdle(id: string, scope: string) {
     if (timer) publishCanvasSaveProgress(id, scope, true);
 }
 
-export async function deleteLocalCanvasProjects(ids: readonly string[]) {
+export async function deleteLocalCanvasProjects(ids: readonly string[], options: { recordHistory?: boolean } = {}) {
     const scope = getActiveUserScope();
+    const recordHistory = options.recordHistory !== false;
     const selected = [...new Set(ids)];
-    const snapshots = selected
-        .map((id) => useCanvasStore.getState().openProject(id))
-        .filter((project): project is CanvasProject => Boolean(project));
     for (const id of selected) canvasDeleting.add(saveKey(scope, id));
     try {
         await Promise.all(selected.map((id) => waitForCanvasBackendIdle(id, scope)));
+        const snapshots: CanvasProject[] = [];
+        for (const id of selected) {
+            const current = useCanvasStore.getState().openProject(id);
+            if (!current) continue;
+            if (current.summaryOnly && recordHistory) {
+                let journalInFlight: CanvasProject | undefined;
+                try {
+                    const journal = await loadCanvasOperationJournal(id, scope);
+                    const candidate = journal.inFlight?.payload?.document;
+                    if (candidate && !candidate.summaryOnly) {
+                        journalInFlight = normalizeCanvasProjectGraph(candidate);
+                    }
+                } catch {
+                    // 日记读取失败时回退到后端完整读取。
+                }
+                if (journalInFlight) {
+                    snapshots.push(journalInFlight);
+                    continue;
+                }
+                try {
+                    snapshots.push(await readLocalCanvasProjectFromBackend(id));
+                } catch (error) {
+                    if (!isNotFoundApiError(error)) {
+                        throw error;
+                    }
+                }
+            } else {
+                snapshots.push(current);
+            }
+        }
         const deleted: string[] = [];
         const failures: unknown[] = [];
         for (const id of selected) {
+            const snapshot = snapshots.find((item) => item.id === id);
+            const localOnlyRollback = !recordHistory
+                && (snapshot?.revision ?? 0) === 0
+                && !(peekCanvasOperationJournal(id, scope)?.confirmedRevision);
+            let backendDeleteWarning: unknown;
             try {
-                await http.delete(`/canvas-projects/${encodeURIComponent(id)}`);
+                try {
+                    await http.delete(`/canvas-projects/${encodeURIComponent(id)}`);
+                } catch (error) {
+                    if (isNotFoundApiError(error) && (!recordHistory || (snapshot?.revision ?? 0) === 0)) {
+                        // 回滚或 revision=0 草稿后端明确返回 404，视为后端已不存在。
+                    } else if (localOnlyRollback) {
+                        // 未曾确认落库的 revision=0 回滚草稿，即使后端 DELETE 返回 5xx 也必须清掉本地残留，
+                        // 同时保留该后端错误上报给调用方，避免静默吞掉响应丢失导致的潜在远端残留。
+                        backendDeleteWarning = error;
+                    } else {
+                        throw error;
+                    }
+                }
+                await flushPendingCanvasOverlapWrite(id, scope);
                 await clearCanvasOperationJournal(id, scope);
                 clearCanvasDocumentBase(id, scope);
+                pendingForceHistorySnapshotEpochs.delete(saveKey(scope, id));
                 serverConfirmedCanvasSnapshots.delete(saveKey(scope, id));
                 clearCanvasBackendSaveProgress(id, scope);
                 deleted.push(id);
+                if (backendDeleteWarning !== undefined) {
+                    failures.push(backendDeleteWarning);
+                }
             } catch (error) {
                 console.error("画布后端删除失败", { id, error });
                 failures.push(error);
-                if (!useCanvasStore.getState().openProject(id)) {
-                    const snapshot = snapshots.find((item) => item.id === id);
-                    if (snapshot) useCanvasStore.getState().restoreProject(snapshot);
+                if (!useCanvasStore.getState().openProject(id) && snapshot) {
+                    useCanvasStore.getState().restoreProject(snapshot);
                 }
             }
         }
         if (deleted.length) {
             useCanvasStore.getState().deleteProjects(deleted);
-            const removed = snapshots.filter((item) => deleted.includes(item.id));
-            if (removed.length) useCanvasHistoryStore.getState().recordDeletedProjects(removed);
+            if (recordHistory) {
+                const removed = snapshots.filter((item) => deleted.includes(item.id) && !item.summaryOnly);
+                if (removed.length) useCanvasHistoryStore.getState().recordDeletedProjects(removed);
+            }
             await flushCanvasStorePersistence().catch((error) => {
                 console.error("画布本地缓存写入失败，已从桌面数据库删除", { ids: deleted, error });
             });

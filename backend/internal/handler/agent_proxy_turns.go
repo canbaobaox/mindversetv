@@ -30,6 +30,8 @@ func registerAgentProxyTurnRoutes(
 	guard func(*gin.Context, bool) bool,
 	hostJSON func(*gin.Context, string, string, []byte),
 	requireOwnedCanvas func(*gin.Context, string) (json.RawMessage, bool),
+	hostOpsURL func(*gin.Context) string,
+	launchToken func(*gin.Context) string,
 ) {
 	r.POST("/assistant/turns/:turnId/undo", func(c *gin.Context) {
 		if !guard(c, true) {
@@ -97,7 +99,7 @@ func registerAgentProxyTurnRoutes(
 		ok(c, gin.H{"runnable": true})
 	})
 
-	r.POST("/assistant/turns/:turnId/proposals/:proposalId/production", func(c *gin.Context) {
+	confirmProductionHandler := func(c *gin.Context, autoBudget bool) {
 		if strings.TrimSpace(c.GetHeader("X-Beeftv-Client")) != "" || isAssistantHostRequest(c, svc) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"code":   http.StatusForbidden,
@@ -109,7 +111,7 @@ func registerAgentProxyTurnRoutes(
 		if !guard(c, true) {
 			return
 		}
-		_, payload, valid := readAssistantBody(c, app.AssistantProductionConfirmation{})
+		_, payload, valid := readAssistantBodyLimit(c, app.AssistantProductionConfirmation{}, agentProductionConfirmMaxBody)
 		if !valid {
 			return
 		}
@@ -121,12 +123,21 @@ func registerAgentProxyTurnRoutes(
 			return
 		}
 		payload.ProposalID = c.Param("proposalId")
+		payload.AutoBudget = autoBudget
 		result, err := svc.ConfirmAssistantProduction(c.GetString("agentUserId"), c.Param("turnId"), payload)
 		if err != nil {
 			failAssistantProposal(c, err)
 			return
 		}
 		ok(c, result)
+	}
+
+	r.POST("/assistant/turns/:turnId/proposals/:proposalId/production", func(c *gin.Context) {
+		confirmProductionHandler(c, false)
+	})
+
+	r.POST("/assistant/turns/:turnId/proposals/:proposalId/auto-confirm", func(c *gin.Context) {
+		confirmProductionHandler(c, true)
 	})
 
 	r.GET("/assistant/generation-orders", func(c *gin.Context) {
@@ -176,6 +187,17 @@ func registerAgentProxyTurnRoutes(
 		c.Header("X-Beeftv-Turn-Admission", "rejected")
 		if !guard(c, true) {
 			return
+		}
+		if host != nil {
+			if state := host.State(); (state.Starting || state.Running) && !state.TestOwned {
+				if provider, reason := host.ResolveProvider(); reason == "" {
+					if _, ensureErr := host.EnsureFresh(c.Request.Context(), provider, hostOpsURL(c), launchToken(c)); ensureErr != nil {
+						c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "reason": "host_start_failed",
+							"msg": "内置创作助手宿主重启失败，请重试"})
+						return
+					}
+				}
+			}
 		}
 		if host == nil || host.Endpoint() == "" {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "reason": "host_unreachable",
@@ -231,6 +253,8 @@ func registerAgentProxyTurnRoutes(
 		for _, attachment := range payload.Attachments {
 			if attachment.AssetID != "" {
 				payload.References = append(payload.References, assistantReference{Kind: "asset", ID: attachment.AssetID})
+			} else if attachment.Kind == "file" && strings.TrimSpace(attachment.ResourceID) != "" {
+				payload.References = append(payload.References, assistantReference{Kind: "resource", ID: strings.TrimSpace(attachment.ResourceID)})
 			}
 		}
 		// 额外素材/画布引用必须由界面明确请求：这里校验归属，校验不过就整轮拒绝，
@@ -494,6 +518,8 @@ func registerAgentProxyTurnRoutes(
 		for _, a := range payload.Attachments {
 			if a.AssetID != "" {
 				payload.References = append(payload.References, assistantReference{Kind: "asset", ID: a.AssetID})
+			} else if a.Kind == "file" && strings.TrimSpace(a.ResourceID) != "" {
+				payload.References = append(payload.References, assistantReference{Kind: "resource", ID: strings.TrimSpace(a.ResourceID)})
 			}
 		}
 		refs, err := normalizeAssistantReferences(svc, c.GetString("agentUserId"), payload.References)

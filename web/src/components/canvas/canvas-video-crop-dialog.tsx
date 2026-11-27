@@ -103,7 +103,7 @@ export function CanvasVideoCropEditor({ videoUrl, storageKey, videoDimensions, o
     return (
         <div
             ref={frameRef}
-            data-video-crop-inline="true"
+            data-canvas-keyboard-scope data-video-crop-inline="true"
             aria-label="视频裁切选区"
             className="absolute inset-0 z-[calc(var(--node-z-overlay)+2)] overflow-visible rounded-[inherit] select-none"
             onMouseDown={(event) => event.stopPropagation()}

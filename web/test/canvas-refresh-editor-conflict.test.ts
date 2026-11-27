@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { applyMockCanvasPatch, type MockCanvasPatchParams } from "./helpers/mock-canvas-patch";
 
 const stored = new Map<string, string>();
-const server = { document: null as Record<string, unknown> | null, revision: 0, posts: [] as Array<{ expectedRevision?: number }> };
+const server = { document: null as Record<string, unknown> | null, revision: 0, posts: [] as Array<{ path: string; expectedRevision?: number; baseRevision?: number }> };
+let library: CanvasProject[] = [];
 type RefreshListener = (project: never, previous: never) => void;
 const refreshListeners = new Set<RefreshListener>();
 
@@ -26,15 +28,36 @@ mock.module("@/services/api/request", () => ({
     apiBaseURL: "/api",
     compactApiParams: (params: Record<string, unknown>) => params,
     http: {
-        get: async () => ({ project: server.document }),
+        get: async (path: string) => path === "/canvas-projects"
+            ? { projects: library.map(({ id }) => ({ id })), hasMore: false }
+            : { project: library.find(({ id }) => path === `/canvas-projects/${id}`) ?? server.document },
         put: async (_path: string, body: { project: Record<string, unknown> }) => {
             server.revision += 1;
             server.document = { ...body.project, revision: server.revision };
             return { project: { id: String(body.project.id), revision: server.revision, updatedAt: "2026-01-01T00:00:00.000Z" } };
         },
-        post: async (_path: string, body: { opId?: string; params?: { canvasId?: string; expectedRevision?: number; document?: Record<string, unknown> } }) => {
+        post: async (path: string, body: { opId?: string; params?: MockCanvasPatchParams & { expectedRevision?: number; document?: Record<string, unknown> } }) => {
             server.revision += 1;
-            server.posts.push({ expectedRevision: body.params?.expectedRevision });
+            if (path === "/ops/canvas.document.patch") {
+                const { document, serverAdvanced } = applyMockCanvasPatch(server.document, body.params ?? {}, server.revision);
+                server.document = document;
+                server.posts.push({ path, baseRevision: body.params?.baseRevision });
+                return {
+                    op: "canvas.document.patch",
+                    opId: body.opId,
+                    replayed: false,
+                    caller: "manual",
+                    revision: server.revision,
+                    result: {
+                        canvasId: "c1",
+                        revision: server.revision,
+                        updatedAt: "2026-01-01T00:00:00.000Z",
+                        serverAdvanced,
+                        ...(serverAdvanced ? { document } : {}),
+                    },
+                };
+            }
+            server.posts.push({ path, expectedRevision: body.params?.expectedRevision });
             server.document = { ...body.params?.document, revision: server.revision };
             return { op: "canvas.document.commit", opId: body.opId, replayed: false, caller: "manual", revision: server.revision, result: { canvasId: "c1", revision: server.revision, updatedAt: "2026-01-01T00:00:00.000Z" } };
         },
@@ -68,17 +91,15 @@ mock.module("@/services/api/resources", () => ({
 }));
 
 const {
-    acceptExternalCanvasRevision,
-    holdExternalCanvasRevisionForEditor,
+    hydrateLocalCanvasProjectsFromBackend,
     refreshLocalCanvasProjectIfChanged,
     resetLocalCanvasBackendSaveState,
     syncLocalCanvasProjectToBackend,
 } = await import("@/services/local-workspace-repository");
 const { mergeCanvasRefreshPatch } = await import("@/lib/canvas/canvas-patch-merge");
-const { canvasExternalRevisionConflict, clearCanvasExternalRevisionConflict, useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
-const { canvasBackendSubmitPaused } = await import("@/services/canvas-revision-conflict");
+const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
 const { getActiveUserScope } = await import("@/lib/user-scope");
-const { useSyncProgressStore } = await import("@/stores/use-sync-progress-store");
+const { projectSyncProgress, useSyncProgressStore } = await import("@/stores/use-sync-progress-store");
 const { resetCanvasOperationJournalMemory } = await import("@/services/canvas-operation-journal");
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -113,12 +134,7 @@ const stamp = (node: CanvasNodeData): CanvasNodeData => ({ ...node, createdAt: "
 function mountEditor(initial: CanvasNodeData[]) {
     const editor = { nodes: initial, held: 0 };
     const listener = (project: CanvasProject, previous: CanvasProject | undefined) => {
-        try {
-            editor.nodes = previous ? mergeCanvasRefreshPatch(previous, project, editor.nodes, []).nodes : project.nodes;
-        } catch {
-            editor.held += 1;
-            holdExternalCanvasRevisionForEditor(project);
-        }
+        editor.nodes = previous ? mergeCanvasRefreshPatch(previous, project, editor.nodes, []).nodes : project.nodes;
     };
     refreshListeners.add(listener as RefreshListener);
     return editor;
@@ -135,12 +151,12 @@ async function confirmedAssistantCanvas() {
 
 beforeEach(() => {
     stored.clear();
+    library = [];
     refreshListeners.clear();
     resetCanvasOperationJournalMemory();
     resetLocalCanvasBackendSaveState();
     server.posts = [];
     useSyncProgressStore.getState().clearAll();
-    clearCanvasExternalRevisionConflict(scope, "c1");
     useCanvasStore.setState({ projects: [] });
 });
 
@@ -160,11 +176,10 @@ describe("外部撤销到达编辑器", () => {
 
         expect(editor.held).toBe(0);
         expect(editor.nodes[0].metadata).toEqual(retry.metadata);
-        expect(canvasBackendSubmitPaused("c1", scope)).toBe(false);
-        expect(canvasExternalRevisionConflict(scope, "c1")).toBeUndefined();
+        expect(projectSyncProgress("c1", scope)?.phase).not.toBe("conflict");
         useCanvasStore.getState().updateProject("c1", { nodes: editor.nodes });
         await syncLocalCanvasProjectToBackend("c1");
-        expect(server.posts.at(-1)?.expectedRevision).toBe(2);
+        expect(server.posts.at(-1)?.baseRevision).toBe(2);
         expect((server.document?.nodes as CanvasNodeData[])[0].metadata).toEqual(retry.metadata);
     });
 
@@ -178,35 +193,51 @@ describe("外部撤销到达编辑器", () => {
         expect(editor.held).toBe(0);
         expect(editor.nodes).toEqual([]);
         expect(useCanvasStore.getState().projects[0].nodes).toEqual([]);
-        expect(canvasExternalRevisionConflict(scope, "c1")).toBeUndefined();
-        expect(canvasBackendSubmitPaused("c1", scope)).toBe(false);
+        expect(projectSyncProgress("c1", scope)?.phase).not.toBe("conflict");
     });
 
-    test("编辑器里有真实冲突：保留本地画面，顶栏出现最新版本，自动提交暂停", async () => {
+    test("编辑器与远端删除重叠：确定性保留本地改过的节点、删除未改动节点，不锁死自动保存", async () => {
         await confirmedAssistantCanvas();
         const editor = mountEditor([{ ...stamp(assistantNodes[0]), title: "用户刚改的标题" }, stamp(assistantNodes[1])]);
         server.document = canvas(2, []) as never;
 
         await refreshLocalCanvasProjectIfChanged("c1");
 
-        expect(editor.held).toBe(1);
-        expect(editor.nodes.map((node) => node.title)).toEqual(["用户刚改的标题", "助手文本二"]);
-        const conflict = canvasExternalRevisionConflict(scope, "c1");
-        expect(conflict?.remoteRevision).toBe(2);
-        expect(conflict?.candidate.nodes).toEqual([]);
-        expect(canvasBackendSubmitPaused("c1", scope)).toBe(true);
+        expect(editor.held).toBe(0);
+        expect(editor.nodes.map((node) => node.title)).toEqual(["用户刚改的标题"]);
+        expect(projectSyncProgress("c1", scope)?.phase).not.toBe("conflict");
 
-        // The next autosave of the stale editor graph must not reach the server.
         useCanvasStore.getState().updateProject("c1", { nodes: editor.nodes });
-        await expect(syncLocalCanvasProjectToBackend("c1")).rejects.toThrow();
-        expect(server.posts).toEqual([]);
-        expect(server.document?.nodes).toEqual([]);
-
-        // 「使用最新版本」：编辑器回到服务端内容，自动提交恢复。
-        await acceptExternalCanvasRevision("c1");
-        expect(editor.nodes).toEqual([]);
-        expect(useCanvasStore.getState().projects[0].nodes).toEqual([]);
-        expect(canvasExternalRevisionConflict(scope, "c1")).toBeUndefined();
-        expect(canvasBackendSubmitPaused("c1", scope)).toBe(false);
+        await syncLocalCanvasProjectToBackend("c1");
+        expect(server.posts.at(-1)?.path).toBe("/ops/canvas.document.patch");
+        expect((server.document?.nodes as CanvasNodeData[]).map((node) => node.title)).toEqual(["用户刚改的标题"]);
     });
+});
+
+test("后台刷新多个画布时保留先刷新画布刚刚写入的同版本草稿", async () => {
+    await confirmedAssistantCanvas();
+    const store = useCanvasStore.getState();
+    const first = store.openProject("c1")!;
+    library = [first, { ...canvas(1, []), id: "c2" }];
+    let edited = false;
+    const unsubscribe = useCanvasStore.subscribe((state) => {
+        if (edited || !state.openProject("c2")) return;
+        edited = true;
+        store.updateProject("c1", { nodes: [{ ...first.nodes[0], title: "刷新期间的新标题" }, first.nodes[1]] });
+    });
+
+    try {
+        expect(await hydrateLocalCanvasProjectsFromBackend()).toBe(true);
+    } finally {
+        unsubscribe();
+    }
+
+    expect(edited).toBe(true);
+    expect(store.openProject("c1")?.revision).toBe(first.revision);
+    expect(store.openProject("c1")?.nodes[0]?.title).toBe("刷新期间的新标题");
+    expect(store.openProject("c2")).toBeDefined();
+    expect(projectSyncProgress("c1", scope)?.phase).not.toBe("conflict");
+    await syncLocalCanvasProjectToBackend("c1");
+    expect(server.posts.at(-1)?.baseRevision ?? server.posts.at(-1)?.expectedRevision).toBe(first.revision);
+    expect((server.document?.nodes as CanvasNodeData[])[0]?.title).toBe("刷新期间的新标题");
 });

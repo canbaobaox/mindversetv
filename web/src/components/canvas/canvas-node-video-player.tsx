@@ -1,8 +1,19 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
-import { Maximize2, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { Maximize2, Minimize2, Pause, Play, Volume2, VolumeX, X } from "lucide-react";
 
 import { useVideoAudioTrack } from "@/hooks/use-video-audio-track";
-import { normalizeVideoPlayerMimeType } from "@/lib/video-player-policy";
+import { isUndecodableVideoTrack, isVideoSpaceShortcutIgnoredTarget, normalizeVideoPlayerMimeType } from "@/lib/video-player-policy";
+
+type FullscreenDocument = Document & {
+    webkitFullscreenElement?: Element | null;
+    webkitExitFullscreen?: () => Promise<void> | void;
+};
+
+type WebkitFullscreenVideo = HTMLVideoElement & {
+    webkitEnterFullscreen?: () => void;
+    webkitExitFullscreen?: () => void;
+    webkitDisplayingFullscreen?: boolean;
+};
 
 export type CanvasNodeVideoPlayerProps = {
     src: string;
@@ -101,6 +112,7 @@ export function CanvasNodeVideoPlayer({
     const firstFrameRequestedRef = useRef(false);
     const autoPlayAttemptedRef = useRef(false);
     const deferredAutoPlayRef = useRef(false);
+    const decodeFailureReportedRef = useRef(false);
     const callbacksRef = useRef({ onPlay, onError, onFirstFramePresented });
     callbacksRef.current = { onPlay, onError, onFirstFramePresented };
 
@@ -108,6 +120,7 @@ export function CanvasNodeVideoPlayer({
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [userMuted, setUserMuted] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
 
     const normalizedType = normalizeVideoPlayerMimeType(mimeType);
     const { noAudio, probeVideoAudio } = useVideoAudioTrack(src, hasAudio);
@@ -141,6 +154,7 @@ export function CanvasNodeVideoPlayer({
         firstFrameRequestedRef.current = false;
         autoPlayAttemptedRef.current = false;
         deferredAutoPlayRef.current = false;
+        decodeFailureReportedRef.current = false;
         const sourceKey = `${src}::${normalizedType}`;
         if (firstSourceRef.current !== null && firstSourceRef.current !== sourceKey) {
             videoRef.current?.load();
@@ -153,11 +167,24 @@ export function CanvasNodeVideoPlayer({
         const video = videoRef.current;
         if (!root || !video) return;
         return bindCanvasViewportVideoPause(root, video, () => {
-            if (deferredAutoPlayRef.current) {
+            if (deferredAutoPlayRef.current && !decodeFailureReportedRef.current) {
                 tryInitialAutoPlayRef.current(video);
             }
         });
     }, []);
+
+    const reportDecodeFailure = () => {
+        if (decodeFailureReportedRef.current) return;
+        decodeFailureReportedRef.current = true;
+        callbacksRef.current.onError?.();
+    };
+
+    const rejectUndecodableVideo = (video: HTMLVideoElement) => {
+        if (!isUndecodableVideoTrack(video)) return false;
+        video.pause();
+        reportDecodeFailure();
+        return true;
+    };
 
     const markFirstFrame = (video: HTMLVideoElement) => {
         if (firstFrameRequestedRef.current) return;
@@ -173,15 +200,99 @@ export function CanvasNodeVideoPlayer({
         if (dataCanvasNoZoom) event.stopPropagation();
     };
 
+    useEffect(() => {
+        const root = rootRef.current;
+        const video = videoRef.current as WebkitFullscreenVideo | null;
+        if (!root || !video) return;
+        const syncFullscreen = () => {
+            const doc = document as FullscreenDocument;
+            const fsElement = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+            const active = Boolean(
+                (fsElement && (fsElement === root || fsElement === video || root.contains(fsElement))) ||
+                video.webkitDisplayingFullscreen,
+            );
+            setIsFullscreen(active);
+        };
+        const handleWebkitEnd = () => setIsFullscreen(false);
+        const handleWebkitBegin = () => setIsFullscreen(true);
+        document.addEventListener("fullscreenchange", syncFullscreen);
+        document.addEventListener("webkitfullscreenchange", syncFullscreen);
+        video.addEventListener("webkitbeginfullscreen", handleWebkitBegin);
+        video.addEventListener("webkitendfullscreen", handleWebkitEnd);
+        syncFullscreen();
+        return () => {
+            document.removeEventListener("fullscreenchange", syncFullscreen);
+            document.removeEventListener("webkitfullscreenchange", syncFullscreen);
+            video.removeEventListener("webkitbeginfullscreen", handleWebkitBegin);
+            video.removeEventListener("webkitendfullscreen", handleWebkitEnd);
+        };
+    }, []);
+
+    const exitFullscreen = () => {
+        const doc = document as FullscreenDocument;
+        const video = videoRef.current as WebkitFullscreenVideo | null;
+        if (doc.fullscreenElement && typeof doc.exitFullscreen === "function") {
+            void doc.exitFullscreen().catch(() => undefined);
+            return;
+        }
+        if (doc.webkitFullscreenElement && typeof doc.webkitExitFullscreen === "function") {
+            void Promise.resolve(doc.webkitExitFullscreen()).catch(() => undefined);
+            return;
+        }
+        video?.webkitExitFullscreen?.();
+    };
+
+    const toggleFullscreen = () => {
+        if (isFullscreen) {
+            exitFullscreen();
+            return;
+        }
+        const root = rootRef.current;
+        const video = videoRef.current as WebkitFullscreenVideo | null;
+        if (root && typeof root.requestFullscreen === "function") {
+            void root.requestFullscreen().catch(() => {
+                if (video && typeof video.requestFullscreen === "function") {
+                    void video.requestFullscreen().catch(() => undefined);
+                } else {
+                    video?.webkitEnterFullscreen?.();
+                }
+            });
+            return;
+        }
+        if (video && typeof video.requestFullscreen === "function") {
+            void video.requestFullscreen().catch(() => undefined);
+            return;
+        }
+        video?.webkitEnterFullscreen?.();
+    };
+
     const togglePlay = () => {
         const video = videoRef.current;
-        if (!video) return;
+        if (!video || decodeFailureReportedRef.current) return;
         if (video.paused || video.ended) {
             void video.play().catch(() => undefined);
         } else {
             video.pause();
         }
     };
+
+    const togglePlayRef = useRef(togglePlay);
+    togglePlayRef.current = togglePlay;
+
+    useEffect(() => {
+        if (!isFullscreen) return;
+        // 进入全屏时把焦点从全屏按钮移到播放容器，避免按空格误触发按钮退出全屏。
+        rootRef.current?.focus({ preventScroll: true });
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+            if (event.key !== " " && event.code !== "Space") return;
+            if (isVideoSpaceShortcutIgnoredTarget(event.target)) return;
+            event.preventDefault();
+            togglePlayRef.current();
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [isFullscreen]);
 
     const progressMax = duration > 0 ? duration : 1;
     const progressValue = duration > 0 ? Math.min(currentTime, duration) : 0;
@@ -192,11 +303,13 @@ export function CanvasNodeVideoPlayer({
     return (
         <div
             ref={rootRef}
+            tabIndex={-1}
             data-canvas-video-surface="native"
+            data-canvas-video-fullscreen={isFullscreen ? "true" : undefined}
             data-canvas-no-zoom={dataCanvasNoZoom ? "true" : undefined}
             data-no-audio={noAudio ? "true" : undefined}
             data-controls-open={!playing ? "true" : undefined}
-            className={`group/canvas-video relative flex h-full w-full select-none items-center justify-center overflow-hidden bg-black ${className || ""}`}
+            className={`group/canvas-video relative flex h-full w-full select-none items-center justify-center overflow-hidden bg-black outline-none ${className || ""}`}
             style={{ "--video-brand": brandColor, "--canvas-video-controls-height": "3.5rem" } as CSSProperties}
         >
             <video
@@ -212,19 +325,24 @@ export function CanvasNodeVideoPlayer({
                 }}
                 onLoadedMetadata={(event) => {
                     const video = event.currentTarget;
+                    if (rejectUndecodableVideo(video)) return;
                     if (Number.isFinite(video.duration) && video.duration > 0) setDuration(video.duration);
                     probeVideoAudio(video);
                     tryInitialAutoPlay(video);
                 }}
                 onLoadedData={(event) => {
-                    markFirstFrame(event.currentTarget);
-                    probeVideoAudio(event.currentTarget);
-                    tryInitialAutoPlay(event.currentTarget);
+                    const video = event.currentTarget;
+                    if (rejectUndecodableVideo(video)) return;
+                    markFirstFrame(video);
+                    probeVideoAudio(video);
+                    tryInitialAutoPlay(video);
                 }}
                 onCanPlay={(event) => {
-                    markFirstFrame(event.currentTarget);
-                    probeVideoAudio(event.currentTarget);
-                    tryInitialAutoPlay(event.currentTarget);
+                    const video = event.currentTarget;
+                    if (rejectUndecodableVideo(video)) return;
+                    markFirstFrame(video);
+                    probeVideoAudio(video);
+                    tryInitialAutoPlay(video);
                 }}
                 onPlay={() => {
                     setPlaying(true);
@@ -237,11 +355,27 @@ export function CanvasNodeVideoPlayer({
                     const next = event.currentTarget.duration;
                     if (Number.isFinite(next) && next > 0) setDuration(next);
                 }}
-                onError={() => callbacksRef.current.onError?.()}
+                onError={reportDecodeFailure}
             >
                 <source src={src} type={normalizedType} />
             </video>
             {children}
+            {isFullscreen ? (
+                <button
+                    type="button"
+                    aria-label="退出全屏播放"
+                    title="退出全屏 (Esc)"
+                    className={`absolute right-4 top-4 z-[var(--node-z-overlay)] grid size-9 place-items-center rounded-full border border-white/15 bg-black/65 text-white transition-opacity hover:bg-black/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white ${controlsVisibilityClass}`}
+                    onPointerDown={stopCanvasEvent}
+                    onMouseDown={stopCanvasEvent}
+                    onClick={(event) => {
+                        stopCanvasEvent(event);
+                        exitFullscreen();
+                    }}
+                >
+                    <X className="size-4" />
+                </button>
+            ) : null}
             <div
                 role="group"
                 aria-label={`${title} 播放控制`}
@@ -295,29 +429,13 @@ export function CanvasNodeVideoPlayer({
                 </button>
                 <button
                     type="button"
-                    aria-label="全屏"
+                    aria-label={isFullscreen ? "退出全屏" : "全屏"}
+                    title={isFullscreen ? "退出全屏" : "全屏"}
+                    aria-pressed={isFullscreen}
                     className="grid size-7 shrink-0 place-items-center rounded-full text-white/90 hover:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
-                    onClick={() => {
-                        const root = rootRef.current;
-                        const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
-                        if (root && typeof root.requestFullscreen === "function") {
-                            void root.requestFullscreen().catch(() => {
-                                if (video && typeof video.requestFullscreen === "function") {
-                                    void video.requestFullscreen().catch(() => undefined);
-                                } else {
-                                    video?.webkitEnterFullscreen?.();
-                                }
-                            });
-                            return;
-                        }
-                        if (video && typeof video.requestFullscreen === "function") {
-                            void video.requestFullscreen().catch(() => undefined);
-                            return;
-                        }
-                        video?.webkitEnterFullscreen?.();
-                    }}
+                    onClick={toggleFullscreen}
                 >
-                    <Maximize2 className="size-3.5" />
+                    {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
                 </button>
             </div>
         </div>

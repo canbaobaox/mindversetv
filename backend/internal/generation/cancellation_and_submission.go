@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -18,11 +17,9 @@ import (
 	"infinite-canvas/backend/internal/beeftv"
 	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
-	"infinite-canvas/backend/internal/modelcatalog"
 	"infinite-canvas/backend/internal/outbound"
 	"infinite-canvas/backend/internal/repository"
 	"infinite-canvas/backend/internal/topaz"
-	"infinite-canvas/backend/internal/workspace"
 )
 
 const (
@@ -249,11 +246,6 @@ func ProviderCancellationUncertainMessage(base string) string {
 
 func providerCancellationUncertainMessage(base string) string {
 	return base + "，取消状态待确认"
-}
-
-func DeferProviderCancellation(repo *repository.Repository, task *model.Task, errorText string) error {
-	next := time.Now().Add(30 * time.Second)
-	return repo.UpdateTaskProviderCancellation(task.ID, model.ProviderCancelStatusRequested, model.ProviderCancelStatusRequested, truncateRunes(errorText, 1000), &next, nil)
 }
 
 func MarkProviderCancellationUncertain(repo *repository.Repository, task *model.Task, errorText string, logTask func(userID, taskID, level, msg, payload string) error) error {
@@ -586,134 +578,6 @@ func SameCredentialOrigin(targetURL, baseURL string) bool {
 	return strings.EqualFold(target.Scheme, base.Scheme) && strings.EqualFold(target.Host, base.Host)
 }
 
-func NoteBeefTVProviderError(beef *beeftv.Service, message string) {
-	if beef == nil {
-		return
-	}
-	normalized := strings.ToLower(message)
-	if strings.Contains(normalized, "unauthorized") || strings.Contains(message, "连接已失效") {
-		beef.MarkRevoked()
-	}
-	if strings.Contains(message, "额度不足") || strings.Contains(normalized, "insufficient") || strings.Contains(message, "余额不足") {
-		beef.MarkZeroBalance()
-	}
-}
-
-func PortraitModel(id string) bool {
-	return id == "seedance-2.0-portrait" || id == "seedance-2.5-portrait"
-}
-
-func ValidatePortraitTaskQuote(dataDir string, input map[string]any, lookupCred func() (string, string, string, string, error)) error {
-	config, _ := input["config"].(map[string]any)
-	modelID := strings.TrimSpace(stringAnyValue(config["model"]))
-	modelKey := strings.TrimSpace(stringAnyValue(config["channelModelKey"]))
-	if !PortraitModel(modelID) && !PortraitModel(modelKey) {
-		return nil
-	}
-	unavailable := func() error {
-		return BadAuthRequest("真人素材版当前模型或所选分辨率报价不可用，请刷新模型列表后重新选择")
-	}
-	if !PortraitModel(modelID) || (modelKey != "" && modelKey != modelID) {
-		return unavailable()
-	}
-	var request Config
-	body, err := json.Marshal(config)
-	if err != nil || json.Unmarshal(body, &request) != nil {
-		return unavailable()
-	}
-	store, err := workspace.NewProviderConfig(dataDir)
-	if err != nil {
-		return unavailable()
-	}
-	effective, _, err := store.LoadEffectiveModelConfig()
-	if err != nil {
-		return unavailable()
-	}
-	var snapshot struct {
-		Channels []struct {
-			ID            string                    `json:"id"`
-			Enabled       bool                      `json:"enabled"`
-			BaseURL       string                    `json:"baseUrl"`
-			APIKey        string                    `json:"apiKey"`
-			SecretKey     string                    `json:"secretKey"`
-			Headers       []outbound.OutboundHeader `json:"headers"`
-			Models        []string                  `json:"models"`
-			ModelProfiles []struct {
-				Model        string          `json:"model"`
-				VideoPricing json.RawMessage `json:"videoPricing"`
-			} `json:"modelProfiles"`
-		} `json:"channels"`
-	}
-	body, err = json.Marshal(effective.Config)
-	if err != nil || json.Unmarshal(body, &snapshot) != nil {
-		return unavailable()
-	}
-	managed := strings.TrimSpace(stringAnyValue(config["credentialRef"])) == beeftv.CredentialRef
-	resolution := strings.ToLower(strings.TrimSpace(request.VQuality))
-	if resolution != "" {
-		resolution = modelcatalog.NormalizeVideoResolution(resolution)
-	}
-	if resolution == "2160p" {
-		resolution = "4k"
-	}
-	matches, quoted := 0, false
-	for _, channel := range snapshot.Channels {
-		if !channel.Enabled || (managed && channel.ID != beeftv.ChannelID && channel.ID != beeftv.MyxsaiChannelID) {
-			continue
-		}
-		base, key := channel.BaseURL, channel.APIKey
-		if (channel.ID == beeftv.ChannelID || channel.ID == beeftv.MyxsaiChannelID) && lookupCred != nil {
-			resolvedKey, resolvedBase, _, _, lookupErr := lookupCred()
-			if lookupErr != nil {
-				continue
-			}
-			base, key = resolvedBase, resolvedKey
-		}
-		if strings.TrimSpace(key) == "" || strings.TrimRight(strings.TrimSpace(base), "/") != strings.TrimRight(strings.TrimSpace(request.BaseURL), "/") || key != request.APIKey || channel.SecretKey != request.SecretKey || !PortraitHeadersEqual(channel.Headers, request.Headers) {
-			continue
-		}
-		matches++
-		present := false
-		for _, id := range channel.Models {
-			present = present || id == modelID
-		}
-		if !present {
-			continue
-		}
-		for _, profile := range channel.ModelProfiles {
-			if profile.Model != modelID {
-				continue
-			}
-			pricing, valid := beeftv.NormalizeCatalogVideoPricing(profile.VideoPricing)
-			if valid && pricing["mode"] == "tokens" {
-				rates := pricing["rates"].(map[string]any)
-				_, quoted = rates[resolution]
-			}
-			break
-		}
-	}
-	if matches != 1 || !quoted {
-		return unavailable()
-	}
-	return nil
-}
-
-func PortraitHeadersEqual(left, right []outbound.OutboundHeader) bool {
-	a, errA := outbound.NormalizeOutboundHeaders(left)
-	b, errB := outbound.NormalizeOutboundHeaders(right)
-	if errA != nil || errB != nil {
-		return false
-	}
-	values := func(headers []outbound.OutboundHeader) map[string]string {
-		result := make(map[string]string, len(headers))
-		for _, header := range headers {
-			result[header.Name] = header.Value
-		}
-		return result
-	}
-	return maps.Equal(values(a), values(b))
-}
-
 func UpscaleConfig(name string, lookupCred func() (string, string, string, string, error)) (Config, error) {
 	key, base, _, _, err := lookupCred()
 	if err != nil {
@@ -725,23 +589,25 @@ func UpscaleConfig(name string, lookupCred func() (string, string, string, strin
 	return Config{BaseURL: base, APIKey: key, CredentialRef: beeftv.CredentialRef, Model: name, InterfaceType: "newapi"}, nil
 }
 
-func fetchUpstreamUpscaleModes(ctx context.Context, lookupCred func() (string, string, string, string, error), bindRuntime func(context.Context, CallMeta) context.Context) ([]topaz.Mode, int, bool) {
+func fetchUpstreamUpscaleModes(ctx context.Context, user string, lookupCred func() (string, string, string, string, error), bindRuntime func(context.Context, CallMeta) context.Context) ([]topaz.Mode, int, int64) {
+	// Default safely to 200 MiB whenever upstream capabilities cannot be verified.
+	// Higher tool limits (up to 1 GiB) require explicit server advertisement.
 	if lookupCred == nil {
-		return topaz.Modes(), 300000, false
+		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes
 	}
 	cfg, err := UpscaleConfig("", lookupCred)
 	if err != nil {
-		return topaz.Modes(), 300000, false
+		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes
 	}
 	qctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 	if bindRuntime != nil {
-		qctx = bindRuntime(qctx, CallMeta{RequestKind: "capabilities"})
+		qctx = bindRuntime(qctx, CallMeta{UserID: user, RequestKind: "capabilities"})
 	}
 	qctx = WithRequestKind(qctx, "capabilities")
 	upstream, err := managedMediaClient(qctx, cfg).GetUpscaleCapabilities(qctx)
 	if err != nil || len(upstream.SupportedModels) == 0 {
-		return topaz.Modes(), 300000, false
+		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes
 	}
 	items := make([]topaz.UpstreamModel, 0, len(upstream.SupportedModels))
 	for _, m := range upstream.SupportedModels {
@@ -751,12 +617,13 @@ func fetchUpstreamUpscaleModes(ctx context.Context, lookupCred func() (string, s
 	if upstream.MaxVideoSeconds > 0 && upstream.MaxVideoSeconds*1000 < maxDurationMs {
 		maxDurationMs = upstream.MaxVideoSeconds * 1000
 	}
-	return topaz.ModesFromUpstream(items), maxDurationMs, true
+	maxVideoBytes := NormalizeToolVideoLimit(upstream.MaxVideoBytes)
+	return topaz.ModesFromUpstream(items), maxDurationMs, maxVideoBytes
 }
 
 func LiveUpscaleCapabilities(ctx context.Context, lookupCred func() (string, string, string, string, error), bindRuntime func(context.Context, CallMeta) context.Context) map[string]any {
-	modes, maxVideoDurationMs, upstreamAvailable := fetchUpstreamUpscaleModes(ctx, lookupCred, bindRuntime)
-	return map[string]any{"modes": modes, "cloudProcessing": true, "maxVideoDurationMs": maxVideoDurationMs, "upstreamAvailable": upstreamAvailable}
+	modes, maxVideoDurationMs, maxVideoBytes := fetchUpstreamUpscaleModes(ctx, CanonicalCallMeta(ctx).UserID, lookupCred, bindRuntime)
+	return map[string]any{"modes": modes, "cloudProcessing": true, "maxVideoDurationMs": maxVideoDurationMs, "maxVideoBytes": maxVideoBytes}
 }
 
 func UpscaleInput(ctx context.Context, user string, request topaz.Request, ensureMetadata func(context.Context, string, string) (*model.Resource, error), lookupCred func() (string, string, string, string, error), bindRuntime ...func(context.Context, CallMeta) context.Context) (Input, *model.Resource, error) {
@@ -770,7 +637,7 @@ func UpscaleInput(ctx context.Context, user string, request topaz.Request, ensur
 	if len(bindRuntime) > 0 {
 		bind = bindRuntime[0]
 	}
-	modes, _, _ := fetchUpstreamUpscaleModes(ctx, lookupCred, bind)
+	modes, _, maxVideoBytes := fetchUpstreamUpscaleModes(ctx, user, lookupCred, bind)
 	resolvedModel, err := topaz.ResolveModelID(request, kind, modes)
 	if err != nil {
 		return input, nil, BadAuthRequest(err.Error())
@@ -783,7 +650,9 @@ func UpscaleInput(ctx context.Context, user string, request topaz.Request, ensur
 	if kind == "video" {
 		format = ""
 	}
-	input = Input{Mode: kind, Config: config, Upscale: &UpscaleOptions{Factor: int(request.Scale), OutputFormat: format}}
+	input = Input{Mode: kind, Config: config, Upscale: &UpscaleOptions{
+		Factor: request.Scale, TargetShortEdge: request.TargetShortEdge, OutputFormat: format, MaxVideoBytes: maxVideoBytes,
+	}}
 	media := []Media{{StorageKey: "resource:" + resource.ID, MimeType: resource.MimeType, Width: resource.Width, Height: resource.Height, DurationMs: resource.DurationMs}}
 	if kind == "image" {
 		input.ReferenceImages = media
@@ -801,14 +670,25 @@ func EstimateMediaUpscale(ctx context.Context, user string, request topaz.Reques
 	if bindRuntime != nil {
 		ctx = bindRuntime(ctx, CallMeta{UserID: user, RequestKind: "estimate"})
 	}
-	estimate, err := EstimateUpscale(ctx, input)
+	estimate, facts, err := EstimateUpscale(ctx, input)
 	if err != nil {
 		return nil, BadAuthRequest(ClassifyError(err).UserMessage())
 	}
+	srcWidth, srcHeight, srcDurationMs := resource.Width, resource.Height, resource.DurationMs
+	if facts.Width > 0 && facts.Height > 0 {
+		srcWidth, srcHeight = facts.Width, facts.Height
+	}
+	if facts.DurationMs > 0 {
+		srcDurationMs = facts.DurationMs
+	}
+	outputScale := input.Upscale.Factor
+	if facts.EffectiveFactor > 0 {
+		outputScale = facts.EffectiveFactor
+	}
 	return map[string]any{
 		"mediaType":           input.Mode,
-		"source":              map[string]any{"width": resource.Width, "height": resource.Height, "durationMs": resource.DurationMs},
-		"output":              map[string]any{"width": int(math.Round(float64(resource.Width) * request.Scale)), "height": int(math.Round(float64(resource.Height) * request.Scale)), "durationMs": resource.DurationMs},
+		"source":              map[string]any{"width": srcWidth, "height": srcHeight, "durationMs": srcDurationMs},
+		"output":              map[string]any{"width": int(math.Round(float64(srcWidth) * outputScale)), "height": int(math.Round(float64(srcHeight) * outputScale)), "durationMs": srcDurationMs},
 		"reservation":         estimate.Reservation,
 		"currency":            estimate.Currency,
 		"billingMode":         estimate.BillingMode,

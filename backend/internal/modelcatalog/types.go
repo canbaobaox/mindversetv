@@ -90,6 +90,19 @@ const (
 	ImageResponseFormatURL = "url"
 )
 
+type VideoGenerationControlsCapability struct {
+	Seed                 *bool    `json:"seed,omitempty"`
+	PromptExpansionModes []string `json:"promptExpansionModes,omitempty"`
+	DamageLevels         []string `json:"damageLevels,omitempty"`
+}
+
+func (c *VideoGenerationControlsCapability) HasAny() bool {
+	if c == nil {
+		return false
+	}
+	return (c.Seed != nil && *c.Seed) || len(c.PromptExpansionModes) > 0 || len(c.DamageLevels) > 0
+}
+
 type VideoCapabilityConfig struct {
 	References          VideoReferenceConfig                `json:"references"`
 	OperationReferences map[string]VideoOperationReferences `json:"operationReferences,omitempty"`
@@ -107,6 +120,9 @@ type VideoCapabilityConfig struct {
 	DefaultOperation    string                              `json:"defaultOperation"`
 	TaskTypeConstraints bool                                `json:"taskTypeConstraints,omitempty"`
 	MiddleFrame         *bool                               `json:"middleFrame,omitempty"`
+	ReferenceOrder      *bool                               `json:"referenceOrder,omitempty"`
+	PreferReferenceMode *bool                               `json:"preferReferenceMode,omitempty"`
+	Controls            *VideoGenerationControlsCapability  `json:"controls,omitempty"`
 }
 
 // Nil inherits the model-wide count; a declared zero forbids that media kind.
@@ -255,26 +271,6 @@ type PublicChannelModel struct {
 	Available          bool                    `json:"available"`
 	CapabilityDeclared *bool                   `json:"-"`
 	ManagedBeefTV      *bool                   `json:"-"`
-}
-
-type ChannelModelRequest struct {
-	ModelKey         string                       `json:"modelKey"`
-	ProviderModelKey string                       `json:"providerModelKey"`
-	DisplayName      string                       `json:"displayName"`
-	Icon             string                       `json:"icon"`
-	Capability       string                       `json:"capability"`
-	Protocol         string                       `json:"protocol"`
-	Enabled          *bool                        `json:"enabled"`
-	CapabilityConfig *ModelCapabilityConfig       `json:"capabilityConfig"`
-	Variants         []ChannelModelVariantRequest `json:"variants"`
-}
-
-type ChannelModelVariantRequest struct {
-	Selector         map[string]string `json:"selector"`
-	Resolution       string            `json:"resolution"`
-	VideoSeconds     int               `json:"videoSeconds"`
-	ProviderModelKey string            `json:"providerModelKey"`
-	Enabled          *bool             `json:"enabled"`
 }
 
 type ChannelModelCatalogOption struct {

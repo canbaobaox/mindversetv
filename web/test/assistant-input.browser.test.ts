@@ -10,6 +10,12 @@ const resources = new Map<string, { bytes: Buffer; kind: string; mimeType: strin
 const chats: Record<string, any>[] = [], supplements: Record<string, any>[] = [];
 const externalConnections: Record<string, any>[] = [];
 const undoRequests: Record<string, any>[] = [];
+const sessionConfigRequests: Record<string, any>[] = [];
+const compactRequests: Record<string, any>[] = [];
+let serverSessionId = "s1";
+let serverThinkingLevel: string | undefined = "low";
+let serverContextUsage: Record<string, any> | null = null;
+let rejectNextSessionConfig = false;
 let rejectNextUndo = false;
 let running = false, cancelled = false, nextId = 0, failNextAsset = false;
 let activePermissionMode: string | undefined;
@@ -113,7 +119,32 @@ beforeAll(async () => {
             if (failHistoryStatus > 0) {
                 return Response.json({ code: failHistoryStatus, reason: "host_unreachable", msg: "host unreachable" }, { status: failHistoryStatus });
             }
-            return ok({ sessionId: "s1", turns, ...(pausedTurnReason ? { pausedTurnReason } : {}), active: running && !cancelled ? { turnId: "busy", userText: "继续创作", permissionMode: activePermissionMode, selectedNodeIds: [], attachments: [], skills: [], supplements: [], status: "running", createdAt: "2026-10-08" } : null });
+            return ok({
+                sessionId: serverSessionId,
+                turns,
+                ...(serverThinkingLevel ? { thinkingLevel: serverThinkingLevel } : {}),
+                ...(serverContextUsage ? { contextUsage: serverContextUsage } : {}),
+                ...(pausedTurnReason ? { pausedTurnReason } : {}),
+                active: running && !cancelled ? { turnId: "busy", userText: "继续创作", permissionMode: activePermissionMode, selectedNodeIds: [], attachments: [], skills: [], supplements: [], status: "running", createdAt: "2026-10-08" } : null,
+            });
+        }
+        if (pathname.endsWith("/assistant/session-config") && req.method === "POST") {
+            const body = await req.json();
+            sessionConfigRequests.push(body);
+            if (rejectNextSessionConfig) {
+                rejectNextSessionConfig = false;
+                return Response.json({ code: 503, reason: "host_unreachable" }, { status: 503 });
+            }
+            if (typeof body.thinkingLevel === "string") serverThinkingLevel = body.thinkingLevel;
+            return ok({ sessionId: body.sessionId || serverSessionId, thinkingLevel: serverThinkingLevel, ...(serverContextUsage ? { contextUsage: serverContextUsage } : {}) });
+        }
+        if (pathname.endsWith("/assistant/compact") && req.method === "POST") {
+            const body = await req.json();
+            compactRequests.push(body);
+            if (serverContextUsage) {
+                serverContextUsage = { ...serverContextUsage, estimatedTokens: 16000, percent: 8 };
+            }
+            return ok({ sessionId: body.sessionId || serverSessionId, compacted: true, entryId: 12, thinkingLevel: serverThinkingLevel, ...(serverContextUsage ? { contextUsage: serverContextUsage } : {}) });
         }
         if (pathname.endsWith("/assistant/steer")) { supplements.push(await req.json()); return ok({ accepted: true }); }
         if (pathname.endsWith("/assistant/cancel")) { cancelled = true; running = false; return ok({ accepted: true }); }
@@ -150,11 +181,17 @@ beforeEach(() => {
     pausedTurnReason = undefined;
     failHistoryStatus = 0;
     sessionSummaries = [];
+    sessionConfigRequests.length = 0;
+    compactRequests.length = 0;
+    serverSessionId = "s1";
+    serverThinkingLevel = "low";
+    serverContextUsage = null;
+    rejectNextSessionConfig = false;
 });
 
 test("real Sidebar handles file, paste, drop, attachment-only, purpose/range, draft restore and busy supplement", async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 900 } }); await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加参考素材"]')?.disabled);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加文件或素材"]')?.disabled);
     await page.locator('input[type="file"]').setInputFiles({ name: "portrait.jpg", mimeType: "image/jpeg", buffer: jpeg });
     await page.getByRole("combobox", { name: "portrait.jpg 的用途" }).waitFor();
     await page.getByText("正在读取预览…", { exact: true }).waitFor({ timeout: 3000 }).catch(async error => { throw new Error(error.message + " BODY " + await page.locator("body").innerText() + " MEDIA " + JSON.stringify(mediaRequests)); });
@@ -219,7 +256,7 @@ test("real Sidebar handles file, paste, drop, attachment-only, purpose/range, dr
 test("asset registration failure remains unsent; explicit upload retry keeps its idempotency key and invalid range blocks send", async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
     await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加参考素材"]')?.disabled);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加文件或素材"]')?.disabled);
     const before = chats.length, firstKey = uploadKeys.length;
     failNextAsset = true;
     await page.locator('input[type="file"]').setInputFiles({ name: "retry.png", mimeType: "image/png", buffer: png });
@@ -264,7 +301,7 @@ test("asset registration failure remains unsent; explicit upload retry keeps its
 test("native-local Sidebar publishes accepted uploads for immediate @ reuse, and removal preserves ownership", async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
     await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加参考素材"]')?.disabled);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加文件或素材"]')?.disabled);
     expect(await page.evaluate(() => (window as any).assistantInputFixture.nativeLocal())).toBe(true);
     await page.locator('input[type="file"]').setInputFiles({ name: "reuse.jpg", mimeType: "image/jpeg", buffer: jpeg });
     await page.getByRole("combobox", { name: "reuse.jpg 的用途" }).waitFor();
@@ -295,7 +332,7 @@ test("native-local Sidebar publishes accepted uploads for immediate @ reuse, and
 test("missing resource duration is recovered from a real twelve-second WAV for registration, draft and range validation", async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
     await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加参考素材"]')?.disabled);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加文件或素材"]')?.disabled);
     await page.locator('input[type="file"]').setInputFiles({ name: "twelve-seconds.wav", mimeType: "audio/wav", buffer: longWav });
     await page.getByRole("combobox", { name: "twelve-seconds.wav 的用途" }).waitFor();
     await page.waitForFunction(async () => (await (window as any).assistantInputFixture.draft())?.attachments.some((item: any) => item.name === "twelve-seconds.wav" && item.durationMs === 12000));
@@ -319,7 +356,7 @@ test("permission choices persist; trusted active mode locks the turn and supplem
     const selector = page.getByRole("combobox", { name: "助手权限" });
     await page.waitForFunction(() => !document.querySelector<HTMLInputElement>('input[aria-label="助手权限"]')?.disabled);
     const selectedText = () => selector.locator('xpath=ancestor::div[contains(@class,"ant-select")][1]').innerText();
-    expect(await selectedText()).toBe("当前画布");
+    expect(await selectedText()).toBe("画布");
     await selector.click();
     await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').getByText("完全访问", { exact: true }).click();
     await page.getByRole("textbox", { name: "给助手的消息" }).fill("查看全部项目");
@@ -328,7 +365,7 @@ test("permission choices persist; trusted active mode locks the turn and supplem
     expect(chats.at(-1)?.permissionMode).toBe("full-access");
     await page.reload();
     await page.waitForFunction(() => !document.querySelector<HTMLInputElement>('input[aria-label="助手权限"]')?.disabled);
-    expect(await selectedText()).toBe("完全访问");
+    expect(await selectedText()).toBe("全部");
     activePermissionMode = "read-only"; running = true;
     await page.reload(); await page.getByRole("button", { name: "停止", exact: true }).waitFor();
     expect(await selector.isDisabled()).toBe(true);
@@ -341,12 +378,12 @@ test("permission choices persist; trusted active mode locks the turn and supplem
     expect(supplements.at(-1)?.permissionMode).toBeUndefined();
     activePermissionMode = undefined;
     await page.reload(); await page.getByRole("button", { name: "停止", exact: true }).waitFor();
-    expect(await selectedText()).toBe("当前画布"); // Legacy active turns keep their original scope.
+    expect(await selectedText()).toBe("画布"); // Legacy active turns keep their original scope.
     expect(await selector.isDisabled()).toBe(true);
     running = false;
     await page.reload();
     await page.waitForFunction(() => !document.querySelector<HTMLInputElement>('input[aria-label="助手权限"]')?.disabled);
-    expect(await selectedText()).toBe("完全访问");
+    expect(await selectedText()).toBe("全部");
     // 助手侧栏有 220ms 的进场位移动画，动画期间页面会短暂比视口宽；这里等它出现并停稳，
     // 断言的是稳定后的布局，不会因为恰好取到动画中间一帧而失败。
     await page.waitForFunction(() => {
@@ -448,59 +485,64 @@ test("status polling does not pile up initial history reads and reloads paused t
         createdAt: "2026-10-08",
     });
     pausedTurnReason = "model_unavailable_for_resume";
-    statusPayload = { available: false, reason: "host_starting" };
+    statusPayload = { available: false, reason: "host_busy" };
     let releaseInitialHistory!: () => void;
     const initialHistoryGate = new Promise<void>(resolve => { releaseInitialHistory = resolve; });
     holdHistory = () => initialHistoryGate;
 
     const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
-    await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
+    try {
+        await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
 
-    // 1. Wait for at least two 2s host_starting /assistant/status polls while initial /assistant/history is still in flight.
-    const pollDeadline = Date.now() + 8000;
-    while (statusCalls < 2 && Date.now() < pollDeadline) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    expect(statusCalls).toBeGreaterThanOrEqual(2);
-    expect(historyCalls).toBe(1);
-
-    // 2. Flip /assistant/status to available WHILE initial /assistant/history (#1) is STILL in flight!
-    const statusCallsBeforeAvailable = statusCalls;
-    statusPayload = { available: true, model: { channelId: "ch-1", channelName: "Local", id: "restored-model", name: "Restored" } };
-    const availableDeadline = Date.now() + 6000;
-    while (statusCalls <= statusCallsBeforeAvailable && Date.now() < availableDeadline) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    // Give the browser a moment to apply setStatus({ available: true }) while history #1 is still held:
-    // historyLoading lock must keep historyCalls === 1 during flight, NOT drop a concurrent duplicate.
-    await new Promise(resolve => setTimeout(resolve, 150));
-    expect(historyCalls).toBe(1);
-
-    // 3. Now let history #1 finish with pausedTurnReason="model_unavailable_for_resume", and prepare history #2 with the resumed reply:
-    // settling history #1 must immediately detect that status recovered mid-flight and trigger history #2!
-    holdHistory = async () => {
-        if (historyCalls >= 2) {
-            pausedTurnReason = undefined;
-            turns.splice(0, turns.length, {
-                turnId: "paused-1",
-                userText: "继续分镜脚本",
-                selectedNodeIds: [],
-                reply: "模型恢复后已完成续跑。",
-                attachments: [],
-                skills: [],
-                toolCalls: [],
-                proposals: [],
-                change: null,
-                error: null,
-                cancelled: false,
-                createdAt: "2026-10-08",
-            });
+        // 1. Wait for initial /assistant/history (#1) and at least two transient /assistant/status polls while #1 is held in flight.
+        const pollDeadline = Date.now() + 8000;
+        while ((statusCalls < 2 || historyCalls < 1) && Date.now() < pollDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
-    };
-    releaseInitialHistory();
-    await page.getByText("模型恢复后已完成续跑。", { exact: true }).waitFor({ timeout: 6000 });
-    expect(historyCalls).toBe(2);
-    await page.close();
+        await new Promise(resolve => setTimeout(resolve, 250));
+        expect(statusCalls).toBeGreaterThanOrEqual(2);
+        expect(historyCalls).toBe(1);
+
+        // 2. Flip /assistant/status to available WHILE initial /assistant/history (#1) is STILL in flight!
+        const statusCallsBeforeAvailable = statusCalls;
+        statusPayload = { available: true, model: { channelId: "ch-1", channelName: "Local", id: "restored-model", name: "Restored" } };
+        const availableDeadline = Date.now() + 6000;
+        while (statusCalls <= statusCallsBeforeAvailable && Date.now() < availableDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        // Give the browser a moment to apply setStatus({ available: true }) while history #1 is still held:
+        // historyLoading lock must keep historyCalls === 1 during flight, NOT drop a concurrent duplicate.
+        await new Promise(resolve => setTimeout(resolve, 150));
+        expect(historyCalls).toBe(1);
+
+        // 3. Now let history #1 finish with pausedTurnReason="model_unavailable_for_resume", and prepare history #2 with the resumed reply:
+        // settling history #1 must immediately detect that status recovered mid-flight and trigger history #2!
+        holdHistory = async () => {
+            if (historyCalls >= 2) {
+                pausedTurnReason = undefined;
+                turns.splice(0, turns.length, {
+                    turnId: "paused-1",
+                    userText: "继续分镜脚本",
+                    selectedNodeIds: [],
+                    reply: "模型恢复后已完成续跑。",
+                    attachments: [],
+                    skills: [],
+                    toolCalls: [],
+                    proposals: [],
+                    change: null,
+                    error: null,
+                    cancelled: false,
+                    createdAt: "2026-10-08",
+                });
+            }
+        };
+        releaseInitialHistory();
+        await page.getByText("模型恢复后已完成续跑。", { exact: true }).waitFor({ timeout: 6000 });
+        expect(historyCalls).toBe(2);
+    } finally {
+        releaseInitialHistory();
+        await page.close();
+    }
 }, 20000);
 
 test("cold-start 503 hides false failure banner until ready and deleting non-current session never wedges polling", async () => {
@@ -517,7 +559,7 @@ test("cold-start 503 hides false failure banner until ready and deleting non-cur
     const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
     await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
 
-    // Cold-start 503 while host_starting must show "正在读取对话…" without flashing "没能读取对话。请重新读取。" or looping!
+    // Cold-start host_starting defers /assistant/history (0 wasted 503 calls) while showing "正在读取对话…" without flashing errors!
     await page.getByText("正在读取对话…", { exact: true }).waitFor({ timeout: 5000 });
     const pollDeadline = Date.now() + 6000;
     while (statusCalls < 2 && Date.now() < pollDeadline) {
@@ -525,9 +567,9 @@ test("cold-start 503 hides false failure banner until ready and deleting non-cur
     }
     await new Promise(resolve => setTimeout(resolve, 300));
     expect(await page.getByText("没能读取对话。请重新读取。").count()).toBe(0);
-    expect(historyCalls).toBe(1);
+    expect(historyCalls).toBe(0);
 
-    // Once status becomes model_not_configured (read-only host ready), history reloads (#2) with s1+s2 and paused turn!
+    // Once status becomes model_not_configured (read-only host ready), history loads (#1) with s1+s2 and paused turn!
     failHistoryStatus = 0;
     pausedTurnReason = "model_unavailable_for_resume";
     turns.push({
@@ -547,25 +589,25 @@ test("cold-start 503 hides false failure banner until ready and deleting non-cur
     });
     statusPayload = { available: false, reason: "model_not_configured" };
     await page.getByText("首次读取失败后的对话", { exact: true }).waitFor({ timeout: 6000 });
-    expect(historyCalls).toBe(2);
+    expect(historyCalls).toBe(1);
 
-    // Open session dropdown (s1 + s2 loaded), trigger paused-turn reload (#3) via status becoming available,
-    // delete non-current session s2 WHILE #3 is held in flight, let #3 return an active turn (2s poll),
-    // and verify 2s background poll #4 still fires (proving historyInFlight returned to 0)!
+    // Open session dropdown (s1 + s2 loaded), trigger paused-turn reload (#2) via status becoming available,
+    // delete non-current session s2 WHILE #2 is held in flight, let #2 return an active turn (2s poll),
+    // and verify 2s background poll #3 still fires (proving historyInFlight returned to 0)!
     await page.getByRole("button", { name: "历史对话", exact: true }).click();
     await page.getByRole("button", { name: "删除会话 旧支线对话", exact: true }).waitFor({ timeout: 4000 });
-    let releaseThirdRead!: () => void;
-    const thirdReadGate = new Promise<void>(resolve => { releaseThirdRead = resolve; });
-    let markThirdReadEntered!: () => void;
-    const thirdReadEntered = new Promise<void>(resolve => { markThirdReadEntered = resolve; });
+    let releaseSecondRead!: () => void;
+    const secondReadGate = new Promise<void>(resolve => { releaseSecondRead = resolve; });
+    let markSecondReadEntered!: () => void;
+    const secondReadEntered = new Promise<void>(resolve => { markSecondReadEntered = resolve; });
     holdHistory = async () => {
-        if (historyCalls === 3) {
-            markThirdReadEntered();
-            await thirdReadGate;
+        if (historyCalls === 2) {
+            markSecondReadEntered();
+            await secondReadGate;
             pausedTurnReason = undefined;
             running = true;
             turns.length = 0;
-        } else if (historyCalls >= 4) {
+        } else if (historyCalls >= 3) {
             running = false;
             turns.splice(0, turns.length, {
                 turnId: "busy",
@@ -584,13 +626,177 @@ test("cold-start 503 hides false failure banner until ready and deleting non-cur
         }
     };
     statusPayload = { available: true, model: { channelId: "ch-1", channelName: "Local", id: "restored-model", name: "Restored" } };
-    await thirdReadEntered;
+    await secondReadEntered;
     await page.getByRole("button", { name: "删除会话 旧支线对话", exact: true }).click();
     await new Promise(resolve => setTimeout(resolve, 150));
-    releaseThirdRead();
+    releaseSecondRead();
 
     await page.getByText("删除支线会话后自动刷新仍然正常。", { exact: true }).waitFor({ timeout: 8000 });
-    expect(historyCalls).toBe(4);
+    expect(historyCalls).toBe(3);
     expect(await page.getByRole("button", { name: "删除会话 旧支线对话", exact: true }).count()).toBe(0);
     await page.close();
 }, 35000);
+
+test("real Sidebar attaches arbitrary document files without polluting asset library and sends resource references", async () => {
+    running = false;
+    cancelled = false;
+    turns.length = 0;
+    const beforeChats = chats.length;
+    const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
+    await page.evaluate(() => new Promise<void>(resolve => {
+        const req = indexedDB.deleteDatabase("beeftv-assistant-input");
+        req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    }));
+    await page.reload();
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="添加文件或素材"]')?.disabled);
+    const beforeMediaRequests = mediaRequests.length;
+    const mdBytes = Buffer.from("# 广告分镜脚本\n\n第 1 镜：清晨咖啡店窗边特写。\n", "utf-8");
+    const docxBytes = Buffer.from("PK\x03\x04fake-docx-payload-for-upload-test", "binary");
+    const xlsxBytes = Buffer.from("PK\x03\x04fake-xlsx-payload-for-long-name-overflow-check", "binary");
+    await page.locator('input[type="file"]').setInputFiles([
+        { name: "script-outline.md", mimeType: "text/markdown", buffer: mdBytes },
+        { name: "brand-brief.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: docxBytes },
+        { name: "2026-Q4-advertising-creative-breakdown-table-very-long-name.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: xlsxBytes },
+    ]);
+    await page.getByRole("combobox", { name: "script-outline.md 的用途" }).waitFor();
+    await page.getByRole("combobox", { name: "brand-brief.docx 的用途" }).waitFor();
+    await page.getByRole("combobox", { name: "2026-Q4-advertising-creative-breakdown-table-very-long-name.xlsx 的用途" }).waitFor();
+    expect(registeredAssets).toHaveLength(0);
+    expect(await page.evaluate(() => (window as any).assistantInputFixture.assets())).toEqual([]);
+    expect(mediaRequests.length).toBe(beforeMediaRequests);
+    expect(await page.locator(".canvas-assistant-file-card").count()).toBe(3);
+    expect((await page.locator(".canvas-assistant-file-ext").allInnerTexts()).sort()).toEqual(["DOCX", "MD", "XLSX"]);
+    expect(await page.getByRole("spinbutton").count()).toBe(0);
+    await page.getByRole("combobox", { name: "script-outline.md 的用途" }).click();
+    await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText("参考资料", { exact: true }).waitFor();
+    const filePurposes = await (await page.waitForFunction(() => {
+        const labels = [...document.querySelectorAll(".ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-content")].map(item => item.textContent);
+        return labels.length === 2 ? labels : null;
+    })).jsonValue();
+    expect(filePurposes).toEqual(["仅分析", "参考资料"]);
+    await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText("参考资料", { exact: true }).click();
+    await page.waitForFunction(async () => (await (window as any).assistantInputFixture.draft())?.attachments.some((item: any) => item.name === "script-outline.md" && item.purpose === "reference"));
+    await page.reload();
+    await page.getByRole("combobox", { name: "script-outline.md 的用途" }).waitFor();
+    expect(await page.locator(".canvas-assistant-file-card").count()).toBe(3);
+    await page.locator(".canvas-assistant-sidebar").evaluate(async sidebar => {
+        await Promise.all(sidebar.getAnimations().map(animation => animation.finished));
+    });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.getByRole("textbox", { name: "给助手的消息" }).fill("按这些文档拆解镜头");
+    const sent = page.waitForResponse(response => response.url().endsWith("/assistant/chat"));
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await sent;
+    await page.getByText("已读取提供的参考素材。", { exact: true }).last().waitFor();
+    const chat = chats[beforeChats];
+    expect(chat?.attachments).toHaveLength(3);
+    expect(chat?.attachments.every((item: any) => item.kind === "file" && !item.assetId && Boolean(item.resourceId))).toBe(true);
+    expect(chat?.attachments.find((item: any) => item.name === "script-outline.md")?.purpose).toBe("reference");
+    expect(chat?.references).toEqual(chat?.attachments.map((item: any) => ({ kind: "resource", id: item.resourceId })));
+    await page.close();
+}, 30000);
+
+test("thinking level switcher, context usage pill, manual compaction, and 16-item canvas reference limit work in real Sidebar", async () => {
+    running = false;
+    cancelled = false;
+    turns.length = 0;
+    turns.push({
+        turnId: "ctx-1",
+        userText: "帮我拆解前五镜分镜脚本",
+        selectedNodeIds: [],
+        reply: "已经整理好前五镜的分镜结构，可以继续细化人物与灯光。",
+        attachments: [],
+        skills: [],
+        toolCalls: [],
+        proposals: [],
+        change: null,
+        error: null,
+        cancelled: false,
+        createdAt: "2026-10-08",
+    });
+    const durableId = "durable:11111111-1111-1111-1111-111111111111";
+    serverSessionId = durableId;
+    serverThinkingLevel = "low";
+    serverContextUsage = {
+        estimatedTokens: 48200,
+        contextWindow: 200000,
+        percent: 24,
+        totalInput: 52000,
+        totalOutput: 3400,
+        cacheRead: 36000,
+        cacheWrite: 1200,
+    };
+
+    const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await page.goto(server.url.toString().replace("localhost", "127.0.0.1"));
+    await page.evaluate(() => new Promise<void>(resolve => {
+        const req = indexedDB.deleteDatabase("beeftv-assistant-input");
+        req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    }));
+    await page.reload();
+
+    await page.getByText("上下文 24%", { exact: true }).waitFor();
+    const thinkingSelect = page.getByRole("combobox", { name: "思考深度" });
+    const thinkingText = () => thinkingSelect.locator('xpath=ancestor::div[contains(@class,"ant-select")][1]').innerText();
+    expect(await thinkingText()).toBe("轻量");
+
+    // 切换思考深度失败时必须回滚显示，且不污染本地偏好
+    rejectNextSessionConfig = true;
+    await thinkingSelect.click();
+    const failedConfigRes = page.waitForResponse(response => response.url().endsWith("/assistant/session-config"));
+    await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText("关闭思考", { exact: true }).click();
+    await failedConfigRes;
+    expect(await thinkingText()).toBe("轻量");
+
+    // 切换思考深度成功 -> 调用 /api/assistant/session-config 并持久化
+    await thinkingSelect.click();
+    const configRes = page.waitForResponse(response => response.url().endsWith("/assistant/session-config"));
+    await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText("深度思考", { exact: true }).click();
+    await configRes;
+    expect(sessionConfigRequests.at(-1)).toEqual({ canvasId: "input-canvas", sessionId: durableId, thinkingLevel: "high" });
+    expect(await thinkingText()).toBe("深度");
+
+    // 悬停上下文占用显示上下文估算与缓存复用量（使用用户语，不暴露英文 token 术语）
+    await page.getByText("上下文 24%", { exact: true }).hover();
+    await page.getByRole("tooltip").getByText(/48k \/ 200k.*缓存 36k/).waitFor();
+
+    // 等入场动画稳定后检查无横向溢出
+    await page.waitForFunction(() => {
+        const sidebars = [...document.querySelectorAll(".canvas-assistant-sidebar")];
+        return sidebars.length > 0 && sidebars.every(el => el.getAnimations().every(animation => animation.playState !== "running"));
+    }, { timeout: 5000 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+    // 触发手动压缩上下文 -> 调用 /api/assistant/compact 并更新占用与提示
+    const compactRes = page.waitForResponse(response => response.url().endsWith("/assistant/compact"));
+    await page.getByRole("button", { name: "压缩上下文", exact: true }).click();
+    await compactRes;
+    expect(compactRequests.at(-1)).toEqual({ canvasId: "input-canvas", sessionId: durableId });
+    await page.getByText("上下文 8%", { exact: true }).waitFor();
+    await page.getByText("已压缩较早对话上下文，后续对话会保留关键信息。", { exact: true }).waitFor();
+
+    // 画布参考素材上限统一为 16（超过旧上限 8 仍可添加到 16，第 17 个报新上限提示）
+    for (let i = 0; i < 16; i++) {
+        await page.getByRole("button", { name: "画布素材", exact: true }).click();
+        await page.getByRole("button", { name: "画布人像", exact: true }).click();
+    }
+    expect(await page.locator(".canvas-assistant-attachment").count()).toBe(16);
+    expect(await page.getByText("一次最多添加 8 份参考素材").count()).toBe(0);
+    await page.getByRole("button", { name: "画布素材", exact: true }).click();
+    await page.getByRole("button", { name: "画布人像", exact: true }).click();
+    await page.getByText("一次最多添加 16 个文件或素材", { exact: true }).waitFor();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+    // 刷新后思考深度保持深度思考；非 Durable 旧会话不展示压缩按钮
+    await page.reload();
+    await page.getByText("上下文 8%", { exact: true }).waitFor();
+    expect(await thinkingText()).toBe("深度");
+    serverSessionId = "legacy-jsonl-1";
+    serverThinkingLevel = undefined;
+    serverContextUsage = null;
+    await page.reload();
+    await page.getByText("已经整理好前五镜的分镜结构，可以继续细化人物与灯光。", { exact: true }).waitFor();
+    expect(await page.getByRole("button", { name: "压缩上下文", exact: true }).count()).toBe(0);
+    await page.close();
+}, 45000);

@@ -1,9 +1,10 @@
+import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import type { App } from "antd";
 
 import type { createReferenceLinkResolver } from "@/components/generation-reference-links";
 import { explainGenerationError } from "@/lib/generation-error";
 import { normalizeImageValue, normalizeVideoValue, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
-import { declaredOrOmniVideoCapability, isBeefTVModelRoute, resolveVideoOperation } from "@/lib/model-selection";
+import { declaredOrOmniVideoCapability, resolveVideoOperation } from "@/lib/model-selection";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { NewAsset } from "@/stores/use-asset-store";
@@ -81,6 +82,7 @@ export function bindGenerationTaskToMessage(item: CreationMessage, task: Generat
     return {
         ...item,
         taskOutcome: task.outcome,
+        providerCancelStatus: task.providerCancelStatus,
         taskFailureDiagnostics: task.failureDiagnostics ?? item.taskFailureDiagnostics,
         generationStage: task.stage,
         generationOperation: task.operation,
@@ -109,6 +111,7 @@ export function applyGenerationFailureToMessage(
         generationProviderCode: explained.providerCode,
         taskFailureDiagnostics: failedTask?.failureDiagnostics,
         taskOutcome: failedTask?.outcome ?? item.taskOutcome,
+        providerCancelStatus: failedTask?.providerCancelStatus ?? item.providerCancelStatus,
         generationErrorCode: item.generationErrorCode || failedTask?.errorCode || (explained.category === "unknown" ? undefined : explained.errorCode),
         generationOperation: item.generationOperation || fallbackOperation,
         createdAt,
@@ -151,6 +154,7 @@ interface ExecuteCreateSubmitParams {
     updateActive: (updater: (conversation: CreationConversation) => CreationConversation) => void;
     updateConversationMessage: (conversationId: string, id: string, updater: (item: CreationMessage) => CreationMessage) => Promise<void>;
     applyCanonicalConversation: (conversationId: string, document: CreationConversation) => void;
+    loadRuntime?: typeof loadCreationRuntime;
 }
 
 export async function executeCreateSubmit(params: ExecuteCreateSubmitParams) {
@@ -189,6 +193,7 @@ export async function executeCreateSubmit(params: ExecuteCreateSubmitParams) {
         updateActive,
         updateConversationMessage,
         applyCanonicalConversation,
+        loadRuntime = loadCreationRuntime,
     } = params;
 
     const releaseRetryLock = () => {
@@ -212,11 +217,9 @@ export async function executeCreateSubmit(params: ExecuteCreateSubmitParams) {
         { textCount: text ? 1 : 0, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length, characterCount: 0 },
         undefined,
         declaredOrOmniVideoCapability(config, selectedModel),
-        selectedModel,
-        isBeefTVModelRoute(selectedModel, config),
     );
     const skillReferences = references.flatMap((reference) => (reference.skill ? [reference.skill] : []));
-    const runtime = await loadCreationRuntime();
+    const runtime = await loadRuntime();
     let skillExecution: Awaited<ReturnType<typeof runtime.skillRuntime.prepare>>;
     try {
         skillExecution = await runtime.skillRuntime.prepare({
@@ -377,6 +380,7 @@ export async function executeCreateSubmit(params: ExecuteCreateSubmitParams) {
             if (failedCount) toast.warning(`${resultUrls.length} 张图片已生成，${failedCount} 批生成或保存失败`);
             updateOriginAssistant((item) => ({ ...item, content: failedCount ? `${resultUrls.length} 张图片已生成，${failedCount} 张失败` : "图片已生成" }));
         } else {
+            if (!retryContext) useCreationPreferencesStore.getState().confirmVideoSettings(requestConfig);
             const result = await runtime.runGenerationOperationOnce(retryContext?.clientOperationId, () => runtime.runBackendGenerationTask({
                 resolveReferenceLinks,
                 mode: "video",
@@ -390,7 +394,7 @@ export async function executeCreateSubmit(params: ExecuteCreateSubmitParams) {
                 onTaskUpdate: bindTask,
                 ...retryContext,
             }));
-            if (!result.video?.dataUrl) throw new Error("后端任务没有返回视频");
+            if (!result.video?.dataUrl && !result.video?.url && !result.video?.storageKey) throw new Error("后端任务没有返回视频");
             const taskId = Array.from(boundTaskIds)[0];
             if (!taskId) throw new Error("生成任务缺少稳定任务标识");
             const task = completedCreationGenerationTask(runtime, { taskId, task: boundTasks.get(taskId), mode: "video", prompt: expandedPrompt, result, conversationId: activeConversation.id, messageId: assistantMessage.id });

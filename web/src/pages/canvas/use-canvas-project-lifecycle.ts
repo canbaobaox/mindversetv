@@ -1,4 +1,5 @@
 import { mergeCanvasRefreshPatch } from "@/lib/canvas/canvas-patch-merge";
+import { preserveUntouchedStoredNodes } from "@/lib/canvas/canvas-document-patch";
 import { canvasDocumentMatchesFields, sameCanvasDocumentValue } from "@/lib/canvas/canvas-document-equality";
 import { rebaseCanvasDocumentThreeWay } from "@/lib/canvas/canvas-document-rebase";
 import { traceCanvasGraph } from "@/lib/canvas/canvas-graph-trace";
@@ -10,20 +11,20 @@ import { canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanv
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { removeCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { normalizeCanvasNodeTimestamps } from "@/lib/canvas/canvas-node-timestamps";
-import { normalizeCanvasMediaNodeSemanticsList } from "@/lib/canvas/canvas-node-semantics";
+import { isSeedreamLayerOutput, normalizeCanvasMediaNodeSemanticsList } from "@/lib/canvas/canvas-node-semantics";
 import { normalizeWorkflowContainers } from "@/lib/canvas/reusable-workflow-instance";
 import { migrateDirectorCanvas } from "@/lib/canvas/director/director-node-migration";
 import { canvasWorkspaceProjectId, listCanvasWorkspaceProjectCanvases } from "@/lib/canvas/canvas-workspace-project";
 import { carryGenerationRecoveryRestore, hydrateAssistantImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
-import { forceOverwriteRemoteCanvasSync, hasRemoteUserDataSyncSession, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeCanvasRefresh } from "@/services/local-workspace-sync";
+import { forceOverwriteRemoteCanvasSync, loadCanvasProjectForEditing, subscribeCanvasRefresh } from "@/services/local-workspace-sync";
 import { createWorkspaceCanvasProject, deleteWorkspaceCanvasProjects } from "@/services/workspace-project-repository";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
-import { hasUnconfirmedCanvasEdits, holdExternalCanvasRevisionForEditor, scheduleLocalCanvasBackendSync, syncLocalCanvasProjectToBackend } from "@/services/local-workspace-repository";
+import { hasUnconfirmedCanvasEdits, markCanvasMergeOverlap, scheduleLocalCanvasBackendSync, syncLocalCanvasProjectToBackend } from "@/services/local-workspace-repository";
 import { isCanvasSubmitControlError } from "@/services/canvas-revision-conflict";
 import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { useCanvasThemeStore } from "@/stores/canvas/use-canvas-theme-store";
-import { projectSyncProgress, useSyncProgressStore } from "@/stores/use-sync-progress-store";
+import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { readCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
 import { useUserStore } from "@/stores/use-user-store";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
@@ -35,11 +36,6 @@ import { queryGenerationTask } from "@/services/api/task-center";
 import { persistCanvasNodeFailure } from "@/lib/canvas/canvas-node-failure-state";
 
 const CANVAS_VIEWPORT_SAVE_DELAY_MS = 2000;
-
-function isExpectedLocalOnlySyncError(error: unknown) {
-    const message = error instanceof Error ? error.message : String(error || "");
-    return /尚未建立云端同步会话|未登录|guest/i.test(message);
-}
 
 type EditorDocument = Pick<CanvasHistorySnapshot, "nodes" | "connections" | "chatSessions" | "activeChatId">;
 
@@ -59,7 +55,8 @@ function openCanvasNodes(project: CanvasProject) {
     const directorMigration = migrateDirectorCanvas(sourceNodes, sourceScenes);
     const migratedNodes = normalizeWorkflowContainers(directorMigration.nodes);
     const migration = { ...directorMigration, nodes: migratedNodes };
-    const hasNodeMigration = directorMigration.nodes.some((node, index) => node !== sourceNodes[index])
+    const hasNodeMigration = sourceNodes.some((node, index) => isSeedreamLayerOutput(node) && node.position !== project.nodes?.[index]?.position)
+        || directorMigration.nodes.some((node, index) => node !== sourceNodes[index])
         || migratedNodes.some((node, index) => node !== directorMigration.nodes[index])
         || migration.directorScenes !== sourceScenes;
     const nodes = normalizeCanvasMediaNodeSemanticsList(normalizeCanvasNodeTimestamps(migratedNodes, {
@@ -120,19 +117,25 @@ function sameEditorDocument(left: EditorDocument, right: EditorDocument) {
         && sameJson(left.chatSessions, right.chatSessions);
 }
 
-/** 助手会话按会话三路合并；同一会话两边都改过时抛错。 */
-function mergeIncomingChatSessions(project: CanvasProject, base: CanvasAssistantSession[], incoming: CanvasAssistantSession[], live: CanvasAssistantSession[]) {
+/** 助手会话按会话确定性三路合并；同一会话两边都改过时保留本地会话，同时合并另一侧的其余会话。 */
+function mergeIncomingChatSessions(
+    project: CanvasProject,
+    base: CanvasAssistantSession[],
+    incoming: CanvasAssistantSession[],
+    live: CanvasAssistantSession[],
+    onConflict?: () => void,
+) {
     if (sameJson(base, incoming) || sameJson(live, incoming)) return live;
     if (sameJson(live, base)) return incoming;
     const document = (chatSessions: CanvasAssistantSession[]): CanvasProject => ({ ...project, nodes: [], connections: [], chatSessions });
     const merged = rebaseCanvasDocumentThreeWay({ base: document(base), local: document(live), remote: document(incoming) });
-    if (merged.conflict) throw new Error("助手会话在别处也改过，已保留本地会话");
+    if (merged.conflict) onConflict?.();
     return merged.project.chatSessions || [];
 }
 
 /**
  * 把 base→incoming 这段别处写入的变化并到编辑器内容上：节点和连线逐个三路合并，
- * 助手会话逐个合并，当前会话只在编辑器没换过时跟随。同一处两边都改过时抛错，调用方保留编辑器内容。
+ * 助手会话逐个合并，当前会话只在编辑器没换过时跟随。同一处两边都改过时确定性保留本地编辑并通知记录合并前快照。
  * `observed` 是编辑器对 base 的那份节点，用来判断本地真改动；`adopted` 是要采用的 incoming 节点（默认原样）。
  */
 function mergeIncomingEditorDocument(
@@ -140,7 +143,7 @@ function mergeIncomingEditorDocument(
     base: EditorDocument,
     incoming: EditorDocument,
     live: EditorDocument,
-    options: { observed?: CanvasNodeData[] | null; adopted?: CanvasNodeData[] } = {},
+    options: { observed?: CanvasNodeData[] | null; adopted?: CanvasNodeData[]; onConflict?: () => void } = {},
 ): EditorDocument {
     const adopted = options.adopted ?? incoming.nodes;
     const graph = mergeCanvasRefreshPatch(
@@ -148,11 +151,12 @@ function mergeIncomingEditorDocument(
         { ...project, nodes: adopted, connections: incoming.connections },
         live.nodes,
         live.connections,
+        { onConflict: options.onConflict },
     );
     return {
         nodes: carryGenerationRecoveryRestore(graph.nodes, adopted),
         connections: graph.connections,
-        chatSessions: mergeIncomingChatSessions(project, base.chatSessions, incoming.chatSessions, live.chatSessions),
+        chatSessions: mergeIncomingChatSessions(project, base.chatSessions, incoming.chatSessions, live.chatSessions, options.onConflict),
         activeChatId: live.activeChatId === base.activeChatId ? incoming.activeChatId : live.activeChatId,
     };
 }
@@ -239,9 +243,7 @@ export function useCanvasProjectLifecycle({
 
     const observedContentRef = useRef<CanvasHistorySnapshot | null>(null);
     const observedAtRender = observedContentRef.current;
-    const loadLatestRef = useRef(false);
     const historyRestoreRef = useRef<{ snapshotId: string; revision: number; resolve: () => void; reject: (error: unknown) => void } | null>(null);
-    const pendingReloadRef = useRef<{ resolve: () => void; reject: (error: unknown) => void } | null>(null);
     const editorReadyRef = useRef(false);
     // React keeps the previous canvas state for one render after the route id
     // changes. Track which project the live editor refs actually belong to so
@@ -298,15 +300,7 @@ export function useCanvasProjectLifecycle({
             chatSessionsRef.current = merged.chatSessions;
             setChatSessions((current) => {
                 if (current === from.chatSessions || !base) return merged.chatSessions;
-                try {
-                    return mergeIncomingChatSessions(incoming, base.chatSessions || [], incoming.chatSessions || [], current);
-                } catch {
-                    // Keep the newer local sessions; the next editor write merges against the store again.
-                    // The editor's node baseline already holds the incoming nodes, so replaying
-                    // base→incoming onto it changes no node; only the sessions are merged again.
-                    observedStoreRef.current = base;
-                    return current;
-                }
+                return mergeIncomingChatSessions(incoming, base.chatSessions || [], incoming.chatSessions || [], current);
             });
         }
         if (merged.activeChatId !== from.activeChatId) {
@@ -320,41 +314,31 @@ export function useCanvasProjectLifecycle({
     /**
      * Merge a document another writer put in the store into the editor.
      * Without a base the incoming document replaces the editor content.
-     * Same-field conflicts keep the editor content, hold the newer version and pause submits.
-     * Local edits are told apart against the editor's own copy of the base, so open
-     * normalization is never taken for one. Incoming content is taken as it is (running
-     * uploads and tasks stay running); with `openRules` (the read that opens the canvas)
-     * it is restored by the normal open rules. Editor content is never re-normalized.
+     * Overlapping field edits deterministically keep the live editor value while
+     * adopting non-overlapping server updates so single-user autosave never stalls.
      */
     const adoptIncomingEditorDocument = (base: CanvasProject | undefined, incoming: CanvasProject, options: { openRules?: boolean } = {}) => {
         const live = liveEditorDocument();
         const observed = observedContentRef.current;
         let merged: EditorDocument;
         let baseline: EditorDocument | null = null;
-        try {
-            if (base) {
-                const baseDocument = editorDocumentOf(base);
-                const incomingDocument = editorDocumentOf(incoming);
-                const nodes = {
-                    observed: base === observedStoreRef.current ? observed?.nodes ?? null : null,
-                    adopted: options.openRules ? openCanvasNodes(incoming).nodes : incoming.nodes,
-                };
-                merged = mergeIncomingEditorDocument(incoming, baseDocument, incomingDocument, live, nodes);
-                // Advance only the observed incoming fields; edits in live refs still
-                // differ from this baseline and must be persisted by the autosave effect.
-                if (observed) baseline = mergeIncomingEditorDocument(incoming, baseDocument, incomingDocument, editorDocumentOf(observed), nodes);
-            } else {
-                merged = editorDocumentOf(incoming);
-                baseline = merged;
-            }
-        } catch (error) {
-            // Keep the local edits on screen, but never let autosave silently
-            // write this stale graph over the server: surface the newer version
-            // and pause submits until the user picks it.
-            traceCanvasGraph("editor.refresh.conflict", { previous: base, incoming, live: { id: projectId, nodes: live.nodes, connections: live.connections } });
-            console.warn("画布外部改动与本地编辑冲突，已保留本地编辑", { id: projectId, error });
-            holdExternalCanvasRevisionForEditor(incoming);
-            return false;
+        if (base) {
+            const baseDocument = editorDocumentOf(base);
+            const incomingDocument = editorDocumentOf(incoming);
+            const nodes = {
+                observed: base === observedStoreRef.current ? observed?.nodes ?? null : null,
+                adopted: options.openRules ? openCanvasNodes(incoming).nodes : incoming.nodes,
+            };
+            merged = mergeIncomingEditorDocument(incoming, baseDocument, incomingDocument, live, {
+                ...nodes,
+                onConflict: () => markCanvasMergeOverlap(projectId),
+            });
+            // Advance only the observed incoming fields; edits in live refs still
+            // differ from this baseline and must be persisted by the autosave effect.
+            if (observed) baseline = mergeIncomingEditorDocument(incoming, baseDocument, incomingDocument, editorDocumentOf(observed), nodes);
+        } else {
+            merged = editorDocumentOf(incoming);
+            baseline = merged;
         }
         traceCanvasGraph("editor.refresh", { previous: base, incoming, live: { id: projectId, nodes: live.nodes, connections: live.connections }, merged: { id: projectId, nodes: merged.nodes, connections: merged.connections } });
         if (observed && baseline) observedContentRef.current = { ...observed, ...baseline };
@@ -380,21 +364,16 @@ export function useCanvasProjectLifecycle({
             return { next: snapshot, merged: false };
         }
         const live = liveEditorDocument();
-        try {
-            // Local edits are told apart against the editor's own copy of the base.
-            const merged = mergeIncomingEditorDocument(stored, baseDocument, storedDocument, live, { observed: observedContentRef.current?.nodes ?? null });
-            if (sameEditorDocument(merged, snapshot)) return { next: snapshot, merged: false };
-            traceCanvasGraph("editor.write.rebase", { previous: base, incoming: stored, live: { id: projectId, nodes: live.nodes, connections: live.connections }, merged: { id: projectId, nodes: merged.nodes, connections: merged.connections } });
-            showMergedEditorDocument(merged, live, base, stored);
-            return { next: { ...snapshot, ...merged }, merged: true };
-        } catch (error) {
-            // Both sides changed the same content: the store keeps the editor
-            // content as the local draft, the newer version is held and submits pause.
-            traceCanvasGraph("editor.write.conflict", { previous: base, incoming: stored, live: { id: projectId, nodes: live.nodes, connections: live.connections } });
-            console.warn("本地画布已在别处改动，与编辑器里的修改冲突，已保留编辑器内容", { id: projectId, error });
-            holdExternalCanvasRevisionForEditor(stored);
-            return { next: snapshot, merged: false };
-        }
+        // Local edits are told apart against the editor's own copy of the base.
+        const merged = mergeIncomingEditorDocument(stored, baseDocument, storedDocument, live, {
+            observed: observedContentRef.current?.nodes ?? null,
+            onConflict: () => markCanvasMergeOverlap(projectId),
+        });
+        observedStoreRef.current = stored;
+        if (sameEditorDocument(merged, snapshot)) return { next: snapshot, merged: false };
+        traceCanvasGraph("editor.write.rebase", { previous: base, incoming: stored, live: { id: projectId, nodes: live.nodes, connections: live.connections }, merged: { id: projectId, nodes: merged.nodes, connections: merged.connections } });
+        showMergedEditorDocument(merged, live, base, stored);
+        return { next: { ...snapshot, ...merged }, merged: true };
     };
 
     useEffect(() => {
@@ -404,13 +383,10 @@ export function useCanvasProjectLifecycle({
         if (!localMode && (!hydrated || !sessionHydrated)) return;
         let cancelled = false;
         setInitialReadComplete(false);
-        // Keep load intent on the refs until this attempt finishes. React Strict
-        // Mode remounts the effect; consuming the flags here would turn "load
-        // latest" into a normal open and immediately recreate the conflict.
-        const latest = loadLatestRef.current;
+        // Keep history restore intent on the ref until this attempt finishes
+        // so React Strict Mode remounts do not turn a restore into a normal open.
         const historyRestore = historyRestoreRef.current;
-        const pendingReload = pendingReloadRef.current;
-        const keepEditor = editorReadyRef.current && (latest || Boolean(historyRestore));
+        const keepEditor = editorReadyRef.current && Boolean(historyRestore);
         if (!keepEditor) {
             editorReadyRef.current = false;
             editorProjectIdRef.current = null;
@@ -482,14 +458,14 @@ export function useCanvasProjectLifecycle({
 
         const load = async () => {
             const cachedProject = useCanvasStore.getState().projects.find((p) => p.id === projectId);
-            if (!latest && !historyRestore && cachedProject) {
+            if (!historyRestore && cachedProject && !cachedProject.summaryOnly) {
                 traceCanvasGraph("editor.load.cache", { cached: cachedProject });
                 // 本地已有该画布的持久化缓存：先以本地数据秒开渲染，彻底消除白屏与等待
                 applyRestoredProject(cachedProject);
             }
-            // An explicit "load latest" or history restore replaces the editor on purpose.
-            const mergeLiveEdits = !latest && !historyRestore;
-            const loadedProject = await loadCanvasProjectForEditing(projectId, { latest, historyRestore: historyRestore || undefined, onLoad: (project) => applyRestoredProject(project, { mergeLiveEdits }) });
+            // An explicit history restore replaces the editor on purpose.
+            const mergeLiveEdits = !historyRestore;
+            const loadedProject = await loadCanvasProjectForEditing(projectId, { historyRestore: historyRestore || undefined, onLoad: (project) => applyRestoredProject(project, { mergeLiveEdits }) });
             traceCanvasGraph("editor.load.return", { loaded: loadedProject, stored: useCanvasStore.getState().openProject(projectId) });
             if (cancelled) return;
             if (historyRestoreRef.current === historyRestore) {
@@ -497,7 +473,14 @@ export function useCanvasProjectLifecycle({
                 historyRestore?.resolve();
             }
             if (!loadedProject) {
-                if (!cachedProject) navigate("/canvas", { replace: true });
+                const stillInStore = Boolean(useCanvasStore.getState().openProject(projectId));
+                if (!cachedProject || !stillInStore) {
+                    editorReadyRef.current = false;
+                    editorProjectIdRef.current = null;
+                    setProjectLoaded(false);
+                    setLoadError("");
+                    navigate("/canvas", { replace: true });
+                }
                 return;
             }
             const project = useCanvasStore.getState().projects.find((p) => p.id === projectId) || loadedProject;
@@ -519,27 +502,17 @@ export function useCanvasProjectLifecycle({
             .then(() => {
                 if (cancelled) return;
                 setInitialReadComplete(true);
-                loadLatestRef.current = false;
-                if (pendingReloadRef.current === pendingReload) {
-                    pendingReloadRef.current = null;
-                    pendingReload?.resolve();
-                }
             })
             .catch((error) => {
                 if (cancelled) return;
                 // A failed first read leaves the cache unreconciled; do not
                 // capture failures or backfill outcomes on top of it.
-                loadLatestRef.current = false;
                 if (historyRestoreRef.current === historyRestore) {
                     historyRestoreRef.current = null;
                     historyRestore?.reject(error);
                 }
-                if (pendingReloadRef.current === pendingReload) {
-                    pendingReloadRef.current = null;
-                    pendingReload?.reject(error);
-                }
-                const detail = error instanceof Error ? error.message : (localMode ? "读取本地画布失败，请重试" : "读取画布失败，请重试");
-                if (projectSyncProgress(projectId)?.phase !== "conflict") useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "error", message: localMode ? detail : (error instanceof Error ? error.message : "读取云端版本失败") });
+                const detail = error instanceof Error ? error.message : "读取本地画布失败，请重试";
+                useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "error", message: detail });
                 if (keepEditor) message.error(detail);
                 else setLoadError(detail);
             });
@@ -597,9 +570,10 @@ export function useCanvasProjectLifecycle({
         // last saw it (for example the opened backend graph landing). Carry those
         // changes instead of writing this render's older copy over them.
         const { next } = reconcileEditorSnapshot(snapshot);
-        observedContentRef.current = next;
-        const patch = { nodes: next.nodes, connections: next.connections, chatSessions: next.chatSessions, activeChatId: next.activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo };
         const stored = storedEditorProject();
+        const nodesForStore = preserveUntouchedStoredNodes(observedContentRef.current?.nodes, stored?.nodes, next.nodes);
+        observedContentRef.current = next;
+        const patch = { nodes: nodesForStore, connections: next.connections, chatSessions: next.chatSessions, activeChatId: next.activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo };
         // 远端结果投影到编辑器不是一次本地编辑，避免改写时间戳并触发反向保存。
         if (stored && canvasDocumentMatchesFields(stored, patch)) {
             observedStoreRef.current = stored;
@@ -652,8 +626,10 @@ export function useCanvasProjectLifecycle({
             if (observedContentRef.current && !canvasDocumentMatchesFields(observedContentRef.current, snapshot)) {
                 traceCanvasGraph("editor.leaveFlush", { observed: { id: projectId, ...observedContentRef.current }, live: { id: projectId, ...snapshot }, stored: useCanvasStore.getState().openProject(projectId) });
                 const { next } = reconcileEditorSnapshot(snapshot);
+                const stored = storedEditorProject();
+                const nodesForStore = preserveUntouchedStoredNodes(observedContentRef.current?.nodes, stored?.nodes, next.nodes);
                 updateProject(projectId, {
-                    nodes: next.nodes,
+                    nodes: nodesForStore,
                     connections: next.connections,
                     chatSessions: next.chatSessions,
                     activeChatId: next.activeChatId,
@@ -689,18 +665,10 @@ export function useCanvasProjectLifecycle({
     const createAndOpenCanvas = useCallback(() => {
         const workspaceProjectId = currentProject ? canvasWorkspaceProjectId(currentProject) : undefined;
         const domainProjectId = currentProject?.projectId;
-        if (localMode) {
-            void createWorkspaceCanvasProject("未命名画布", domainProjectId, undefined, workspaceProjectId)
-                .then(({ id }) => navigate(`/canvas/${id}`))
-                .catch((error) => message.error(error instanceof Error ? `新建画布失败：${error.message}` : "新建画布失败，请稍后重试"));
-            return;
-        }
-        void createWorkspaceCanvasProject("未命名画布", domainProjectId, undefined, workspaceProjectId).then(({ id, syncError }) => {
-            // 本地/访客模式下没有远端同步会话，这是预期状态，不应在画布中央弹出错误 toast。
-            if (syncError && !isExpectedLocalOnlySyncError(syncError)) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
-            navigate(`/canvas/${id}`);
-        }).catch((error) => message.error(error instanceof Error ? `新建画布失败：${error.message}` : "新建画布失败，请稍后重试"));
-    }, [currentProject, localMode, message, navigate]);
+        void createWorkspaceCanvasProject("未命名画布", domainProjectId, undefined, workspaceProjectId)
+            .then(({ id }) => navigate(`/canvas/${id}`))
+            .catch((error) => message.error(error instanceof Error ? `新建画布失败：${error.message}` : "新建画布失败，请稍后重试"));
+    }, [currentProject, message, navigate]);
 
     const deleteCurrentProject = useCallback(async () => {
         const siblingCanvases = listCanvasWorkspaceProjectCanvases(useCanvasStore.getState().projects, projectId);
@@ -720,8 +688,19 @@ export function useCanvasProjectLifecycle({
 
     const renameCurrentProject = useCallback((title: string) => {
         if (!currentProject) return;
+        const rootId = canvasWorkspaceProjectId(currentProject);
+        if (rootId !== projectId && useCanvasStore.getState().openProject(rootId)?.summaryOnly) {
+            void loadCanvasProjectForEditing(rootId)
+                .then((loaded) => {
+                    if (loaded) renameProject(rootId, title);
+                })
+                .catch((error) => {
+                    message.error(error instanceof Error ? error.message : "重命名项目失败");
+                });
+            return;
+        }
         renameProject(canvasWorkspaceProjectId(currentProject), title);
-    }, [currentProject, renameProject]);
+    }, [currentProject, message, projectId, renameProject]);
 
     const persistLocalEdits = useCallback(async () => {
         if (!projectLoaded || editorProjectIdRef.current !== projectId) return;
@@ -729,8 +708,10 @@ export function useCanvasProjectLifecycle({
         if (observedContentRef.current && !canvasDocumentMatchesFields(observedContentRef.current, snapshot)) {
             traceCanvasGraph("editor.explicitSave", { observed: { id: projectId, ...observedContentRef.current }, live: { id: projectId, ...snapshot }, stored: useCanvasStore.getState().openProject(projectId) });
             const { next } = reconcileEditorSnapshot(snapshot);
+            const stored = storedEditorProject();
+            const nodesForStore = preserveUntouchedStoredNodes(observedContentRef.current?.nodes, stored?.nodes, next.nodes);
             updateProject(projectId, {
-                nodes: next.nodes,
+                nodes: nodesForStore,
                 connections: next.connections,
                 chatSessions: next.chatSessions,
                 activeChatId: next.activeChatId,
@@ -752,16 +733,6 @@ export function useCanvasProjectLifecycle({
         return registerDesktopUpdatePreparation(() => persistLocalEdits());
     }, [persistLocalEdits, projectLoaded]);
 
-    const reloadLatestCanvasProject = useCallback(async () => {
-        await persistLocalEdits();
-        return new Promise<void>((resolve, reject) => {
-            pendingReloadRef.current?.reject(new Error("已有新的加载请求"));
-            loadLatestRef.current = true;
-            pendingReloadRef.current = { resolve, reject };
-            setLoadAttempt((value) => value + 1);
-        });
-    }, [persistLocalEdits]);
-
     const restoreCanvasProjectVersion = useCallback(async (snapshotId: string, revision: number) => {
         await persistLocalEdits();
         return new Promise<void>((resolve, reject) => {
@@ -771,28 +742,16 @@ export function useCanvasProjectLifecycle({
         });
     }, [persistLocalEdits]);
 
-    const saveCanvasProject = useCallback(async (options: { requireRemote?: boolean } = {}): Promise<boolean> => {
+    const saveCanvasProject = useCallback(async (): Promise<boolean> => {
         try {
             await persistLocalEdits();
         } catch {
             message.error("画布保存失败，请稍后重试");
             return false;
         }
-        if (!hasRemoteUserDataSyncSession()) {
-            message.success("画布已保存到本地");
-            return true;
-        }
-        try {
-            await saveRemoteUserDataNow(projectId);
-            message.success("画布已保存到云端");
-        } catch (error) {
-            const detail = error instanceof Error ? error.message : "未知错误";
-            if (!isExpectedLocalOnlySyncError(error)) message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
-            // Imports can retain their durable local result; sharing requires cloud success.
-            return options.requireRemote === false;
-        }
+        message.success("画布已保存到本地");
         return true;
-    }, [message, persistLocalEdits, projectId]);
+    }, [message, persistLocalEdits]);
 
     const forceSaveCanvasProject = useCallback(async (): Promise<boolean> => {
         try { await persistLocalEdits(); } catch { message.error("本地保存失败，请重试"); return false; }
@@ -819,7 +778,6 @@ export function useCanvasProjectLifecycle({
         currentProject,
         deleteCurrentProject,
         renameCurrentProject,
-        reloadLatestCanvasProject,
         restoreCanvasProjectVersion,
         saveCanvasProject,
         forceSaveCanvasProject,

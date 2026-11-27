@@ -29,6 +29,33 @@ const activatingPromises = new Map<string, Promise<boolean>>();
 /** 每个已激活插件加载的入口地址；从文件夹重新安装后地址变了，就要换成新代码。 */
 const loadedEntries = new Map<string, string>();
 
+function markClientPluginInvalid(
+    pluginId: string,
+    message: string,
+    manifest: PluginManifest | PluginManifestV2 | undefined,
+    stage: "import" | "activate",
+    reportBackend: boolean,
+): void {
+    disposePluginContributions(pluginId);
+    activeCleanups.delete(pluginId);
+    loadedEntries.delete(pluginId);
+    const store = usePluginStore.getState();
+    store.setError(pluginId, message);
+    if (store.runtimeStatuses[pluginId] !== "invalid") {
+        store.setRuntimeStatuses({
+            ...store.runtimeStatuses,
+            [pluginId]: "invalid",
+        });
+    }
+    if (reportBackend) {
+        void reportPluginLoadError(pluginId, message, stage, manifest?.revision)
+            .then((res) => recoverIfRevisionChanged(pluginId, manifest, res?.plugin))
+            .catch(() => {
+                // ignore network error in offline/test environments
+            });
+    }
+}
+
 /** 地址使用内容指纹路径段隔离，使入口内部相对静态导入（如 ./presets.js）自动继承当前版本路径，不会命中浏览器旧模块缓存。 */
 export function clientEntryFor(pluginId: string, manifest?: PluginManifest | PluginManifestV2): string | undefined {
     const cleanClient = manifest?.client ? manifest.client.replace(/^\.\//, "").replace(/^\/+/, "") : "";
@@ -142,6 +169,13 @@ export async function activateClientPluginModule(
     const deactivator = resolveModuleDeactivator(mod);
 
     if (!activator) {
+        markClientPluginInvalid(
+            pluginId,
+            `插件 "${pluginId}" 客户端入口未导出有效的 activate 函数`,
+            options?.manifest,
+            "activate",
+            options?.reportBackendError !== false,
+        );
         return false;
     }
 
@@ -172,21 +206,13 @@ export async function activateClientPluginModule(
         return true;
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        disposePluginContributions(pluginId);
-        activeCleanups.delete(pluginId);
-        usePluginStore.getState().setError(pluginId, message);
-        const state = usePluginStore.getState();
-        state.setRuntimeStatuses({
-            ...state.runtimeStatuses,
-            [pluginId]: "invalid",
-        });
-        if (options?.reportBackendError !== false) {
-            void reportPluginLoadError(pluginId, message, "activate", options?.manifest?.revision)
-                .then((res) => recoverIfRevisionChanged(pluginId, options?.manifest, res?.plugin))
-                .catch(() => {
-                    // ignore network error in offline/test environments
-                });
-        }
+        markClientPluginInvalid(
+            pluginId,
+            message,
+            options?.manifest,
+            "activate",
+            options?.reportBackendError !== false,
+        );
         return false;
     }
 }
@@ -201,11 +227,14 @@ export async function loadAndActivateClientPlugin(
     if (activeCleanups.has(pluginId)) return true;
     const existingPromise = activatingPromises.get(pluginId);
     if (existingPromise) return existingPromise;
+    if (usePluginStore.getState().runtimeStatuses[pluginId] === "invalid") {
+        return false;
+    }
+
+    const registered = getRegisteredPlugin(pluginId);
+    const manifest = options?.manifest ?? registered?.manifest;
 
     const run = (async () => {
-        const registered = getRegisteredPlugin(pluginId);
-        const manifest = options?.manifest ?? registered?.manifest;
-
         if (registered?.setup) {
             return activateClientPluginModule(
                 pluginId,
@@ -235,16 +264,7 @@ export async function loadAndActivateClientPlugin(
             return activated;
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            disposePluginContributions(pluginId);
-            usePluginStore.getState().setError(pluginId, message);
-            const state = usePluginStore.getState();
-            state.setRuntimeStatuses({
-                ...state.runtimeStatuses,
-                [pluginId]: "invalid",
-            });
-            void reportPluginLoadError(pluginId, message, "import", manifest?.revision)
-                .then((res) => recoverIfRevisionChanged(pluginId, manifest, res?.plugin))
-                .catch(() => {});
+            markClientPluginInvalid(pluginId, message, manifest, "import", true);
             return false;
         }
     })();
@@ -295,6 +315,7 @@ export function activateRegisteredSetupSync(pluginId: string): boolean {
                             disposePluginContributions(pluginId);
                         }
                     });
+                    usePluginStore.getState().setError(pluginId, undefined);
                 },
                 (err) => {
                     const message = err instanceof Error ? err.message : String(err);

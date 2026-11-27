@@ -1,3 +1,5 @@
+import { isLocalRuntimeMode } from "@/lib/runtime-mode";
+import { hasLocalPath, redactLocalPaths } from "./local-path-redaction";
 import { moderationErrorCopy } from "./moderation-error";
 
 export const CONTENT_MODERATION_ERROR_CODE = "sensitive_words_detected";
@@ -26,6 +28,7 @@ export const GENERATION_ERROR_CATEGORIES = [
     "throttled",
     "concurrency",
     "provider_unavailable",
+    "reference_upload_failed",
     "network",
     "request_not_sent",
     "timeout",
@@ -48,6 +51,8 @@ export const LOCAL_TASK_ADMISSION_FAILURE: CategoryCopy = {
     reason: "本地任务保存失败，尚未提交生成",
     action: "请重启应用后重试；若仍失败，请保留排查信息并联系支持",
 };
+
+export const UNSENT_PREPARATION_MARKER = "本次尚未开始生成";
 
 export const CATEGORY_COPY: Record<GenerationErrorCategory, CategoryCopy> = {
     auth: { reason: "模型服务鉴权失败", action: "请检查 API Key 后重试" },
@@ -73,12 +78,13 @@ export const CATEGORY_COPY: Record<GenerationErrorCategory, CategoryCopy> = {
     throttled: { reason: "请求过于频繁", action: "请稍后再试" },
     concurrency: { reason: "同时进行的生成过多", action: "请等待已有任务完成后再试" },
     provider_unavailable: { reason: "模型服务暂时不可用", action: "请稍后重试" },
+    reference_upload_failed: { reason: `参考素材上传失败，${UNSENT_PREPARATION_MARKER}`, action: "请检查对象存储配置和公开读取权限后重试" },
     network: { reason: "网络连接失败", action: "请检查网络并核对原任务状态后，再决定是否重新生成" },
     request_not_sent: { reason: "未能连接服务，本次请求尚未提交", action: "请检查网络或代理后重试" },
     timeout: { reason: "模型服务响应超时", action: "请稍后查询原任务，不要立即重新提交" },
     submission_uncertain: { reason: "提交结果尚未确认，上游任务可能仍在执行", action: "请先查询原任务状态，不要立即重新提交" },
     async_failed: { reason: "生成任务没有完成", action: "请查看详情后决定是否重试" },
-    cancelled: { reason: "任务已取消", action: "可按原输入重新提交" },
+    cancelled: { reason: "任务已取消", action: "请核对原任务的结果与扣费状态" },
     partial_success: { reason: "部分结果已生成，其余失败", action: "请查看已有结果后再决定是否补做" },
     download_failed: { reason: "生成结果还没取回", action: "点击「继续取回」可继续下载原结果，不会重新生成" },
     delivery_failed: { reason: "视频已生成，但暂时无法取回", action: "请联系支持恢复成片，恢复后点击「取回结果」；无需重新付费生成" },
@@ -148,9 +154,10 @@ const PROVIDER_CODE_CATEGORIES: Record<string, GenerationErrorCategory> = {
     pre_consume_token_quota_failed: "unknown",
     upstream_crowded: "throttled",
     upstream_unavailable: "provider_unavailable",
-    image_reference_upload_failed: "provider_unavailable",
-    reference_media_upload_failed: "provider_unavailable",
-    reference_preupload_failed: "provider_unavailable",
+    image_reference_upload_failed: "submission_uncertain",
+    reference_media_upload_failed: "submission_uncertain",
+    reference_preupload_failed: "submission_uncertain",
+    reference_upload_failed: "submission_uncertain",
     upstream_rejected: "unknown",
     upstream_error: "unknown",
     invalid_api_key: "auth",
@@ -230,15 +237,28 @@ const URL_PATTERN = /(?:https?:\/\/|file:\/\/|data:[a-z0-9.+-]+\/[^;]+;base64,)[
 const SECRET_PATTERN = /(?:[a-z0-9_-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?key|client[_-]?secret|private[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token)|authorization|bearer|sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{20,})[^\s,;]*/gi;
 const PROMPT_KEY = String.raw`(?:(?:choices|messages|message|delta|parts|input|prompt|contents?|system[_-]?instruction)(?:(?:\.\d+|\[\d+\]|\.[a-z0-9_]+)+)?|(?:(?:user|system)[_-]?)?prompt(?:[_-]?text)?|input(?:[_-]?text)?|query|content|text|提示词|输入内容)`;
 const PROMPT_ECHO = new RegExp(String.raw`(["']?${PROMPT_KEY}["']?\s*[=:：]\s*)(?:"[^"]{0,400}"|'[^']{0,400}'|\S{1,400})`, "gi");
-// (?<![\s\S]) means "start of text". A literal ^ inside the leading optional group
-// makes older WebKit (desktop WebView on older macOS/Linux) try only position 0, so
-// a credential in mid-message would survive.
-const CREDENTIAL_TAIL = /(?:(?<![\s\S])(?:invalid|missing|bad|expired|unauthorized|error)\s*[:：]?\s*)?["']?(?:(?:invalid|missing|bad|expired|unauthorized|aws|oss|cos|qiniu|x|goog|openai|anthropic|gemini|azure|bearer|auth|session|access|refresh|client|private|secret|api|app|service|signing)[\s_-]+)*(?:[a-z0-9_-]*(?:key(?:[\s_-]?id)?|secret|token|password|passwd|credential|signature)|authorization|proxy-authorization|cookie|set-cookie)["']?\s*[=:：][\s\S]*/i;
+const CREDENTIAL_TAIL_CORE = String.raw`["']?(?:(?:invalid|missing|bad|expired|unauthorized|aws|oss|cos|qiniu|x|goog|openai|anthropic|gemini|azure|bearer|auth|session|access|refresh|client|private|secret|api|app|service|signing)[\s_-]+)*(?:[a-z0-9_-]*(?:key(?:[\s_-]?id)?|secret|token|password|passwd|credential|signature)|authorization|proxy-authorization|cookie|set-cookie)["']?\s*[=:：][\s\S]*`;
+// Separate anchored prefix and unanchored core: Safari < 16.4 rejects regex lookbehind
+// at parse time, while putting `^` inside a leading optional group causes older WebKit
+// to attempt matching only at index 0 and leave mid-message credentials intact.
+const CREDENTIAL_PREFIX_TAIL = new RegExp(
+    String.raw`^(?:invalid|missing|bad|expired|unauthorized|error)\s*[:：]?\s*${CREDENTIAL_TAIL_CORE}`,
+    "i",
+);
+const CREDENTIAL_TAIL = new RegExp(CREDENTIAL_TAIL_CORE, "i");
+
+function stripCredentialTail(text: string) {
+    return text.replace(CREDENTIAL_PREFIX_TAIL, "").replace(CREDENTIAL_TAIL, "");
+}
 const UNSTRUCTURED_PROMPT_TAIL = new RegExp(
     String.raw`(?:(?:^(?:bad\s+request|invalid\s+request|error)\s*[:：]\s*)?\{?\s*)?(?:["']?(?:[a-z0-9_]+(?:\.\d+|\[\d+\]|\.)+)*${PROMPT_KEY}["']?\s*[=:：]|(?:(?:invalid\s+value\s+)?(?:for|parameter|param|field)\s+["']?${PROMPT_KEY}["']?(?:\s*[:=：]|\s+(?:contains|is)\b)?|\b(?:the\s+)?["']?${PROMPT_KEY}["']?\s+(?:field|parameter|param)\s+(?:contains|is|was)\b)|\{[^{}]*"(?:text|content|prompt|input|messages|query)"\s*:[\s\S]*)[\s\S]*`,
     "i",
 );
 const SIGNED_QUERY = /(?:[?&](?:signature|x-amz-signature|x-oss-signature|token|key)=)[^\s&]+/gi;
+const ALLOWLISTED_STORAGE_ERROR_CODES: ReadonlySet<string> = new Set([
+    "AccessDenied", "SignatureDoesNotMatch", "InvalidAccessKeyId", "NoSuchBucket",
+    "InvalidBucketName", "RequestTimeTooSkewed", "AuthorizationHeaderMalformed", "PermanentRedirect",
+]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{5,127}$/;
 const UNSAFE_ID = /secret|token|password|apikey|api-key|bearer|sk-/i;
 
@@ -388,8 +408,8 @@ export function categoryFromProviderCode(...values: string[]): GenerationErrorCa
     for (const value of values) {
         const normalized = normalizeCode(value);
         if (!normalized || normalized === "0" || normalized === "success" || normalized === "ok") continue;
-        if ((GENERATION_ERROR_CATEGORIES as readonly string[]).includes(normalized)) return normalized as GenerationErrorCategory;
         if (PROVIDER_CODE_CATEGORIES[normalized]) return PROVIDER_CODE_CATEGORIES[normalized];
+        if ((GENERATION_ERROR_CATEGORIES as readonly string[]).includes(normalized)) return normalized as GenerationErrorCategory;
         const moderationCopy = moderationErrorCopy(normalized, "");
         if (moderationCopy) return moderationCopy.category;
         if (/^sensitivecontentdetected(?:\.|$)/.test(normalized)) return "moderation_input";
@@ -556,6 +576,15 @@ export function sanitizeProviderCode(value: string) {
     return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(text) && !/^(?:sk-|eyJ)|secret|password|bearer/i.test(text) ? text : "";
 }
 
+function stripSecretsPreservingStorageCodes(text: string): string {
+    return text.replace(SECRET_PATTERN, (match) => {
+        const head = match.match(/^[A-Za-z0-9_-]+/)?.[0] || "";
+        if (!ALLOWLISTED_STORAGE_ERROR_CODES.has(head)) return "";
+        const rest = match.slice(head.length);
+        return !rest ? head : /^[)）\]】」』，。、！？]/u.test(rest) ? head + stripSecretsPreservingStorageCodes(rest) : "";
+    });
+}
+
 export function sanitizeProviderText(value: string) {
     let text = value.trim();
     if (!text || HTML_BODY.test(text) || /<\/?[a-z!][^>]*>/i.test(text)) return "";
@@ -563,9 +592,9 @@ export function sanitizeProviderText(value: string) {
     text = text.replace(/\b(?:get|post|put|head|delete|patch|options)\s+(?:""|''|["'])(?:\s*:)?\s*/gi, "");
     // Unstructured messages may echo whole headers or prompts; discard the suffix,
     // since a whitespace-based token matcher cannot know where a secret ends.
-    text = text.replace(CREDENTIAL_TAIL, "").replace(UNSTRUCTURED_PROMPT_TAIL, "[已隐藏]");
-    text = text.replace(/(?:file:\/\/[^\r\n"'<>]+|(?<![a-z])[a-z]:[\\/][^\r\n:"'<>]+|\\\\[^\r\n:"'<>]+|(?<![A-Za-z0-9._-])\/+(?:Users|home|private|tmp|var|Volumes|mnt|media|run|root|opt|srv|etc|data|app|workspace|usr|proc|sys|dev|lib|bin|sbin)\/[^\r\n:"'<>]+)/gi, "[路径已隐藏]");
-    text = text.replace(SIGNED_QUERY, "").replace(SECRET_PATTERN, "").replace(PROMPT_ECHO, "$1[已隐藏]");
+    text = stripCredentialTail(text).replace(UNSTRUCTURED_PROMPT_TAIL, "[已隐藏]");
+    text = redactLocalPaths(text, "[路径已隐藏]");
+    text = stripSecretsPreservingStorageCodes(text.replace(SIGNED_QUERY, "")).replace(PROMPT_ECHO, "$1[已隐藏]");
     text = text.replace(/\s+/g, " ").trim();
     if (text.startsWith("{") || text.startsWith("[") || text.startsWith("<")) return "";
     return text.slice(0, 240);
@@ -641,7 +670,6 @@ export function isCanvasSaveConflictText(text: string) {
     );
 }
 
-const LOCAL_PATH_PATTERN = /(?:file:\/\/[^\r\n"'<>]+|(?<![a-z])[a-z]:[\\/][^\r\n:"'<>]+|\\\\[^\r\n:"'<>]+|(?<![A-Za-z0-9._-])\/+(?:Users|home|private|tmp|var|Volumes|mnt|media|run|root|opt|srv|etc|data|app|workspace|usr|proc|sys|dev|lib|bin|sbin)\/[^\r\n:"'<>]+)/i;
 const GENERIC_CHINESE_WRAPPERS = new Set([
     "",
     "请求失败",
@@ -679,7 +707,7 @@ export function userFacingChineseCopy(raw: string): CategoryCopy | undefined {
         UNSTRUCTURED_PROMPT_TAIL.test(trimmed) ||
         /(?:[a-z0-9_-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?key|client[_-]?secret|private[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token)|authorization|bearer|sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{20,})/i.test(trimmed) ||
         new RegExp(String.raw`["']?${PROMPT_KEY}["']?\s*[=:：]`, "i").test(trimmed) ||
-        LOCAL_PATH_PATTERN.test(trimmed) ||
+        hasLocalPath(trimmed) ||
         LOCAL_DATABASE_ERROR.test(trimmed) ||
         containsInfrastructureDetails(trimmed) ||
         /(?:status(?:[_\s]+code)?\s*[:=]|素材转换失败:|无可用渠道|暂无可用渠道)/i.test(trimmed)
@@ -737,4 +765,37 @@ export function providerPayloadMessage(payload: unknown, depth = 0): string {
         }
     }
     return typeof record.error === "string" ? providerPayloadMessage(record.error, depth + 1) : "";
+}
+
+const LOCAL_DISK_FULL_STORAGE_SIGNAL = /(?:no space left on device|not enough space on the disk|disk full|database or disk is full|本地磁盘空间不足)/i;
+const LOCAL_RESOURCE_WRITE_FAILURE = /(?:(?:create|set|write|sync|close|publish|resolve)\s+local\s+resource|local\s+resource\s+(?:body|path|parent|root|store|object\s+key)|本地参考素材保存失败|本地资源目录(?:不可用|无法(?:访问|写入|读取|创建)|写入失败|保存失败|权限)|(?:保存|写入)(?:文件|参考素材|参考图片|参考媒体)?到本地资源目录(?:失败)?|写入桌面资源目录失败|(?:图片|媒体)保存未完成[，,]?\s*请检查本机存储空间)/i;
+const REMOTE_OBJECT_STORAGE_SIGNAL = /(?:(?:OSS|COS|S3|R2)\s*上传失败|\b(?:OSS|COS|S3|R2)\s+upload\s+failed\b|对象存储|腾讯云\s*COS|阿里云\s*OSS|七牛云)/i;
+const REMOTE_REFERENCE_UPLOAD_SIGNAL = /(?:参考(?:图片|图|媒体|视频|音频|素材)(?:\s*\d+\s*)?(?:预)?上传(?:文件)?失败|素材已上传[，,]?\s*但公网地址(?:无法访问|不可读取)|公网地址未返回上传的素材)/i;
+
+export function resourceStorageFailureMessage(rawValue: string) {
+    if (!rawValue) return "";
+    const trimmed = rawValue.trim();
+    const value = /^[{[]/.test(trimmed) ? extractProviderFields(trimmed).message : trimmed;
+    if (!value || LOCAL_DISK_FULL_STORAGE_SIGNAL.test(value)) return "";
+    if (isLocalRuntimeMode() && LOCAL_RESOURCE_WRITE_FAILURE.test(value) && !REMOTE_OBJECT_STORAGE_SIGNAL.test(value)) {
+        return "本地参考素材保存失败，请检查本地资源目录后重试。";
+    }
+    if (/\bUserDisable\b/i.test(value)) return "对象存储账号已停用，请检查或更换对象存储配置。";
+    if (REMOTE_OBJECT_STORAGE_SIGNAL.test(value) || REMOTE_REFERENCE_UPLOAD_SIGNAL.test(value)) {
+        if (/(?:素材已上传[，,]?\s*但公网地址(?:无法访问|不可读取)|公网地址(?:无法访问|不可读取)|公网地址未返回上传的素材)/.test(value)) {
+            return "参考素材已上传，但公网地址无法读取，请检查对象存储公开读取权限后重试。";
+        }
+        const httpStatus = value.match(/(?:HTTP\s*|status(?:\s*code)?\s*[:=]?\s*)([345]\d{2})\b/i)?.[1];
+        if (/(?:对象存储(?:拒绝上传|签名校验失败|密钥无效|区域或端点不匹配|请求签名失败)|找不到指定的对象存储桶|参考素材上传被拒绝|\b403\s+Forbidden\b|\b(?:AccessDenied|SignatureDoesNotMatch|InvalidAccessKeyId|NoSuchBucket|InvalidBucketName|RequestTimeTooSkewed|AuthorizationHeaderMalformed|PermanentRedirect)\b)/i.test(value) || httpStatus === "403") {
+            return `参考素材上传被拒绝（HTTP ${httpStatus || "403"}），请检查对象存储密钥和存储桶权限后重试。`;
+        }
+        if (/(?:尚未启用参考素材对象存储|请先启用参考素材对象存储|对象存储配置(?:损坏|无法解密|无法读取|不可用))/i.test(value)) {
+            return "参考素材对象存储配置不可用，请检查存储设置后重试。";
+        }
+        if (REMOTE_OBJECT_STORAGE_SIGNAL.test(value) && !isNetworkText(value) && !/(?:网络|连接|超时)/i.test(value)) {
+            return "参考素材上传到对象存储失败，请检查网络连接或对象存储配置后重试。";
+        }
+        return "参考素材上传失败，请检查网络连接或对象存储配置后重试。";
+    }
+    return "";
 }

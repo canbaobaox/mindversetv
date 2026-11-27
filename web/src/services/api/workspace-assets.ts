@@ -60,7 +60,27 @@ export function listWorkspaceAssetSummaries(config?: HttpRequestConfig) {
     return http.get<{ assets: WorkspaceAssetSummary[] }>("/assets", config);
 }
 
-/** POST /assets/batch returns owned client payloads for up to 100 ids. */
-export function lookupWorkspaceAssetsByIds(ids: string[], config?: HttpRequestConfig) {
-    return http.post<{ assets: unknown[] }>("/assets/batch", { ids }, config);
+const ASSET_BATCH_MAX_IDS = 100;
+
+/** POST /assets/batch returns owned client payloads for up to 100 ids per request. */
+export async function lookupWorkspaceAssetsByIds(ids: string[], config?: HttpRequestConfig): Promise<{ assets: unknown[] }> {
+    const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+    if (!uniqueIds.length) {
+        return { assets: [] };
+    }
+    if (uniqueIds.length <= ASSET_BATCH_MAX_IDS) {
+        return http.post<{ assets: unknown[] }>("/assets/batch", { ids: uniqueIds }, config);
+    }
+    const assets: unknown[] = [];
+    for (let i = 0; i < uniqueIds.length; i += ASSET_BATCH_MAX_IDS) {
+        const res = await http.post<{ assets: unknown[] }>(
+            "/assets/batch",
+            { ids: uniqueIds.slice(i, i + ASSET_BATCH_MAX_IDS) },
+            config,
+        );
+        if (Array.isArray(res?.assets)) {
+            assets.push(...res.assets);
+        }
+    }
+    return { assets };
 }

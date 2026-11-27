@@ -8,6 +8,7 @@ import { canvasDockStyle } from "@/lib/canvas/canvas-aceternity-style";
 import type { CanvasContextSummary } from "@/lib/canvas/canvas-context-summary";
 import type { CanvasShortDramaProgress } from "@/lib/canvas/canvas-short-drama";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { downloadCanvasProjectsMediaByIds } from "@/lib/canvas/canvas-batch-download";
 import { exportCanvasProjectsByIds } from "@/lib/canvas/canvas-export";
 import { resolveWorkspaceExportCanvasIds } from "@/lib/canvas/canvas-workspace-project";
 import { loadCanvasProjectForEditing } from "@/services/local-workspace-sync";
@@ -140,7 +141,12 @@ export function CanvasTopBar({
             const ids = resolveWorkspaceExportCanvasIds(store.projects, [canvasId], { singleCanvasOnly });
             await exportCanvasProjectsByIds(
                 ids,
-                async (id) => (await loadCanvasProjectForEditing(id).catch(() => undefined)) || store.openProject(id),
+                async (id) => {
+                    const loaded = await loadCanvasProjectForEditing(id).catch(() => undefined);
+                    if (loaded) return loaded;
+                    const cached = store.openProject(id);
+                    return cached && !cached.summaryOnly ? cached : undefined;
+                },
                 {
                     singleCanvasOnly,
                     folders: store.folders,
@@ -151,6 +157,21 @@ export function CanvasTopBar({
         } catch (error) {
             message?.error?.(error instanceof Error ? error.message : "导出失败，请重试");
         }
+    };
+
+    const runDownloadMedia = async (canvasId: string | undefined, singleCanvasOnly: boolean) => {
+        if (!canvasId) return;
+        const store = useCanvasStore.getState();
+        const ids = resolveWorkspaceExportCanvasIds(store.projects, [canvasId], { singleCanvasOnly });
+        await downloadCanvasProjectsMediaByIds(
+            ids,
+            async (id) => {
+                const cached = useCanvasStore.getState().openProject(id);
+                return cached && !cached.summaryOnly ? cached : loadCanvasProjectForEditing(id);
+            },
+            message,
+            { emptyMessage: singleCanvasOnly ? "当前画布暂无可下载的图片、视频或音频素材" : "当前项目暂无可下载的图片、视频或音频素材" },
+        );
     };
 
 
@@ -208,6 +229,7 @@ export function CanvasTopBar({
                                     { type: "divider" },
                                     { key: "new", label: <Link to="/canvas?mode=new">创建新项目</Link> },
                                     ...(currentCanvasId ? [
+                                        { key: "download-project-media", label: "下载全部素材", onClick: () => void runDownloadMedia(currentCanvasId, false) },
                                         { key: "export-project", label: "导出全部画布", onClick: () => void runExport(currentCanvasId, false) },
                                         { key: "export-canvas", label: "导出当前画布", onClick: () => void runExport(currentCanvasId, true) },
                                     ] : []),
@@ -338,6 +360,7 @@ export function CanvasTopBar({
                                                                 { key: "new-window", label: "在新窗口打开", onClick: () => onOpenCanvasInNewWindow?.(canvas.id) },
                                                                 { key: "rename", label: "重命名画布", onClick: () => { setCanvasMenuOpen(true); setRenameCanvas({ id: canvas.id, title: canvasLabel }); } },
                                                                 { key: "duplicate", label: "复制画布", onClick: () => void onDuplicateCanvas?.(canvas.id) },
+                                                                { key: "download-media", label: "下载画布素材", onClick: () => void runDownloadMedia(canvas.id, true) },
                                                                 { key: "export", label: "导出画布", onClick: () => void runExport(canvas.id, true) },
                                                                 { key: "delete", danger: true, label: "删除画布", onClick: () => void onDeleteCanvas?.(canvas.id) },
                                                             ],
@@ -355,8 +378,15 @@ export function CanvasTopBar({
                             </div>
                         )}
                     >
-                        <button type="button" className="canvas-topbar-canvas-switch canvas-topbar-action inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-xs opacity-75 hover:opacity-100" style={{ color: theme.node.text }} aria-label="切换画布">
-                            <span>{currentCanvasLabel}</span>{canvasMenuOpen ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                        <button
+                            type="button"
+                            className="canvas-topbar-canvas-switch canvas-topbar-action inline-flex h-7 max-w-[120px] shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded-md px-1 text-xs opacity-75 hover:opacity-100"
+                            style={{ color: theme.node.text }}
+                            aria-label="切换画布"
+                            title={currentCanvasLabel}
+                        >
+                            <span className="min-w-0 truncate">{currentCanvasLabel}</span>
+                            {canvasMenuOpen ? <ChevronUp className="size-3 shrink-0" /> : <ChevronDown className="size-3 shrink-0" />}
                         </button>
                     </Dropdown>
                     <span className="canvas-topbar-sync-status">{syncStatus}</span>

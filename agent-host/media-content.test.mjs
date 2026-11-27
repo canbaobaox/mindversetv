@@ -37,7 +37,7 @@ test('unsupported audio MIME fails closed before dispatch adaptation', () => {
     expect(() => adaptMediaRequest(transcript('BEEFTV_MEDIA_PART_V1:' + JSON.stringify(unsupported)), model)).toThrow('invalid_media_content');
   }
 });
-test('Google native inlineData is unchanged by the OpenAI compatibility adapter', () => {
+test('Google native inlineData is unchanged by the OpenAI compatibility adapter, while media markers adapt to inlineData', () => {
   const payload = { contents: [{ role: 'user', parts: [
     { text: 'Listen to the audio.' },
     { inlineData: { mimeType: 'audio/wav', data: part().data } },
@@ -45,6 +45,25 @@ test('Google native inlineData is unchanged by the OpenAI compatibility adapter'
   const before = structuredClone(payload);
   expect(adaptMediaRequest(payload, { api: 'google-generative-ai', modelId: model.modelId })).toBe(payload);
   expect(payload).toEqual(before);
+
+  const googleModel = { api: 'google-generative-ai', modelId: 'gemini-2.5-pro' };
+  expect(mediaCapabilityContext(googleModel)).toContain('video 连续视频和 audio 音频');
+  const videoPart = { ...part('video/mp4'), source: { ...part('video/mp4').source, canvasId: 'c1', nodeId: 'n1' } };
+  const result = mediaToolResult({ result: { content: [videoPart] } }, 'media.inspect', googleModel);
+  const markerText = result.content.filter(p => p.type === 'text').map(p => p.text).join('\n');
+  const googlePayload = {
+    contents: [
+      { role: 'model', parts: [{ functionCall: { name: 'media_inspect', args: { nodeId: 'n1' } } }] },
+      { role: 'user', parts: [{ functionResponse: { name: 'media_inspect', id: 'call-g1', response: { output: markerText } } }] },
+    ],
+  };
+  const adapted = adaptMediaRequest(googlePayload, googleModel);
+  expect(adapted.contents).toHaveLength(3);
+  // functionResponse 轮次必须与 functionCall 严格 1:1 对应，不混入非 functionResponse parts。
+  expect(adapted.contents[1].parts).toHaveLength(1);
+  expect(adapted.contents[1].parts[0].functionResponse.response.output).not.toContain('BEEFTV_MEDIA_PART_V1:');
+  expect(adapted.contents[2].role).toBe('user');
+  expect(adapted.contents[2].parts.at(-1)).toEqual({ inlineData: { mimeType: 'video/mp4', data: videoPart.data } });
 });
 test('unsupported routes, tampered media and untrusted tool markers fail closed', () => {
   expect(() => mediaToolResult({ result: { content: [part()] } }, 'media.inspect', { ...model, modelId: 'claude-opus-5-5' })).toThrow('media_input_unsupported');
@@ -145,6 +164,32 @@ test('attachmentContent uses media.inspect when preview is marked inspectable an
   const oversizeContent = await attachmentContent({ canvasId: 'c1', attachments: [{ kind: 'image', nodeId: 'n1', resourceId: 'r1' }] }, 't1', oversizeOps);
   expect(callsOversize).toEqual(['/ops/media.overview']);
   expect(oversizeContent.filter(part => part.type === 'image')).toEqual([{ type: 'image', data: 'PREVIEW_ONLY', mimeType: 'image/jpeg' }]);
+});
+
+test('attached video and audio instruct media_overview before media_inspect without pre-reading bytes', async () => {
+  const requests = [];
+  const opsRequest = async (_method, path) => {
+    requests.push(path);
+    throw new Error('should not pre-read video/audio attachments');
+  };
+  const content = await attachmentContent({
+    canvasId: 'c1',
+    message: '分析这两段素材',
+    attachments: [
+      { kind: 'video', assetId: 'a-vid', resourceId: 'r-vid', name: 'clip.mp4' },
+      { kind: 'audio', nodeId: 'n-aud', resourceId: 'r-aud', name: 'voice.wav' },
+    ],
+  }, 't1', opsRequest);
+  expect(requests).toEqual([]);
+  const notes = content.slice(1).map(part => part.text);
+  expect(notes).toHaveLength(2);
+  for (const note of notes) {
+    expect(note).toContain('media_overview');
+    expect(note).toContain('source.version');
+    expect(note).toContain('expectedVersion');
+    expect(note).toContain('media_inspect');
+    expect(note).not.toContain('使用 media.inspect');
+  }
 });
 
 test('Anthropic adapter preserves signed thinking blocks and ephemeral cache_control when pinned, and downgrades unpinned pre-upgrade signatures', () => {

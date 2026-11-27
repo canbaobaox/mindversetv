@@ -1,6 +1,7 @@
 import referenceVideoErrors from "./fixtures/reference-video-errors.json";
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "../src/services/api/request";
+import { redactLocalPaths } from "../src/lib/local-path-redaction";
 
 test("reference transport admission identifies blocked inputs and survives persisted display", () => {
     const message = "当前渠道需要在线素材链接：参考图片 2、参考视频 1无法直接读取。请替换为可访问的 HTTPS 链接，或切换支持本地素材的渠道";
@@ -286,6 +287,8 @@ test("gateway JSON suffix retains reference duration advice and request id", () 
 import {
     explainGenerationError,
     formatGenerationDiagnostics,
+    formatUpstreamFailureDetail,
+    GENERATION_ERROR_CATEGORIES,
     generationErrorMessage,
     generationFailureMetadata,
     generationInputFingerprint,
@@ -300,9 +303,11 @@ import gatewayCodes from "../../fixtures/generation-error-codes.json";
 
 describe("generation error classification", () => {
     test("all declared gateway error codes match the shared backend contract", () => {
-        expect(Object.keys(gatewayCodes)).toHaveLength(53);
+        expect(Object.keys(gatewayCodes)).toHaveLength(55);
         for (const [code, category] of Object.entries(gatewayCodes)) {
-            expect(explainGenerationError({ code, message: "opaque provider message" }).category).toBe(category);
+            if (!(GENERATION_ERROR_CATEGORIES as readonly string[]).includes(code)) {
+                expect(explainGenerationError({ code, message: "opaque provider message" }).category).toBe(category);
+            }
             expect(explainGenerationError({ status: 400, data: { error: { code } } }).category).toBe(category);
         }
     });
@@ -577,7 +582,7 @@ describe("generation error classification", () => {
     });
 
     test("reference upload diagnostics identify storage and the failing asset", () => {
-        const failure = explainGenerationError({ code: "provider_unavailable", message: "参考素材上传失败，本次尚未开始生成。请检查网络或稍后重试。" });
+        const failure = explainGenerationError({ code: "reference_upload_failed", message: "参考素材上传失败，本次尚未开始生成。请检查网络或稍后重试。" });
         expect(failure.blockAutomaticRetry).toBe(true);
         expect(failure.blockManualRetry).toBe(false);
         const text = formatGenerationDiagnostics(failure, { failureDiagnostics: {
@@ -601,7 +606,7 @@ describe("generation error classification", () => {
     });
 
     test("copied reference failure keeps DNS stage and recovery attempt", () => {
-        const text = formatGenerationDiagnostics(explainGenerationError({ code: "provider_unavailable", message: "参考素材上传失败，本次尚未开始生成。请检查网络或稍后重试。" }), { failureDiagnostics: {
+        const text = formatGenerationDiagnostics(explainGenerationError({ code: "reference_upload_failed", message: "参考素材上传失败，本次尚未开始生成。请检查网络或稍后重试。" }), { failureDiagnostics: {
             source: "reference_upload", requests: [{ operation: "reference_put", method: "PUT", dispatched: false, outcome: "not_dispatched", transportPhase: "dns", transportRoute: "direct", startedAt: "2026-10-22T03:00:00Z", durationMs: 123, summary: "参考图 1 上传文件（第 3 次）失败：域名解析失败" }],
         } });
         expect(text).toContain("阶段=DNS 解析");
@@ -775,5 +780,202 @@ test("custom relay failure header overrides local provider-text classification",
         expect(explained.category).toBe("quota_upstream");
         expect(explained.reason).toContain("供应商");
         expect(explained.reason).not.toContain("内容安全");
+    }
+});
+
+test("lookbehind-free credential and local path redaction preserves exact boundary semantics", () => {
+    for (const sample of [
+        "invalid: api_key = PRIVATE_VALUE",
+        "error:api_key=PRIVATE_VALUE",
+        "操作失败 Cookie: session=PRIVATE_VALUE",
+        "error: upstream rejected, Authorization: Bearer PRIVATE_VALUE",
+    ]) {
+        const explained = explainGenerationError({ status: 400, data: { error: { code: "custom_code", message: sample } } });
+        expect(explained.summary).not.toContain("PRIVATE_VALUE");
+        expect(explained.message).not.toContain("PRIVATE_VALUE");
+    }
+
+    for (const pathSample of [
+        'open "C:\\Users\\alice\\a.png" and "D:\\tmp\\b.png"',
+        "cannot read C:\\secret\\a.png:D:\\secret\\b.png",
+        "file:///Users/alice/secret.png",
+        "failed at /Users/alice/secret.png",
+        "failed at /internal/secret/path",
+    ]) {
+        const explained = explainGenerationError({ status: 400, data: { error: { code: "custom_code", message: pathSample } } });
+        expect(explained.summary).toBe("");
+        expect(explained.message).not.toContain("secret");
+        expect(explained.message).not.toContain("alice");
+    }
+
+    const fileUrlPrefix = explainGenerationError({ status: 400, data: { error: { code: "custom_code", message: "file:///Users/alice/secret.png failed" } } });
+    expect(fileUrlPrefix.summary).toBe("failed");
+    expect(fileUrlPrefix.message).not.toContain("alice");
+    expect(fileUrlPrefix.message).not.toContain("secret");
+
+    const versionedPath = explainGenerationError({ status: 400, data: { error: { code: "custom_code", message: "unsupported route /v1/videos" } } });
+    expect(versionedPath.summary).toBe("unsupported route /v1/videos");
+
+    const ratioText = explainGenerationError({ status: 400, data: { error: { code: "custom_code", message: "invalid ratio 16/9/crop" } } });
+    expect(ratioText.summary).toBe("invalid ratio 16/9/crop");
+
+    expect(redactLocalPaths("/home/a:/private/b", "[路径已隐藏]")).toBe("[路径已隐藏]:[路径已隐藏]");
+    expect(redactLocalPaths("C:\\\\A_.B", "[路径已隐藏]")).toBe("[路径已隐藏]");
+    expect(redactLocalPaths("open C:/Users/alice/img.png: denied", "[路径已隐藏]")).toBe("open [路径已隐藏]: denied");
+    expect(redactLocalPaths("open \\\\server\\share\\secret.png: denied", "[路径已隐藏]")).toBe("open [路径已隐藏]: denied");
+    expect(redactLocalPaths("GET /workspace/bootstrap", "[路径已隐藏]")).toBe("GET /workspace/bootstrap");
+    expect(redactLocalPaths(`GET${" ".repeat(20)}/workspace/bootstrap`, "[路径已隐藏]")).toBe(`GET${" ".repeat(20)}/workspace/bootstrap`);
+    expect(redactLocalPaths(`aGET${" ".repeat(12)}/workspace/bootstrap`, "[路径已隐藏]")).toBe(`aGET${" ".repeat(12)}[路径已隐藏]`);
+    expect(redactLocalPaths("open /workspace/bootstrap: permission denied", "[路径已隐藏]")).toBe("open [路径已隐藏]: permission denied");
+    expect(redactLocalPaths("open /workspace/secret/key.json: denied", "[路径已隐藏]")).toBe("open [路径已隐藏]: denied");
+    expect(redactLocalPaths("prefixfile:///Applications/BeefTV.app/a.js", "[路径已隐藏]")).toBe("prefix[路径已隐藏]");
+    expect(redactLocalPaths("open https://example.com/app/v1 and /opt/secret/file", "[路径已隐藏]")).toBe(
+        "open https://example.com/app/v1 and [路径已隐藏]",
+    );
+});
+
+test("explains backend structured S3/COS storage rejection codes intact without leaking credentials", () => {
+    const cases: Array<{ status: string; code: string; backendMessage: string; expectedHint: string }> = [
+        {
+            status: "403",
+            code: "AccessDenied",
+            backendMessage: "对象存储拒绝上传（HTTP 403，AccessDenied），本次尚未开始生成。请检查存储桶访问权限（推荐公有读私有写）以及子账号/CAM 是否具备写入与删除权限。",
+            expectedHint: "公有读私有写",
+        },
+        {
+            status: "403",
+            code: "SignatureDoesNotMatch",
+            backendMessage: "对象存储签名校验失败（HTTP 403，SignatureDoesNotMatch），本次尚未开始生成。请检查 Secret Access Key、区域代码（如 ap-guangzhou / auto）及本机系统时间后重试。",
+            expectedHint: "Secret Access Key",
+        },
+        {
+            status: "403",
+            code: "InvalidAccessKeyId",
+            backendMessage: "对象存储密钥无效（HTTP 403，InvalidAccessKeyId），本次尚未开始生成。请检查 Access Key ID（腾讯云 COS 为 SecretId）后重试。",
+            expectedHint: "SecretId",
+        },
+        {
+            status: "404",
+            code: "NoSuchBucket",
+            backendMessage: "找不到指定的对象存储桶（HTTP 404，NoSuchBucket），本次尚未开始生成。请检查存储桶名称（腾讯云 COS 须含 -APPID 后缀）与区域端点是否一致后重试。",
+            expectedHint: "-APPID",
+        },
+        {
+            status: "400",
+            code: "InvalidBucketName",
+            backendMessage: "找不到指定的对象存储桶（HTTP 400，InvalidBucketName），本次尚未开始生成。请检查存储桶名称（腾讯云 COS 须含 -APPID 后缀）与区域端点是否一致后重试。",
+            expectedHint: "-APPID",
+        },
+        {
+            status: "403",
+            code: "RequestTimeTooSkewed",
+            backendMessage: "对象存储拒绝上传（HTTP 403，RequestTimeTooSkewed），本次尚未开始生成。请校准本机系统时间后重试。",
+            expectedHint: "系统时间",
+        },
+        {
+            status: "400",
+            code: "AuthorizationHeaderMalformed",
+            backendMessage: "对象存储区域或端点不匹配（HTTP 400，AuthorizationHeaderMalformed），本次尚未开始生成。请核对 S3 端点与区域代码是否一致后重试。",
+            expectedHint: "端点与区域代码",
+        },
+        {
+            status: "301",
+            code: "PermanentRedirect",
+            backendMessage: "对象存储区域或端点不匹配（HTTP 301，PermanentRedirect），本次尚未开始生成。请核对 S3 端点与区域代码是否一致后重试。",
+            expectedHint: "端点与区域代码",
+        },
+        {
+            status: "403",
+            code: "",
+            backendMessage: "对象存储拒绝上传（HTTP 403），本次尚未开始生成。请检查访问密钥、存储桶名称（腾讯云 COS 须含 -APPID）、区域及存储桶/子账号写入权限。",
+            expectedHint: "-APPID",
+        },
+        {
+            status: "500",
+            code: "",
+            backendMessage: "对象存储拒绝上传（HTTP 500），本次尚未开始生成。请检查对象存储端点、区域、访问密钥与存储桶权限后重试。",
+            expectedHint: "对象存储端点",
+        },
+    ];
+
+    for (const tc of cases) {
+        // Structured backend task failure path trusts backend-persisted reference_upload_failed code directly.
+        const structured = explainGenerationError({ code: "reference_upload_failed", message: tc.backendMessage });
+        expect(structured.category).toBe("reference_upload_failed");
+        if (tc.code) expect(structured.message).toContain(tc.code);
+        expect(structured.message).toContain(`HTTP ${tc.status}`);
+        expect(structured.message).toContain(tc.expectedHint);
+        expect(structured.message).not.toContain("参考素材已上传，但公网地址无法读取");
+        expect(structured.uncertain).toBe(false);
+        expect(structured.blockAutomaticRetry).toBe(true);
+        expect(structured.blockManualRetry).toBe(false);
+        expect(formatUpstreamFailureDetail(structured)).toBe("");
+
+        // Legacy persisted rows saved with provider_unavailable before reference_upload_failed still keep S3/COS codes intact.
+        const legacyPersisted = explainGenerationError({ code: "provider_unavailable", message: tc.backendMessage });
+        expect(legacyPersisted.category).toBe("provider_unavailable");
+        if (tc.code) expect(legacyPersisted.message).toContain(tc.code);
+        expect(legacyPersisted.message).toContain(`HTTP ${tc.status}`);
+        expect(legacyPersisted.message).toContain("本次尚未开始生成");
+        expect(legacyPersisted.message).toContain(tc.expectedHint);
+
+        // Copied diagnostics also preserve allowlisted S3/COS codes cleanly.
+        const diagnostics = formatGenerationDiagnostics(structured);
+        if (tc.code) expect(diagnostics).toContain(tc.code);
+        expect(diagnostics).toContain("错误来源：参考素材上传");
+
+        // Untrusted upstream HTTP response echoing code or copy stays submission_uncertain.
+        const echoed = explainGenerationError({ status: Number(tc.status), data: { error: { code: "reference_upload_failed", message: tc.backendMessage } } });
+        expect(echoed.uncertain).toBe(true);
+        expect(echoed.blockManualRetry).toBe(true);
+    }
+
+    // Pure-code spoofing without the Chinese unsent marker must also be rejected as submission_uncertain.
+    for (const spoofedCode of [
+        "image_reference_upload_failed",
+        "reference_media_upload_failed",
+        "reference_preupload_failed",
+        "reference_upload_failed",
+    ]) {
+        for (const payload of [
+            { status: 503, data: { error: { code: spoofedCode, message: "opaque" } } },
+            { code: spoofedCode, message: "opaque", status: 503 },
+            { error: { code: spoofedCode, message: "opaque" } },
+        ]) {
+            const spoofed = explainGenerationError(payload);
+            expect(spoofed.category).toBe("submission_uncertain");
+            expect(spoofed.uncertain).toBe(true);
+            expect(spoofed.blockAutomaticRetry).toBe(true);
+            expect(spoofed.blockManualRetry).toBe(true);
+        }
+    }
+
+    // Generic persisted reference_upload_failed copy must NOT be misclassified as post-upload public-read failure.
+    const genericPersisted = explainGenerationError({ code: "reference_upload_failed", message: "参考素材上传失败，本次尚未开始生成。请检查对象存储配置和公开读取权限后重试。" });
+    expect(genericPersisted.message).toContain("参考素材上传失败，本次尚未开始生成");
+    expect(genericPersisted.message).not.toContain("参考素材已上传，但公网地址无法读取");
+    expect(genericPersisted.blockManualRetry).toBe(false);
+
+    // Genuine post-upload public-read probe failure stays public-read even if AccessDenied appears.
+    const publicRead = explainGenerationError("素材已上传，但公网地址不可读取（HTTP 403，AccessDenied），请检查公开读取设置");
+    expect(publicRead.message).toContain("参考素材已上传，但公网地址无法读取");
+
+    // Credential tail, URL, and token redaction must NOT leak secrets even under reference_upload_failed.
+    for (const code of ["provider_unavailable", "reference_upload_failed"] as const) {
+        const leakedColon = explainGenerationError({ code, message: "InvalidAccessKeyId: AKIAIOSFODNN7EXAMPLE" });
+        expect(leakedColon.message).not.toContain("AKIAIOSFODNN7EXAMPLE");
+        const leakedEquals = explainGenerationError({ code, message: "InvalidAccessKeyId=AKIAIOSFODNN7EXAMPLE" });
+        expect(leakedEquals.message).not.toContain("AKIAIOSFODNN7EXAMPLE");
+        const leakedAuthHeader = explainGenerationError({ code, message: "AuthorizationHeaderMalformed=SECRET_VALUE" });
+        expect(leakedAuthHeader.message).not.toContain("SECRET_VALUE");
+        const leakedSuffixToken = explainGenerationError({ code, message: "对象存储密钥无效（HTTP 403，InvalidAccessKeyId）sk-1234567890abcdef" });
+        expect(leakedSuffixToken.message).toContain("InvalidAccessKeyId");
+        expect(leakedSuffixToken.message).not.toContain("sk-1234567890abcdef");
+        const leakedKeyName = explainGenerationError({ code, message: "上传失败 my_api_key_LEAKED_VALUE" });
+        expect(leakedKeyName.message).not.toContain("LEAKED_VALUE");
+        const leakedUrl = explainGenerationError({ code, message: "对象存储上传失败 https://bucket.cos.ap-guangzhou.myqcloud.com/a?X-Amz-Signature=SECRET_SIG sk-1234567890abcdef" });
+        expect(leakedUrl.message).not.toContain("SECRET_SIG");
+        expect(leakedUrl.message).not.toContain("sk-1234567890abcdef");
+        expect(leakedUrl.message).not.toContain("myqcloud.com");
     }
 });

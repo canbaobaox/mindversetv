@@ -239,15 +239,6 @@ test("a referenced asset changing during confirmation still blocks generation", 
     }))).toBe("content_mismatch");
 });
 
-test("a paused conflict reports recovery instead of waiting for a nonexistent save", async () => {
-    const live = { ...fixture(), canvasHasUnconfirmedEdits: true, canvasUnconfirmedReason: "blocked" };
-    let slept = 0;
-    expect(await blockedReason(prepareAssistantProposalSnapshot(proposal, () => live, async () => fixture(), {
-        sleep: async (ms) => { slept += ms; },
-    }))).toBe("canvas_conflict");
-    expect(slept).toBe(0);
-});
-
 test("unsaved generation settings fail at once without waiting", async () => {
     const live = fixture();
     live.modelConfigHasUnconfirmedEdits = true;
@@ -296,4 +287,49 @@ test("managed beeftv catalog ordering and profile synthesis differences do not f
     persisted.config.videoModels = ["beeftv::minimax-h3-max-turbo"];
 
     expect(await blockedReason(prepareAssistantProposalSnapshot(proposal, () => live, async () => persisted, noWait))).toBe("passed");
+
+    // Any videoPricing change on the managed channel is detected generically (model-agnostic).
+    persisted.config.channels[0]!.modelProfiles![0]!.videoPricing = {
+        currency: "CNY",
+        mode: "seconds",
+        rates: { "1080p": { output: 0.55, reference_video: 0 } },
+    };
+    expect(await blockedReason(prepareAssistantProposalSnapshot(proposal, () => live, async () => persisted, noWait))).toBe("settings_changed");
+});
+
+test("BYOK channel secret redaction from backend does not false-positive settings_changed", async () => {
+    const live = fixture();
+    const persisted = fixture();
+    live.config.apiKey = "sk-legacy-live";
+    live.config.channels = [{
+        id: "portable-aipai-3",
+        name: "Portable BYOK",
+        apiFormat: "openai",
+        baseUrl: "https://byok.example.test/v1",
+        apiKey: "sk-live-plaintext-key",
+        secretKey: "sec-live-plaintext",
+        headers: [{ name: "X-Custom-Auth", value: "token-live-123" }],
+        models: ["custom-image-model"],
+        modelProfiles: [{ model: "custom-image-model", capability: "image", protocol: "openai-image" }],
+    }];
+    persisted.config.apiKey = "__BEEFTV_REDACTED__";
+    persisted.config.channels = [{
+        id: "portable-aipai-3",
+        name: "Portable BYOK",
+        apiFormat: "openai",
+        baseUrl: "https://byok.example.test/v1",
+        apiKey: "__BEEFTV_REDACTED__",
+        secretKey: "__BEEFTV_REDACTED__",
+        hasApiKey: true,
+        hasSecretKey: true,
+        headers: [{ name: "X-Custom-Auth", value: "__BEEFTV_REDACTED__" }],
+        models: ["custom-image-model"],
+        modelProfiles: [{ model: "custom-image-model", capability: "image", protocol: "openai-image" }],
+    }];
+
+    expect(await blockedReason(prepareAssistantProposalSnapshot(proposal, () => live, async () => persisted, noWait))).toBe("passed");
+
+    // Non-secret BYOK config edits must still be detected as settings_changed.
+    persisted.config.channels[0]!.baseUrl = "https://other.example.test/v1";
+    expect(await blockedReason(prepareAssistantProposalSnapshot(proposal, () => live, async () => persisted, noWait))).toBe("settings_changed");
 });

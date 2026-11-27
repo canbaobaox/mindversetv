@@ -1,18 +1,18 @@
-import { App, Button } from "antd";
+import { App, Button, Tooltip } from "antd";
 import copy from "copy-to-clipboard";
-import { Crosshair, Undo2 } from "lucide-react";
+import { Check, Copy, Crosshair, GitBranch, Undo2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ASSISTANT_PROPOSAL_INVALIDATED_TEXT, ASSISTANT_PROPOSAL_UNDONE_TEXT, agentAssistantFailureText, type AgentToolCall, type AssistantGenerationProposal, type AssistantScriptProposal, type AssistantTurn } from "@/services/api/agent-assistant";
-import { ASSISTANT_UNDONE_INCOMPLETE_TEXT, assistantChangeSummary, assistantSkillLabel, assistantChangedNodeIds, assistantOrderTargetLines, assistantProductionProposalParts, assistantProposalText, assistantProposalProgress, assistantScriptProposalLines, assistantScriptResultStatusText, assistantTurnCanContinue, assistantUnresolvedFailures, assistantUndoFailureText, assistantVisibleReply } from "./canvas-assistant-copy";
+import { ASSISTANT_UNDONE_INCOMPLETE_TEXT, assistantChangeSummary, assistantSkillLabel, assistantChangedNodeIds, assistantOrderTargetLines, assistantProductionProposalParts, assistantProposalConfirmLabel, assistantProposalText, assistantProposalProgress, assistantScriptProposalLines, assistantScriptResultStatusText, assistantTurnCanContinue, assistantUnresolvedFailures, assistantUndoFailureText, assistantVisibleReply } from "./canvas-assistant-copy";
 import type { CanvasNodeData } from "@/types/canvas";
 import { dismissedProposalKey, type AssistantTurnStatus } from "./use-canvas-assistant";
 import { modelOptionName, resolveModelChannel, useEffectiveConfig } from "@/stores/use-config-store";
-import { portraitPriceLines, seedancePortraitModel } from "@/lib/seedance-portrait";
-import { portraitGenerationError } from "@/lib/model-selection";
+import { videoPricingDisplayLines } from "@/lib/video-pricing";
 import { CanvasAssistantAttachments } from "./canvas-assistant-attachments";
-import { CanvasAssistantOutputs } from "./canvas-assistant-outputs";
+import { AssistantFileDeliverableCard, CanvasAssistantOutputs } from "./canvas-assistant-outputs";
 import { CanvasAssistantMediaFacts } from "./canvas-assistant-media-facts";
 import { AssistantReasoning } from "@/components/ai/message-reasoning";
 import { usePluginSlot } from "@/lib/plugins/slot-registry";
@@ -30,6 +30,7 @@ type Props = {
     generationDisabled?: boolean;
     onLocate: (nodeIds: string[]) => void;
     onUndo: (turnId: string) => void;
+    onFork?: (turnId: string) => void;
     onRunProposal: (proposal: AssistantGenerationProposal, turnId: string) => void;
     onRunScriptProposal?: (proposal: AssistantScriptProposal, turnId: string, alwaysAllowSession: boolean) => void;
     runningScriptProposalIds?: ReadonlySet<string>;
@@ -72,8 +73,13 @@ export function CanvasAssistantUserMessage({ text, selectedCount, continuationId
     );
 }
 
-export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, handledProposals, proposalFeedback, runningProposalIds, generationDisabled, onLocate, onUndo, onRunProposal, onRunScriptProposal, runningScriptProposalIds, scriptProposalFeedback, onDismissProposal, onContinue, nodes, onCheckResults, reasoningOpen, onReasoningOpenChange }: Props) {
+export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, handledProposals, proposalFeedback, runningProposalIds, generationDisabled, onLocate, onUndo, onFork, onRunProposal, onRunScriptProposal, runningScriptProposalIds, scriptProposalFeedback, onDismissProposal, onContinue, nodes, onCheckResults, reasoningOpen, onReasoningOpenChange }: Props) {
     const { message } = App.useApp();
+    const [copiedReply, setCopiedReply] = useState(false);
+    const copyTimerRef = useRef<number | null>(null);
+    useEffect(() => () => {
+        if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    }, []);
     const config = useEffectiveConfig();
     const toolCardEntries = usePluginSlot("assistant.toolCard");
     const summary = assistantChangeSummary(turn.change);
@@ -84,6 +90,24 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
     const canContinue = Boolean(turn.error && assistantTurnCanContinue(turn.errorReason));
     // 停下前已经改了画布：保留改动，可在输入框确认后接着做；不自动重发。
     const stoppedWithChanges = Boolean(turn.cancelled && !turn.error && summary && !undone);
+    const visibleReplyText = assistantVisibleReply(turn.reply || "");
+    const copyReply = async () => {
+        if (!visibleReplyText) return;
+        try {
+            if (await copy(visibleReplyText)) {
+                setCopiedReply(true);
+                if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+                copyTimerRef.current = window.setTimeout(() => {
+                    copyTimerRef.current = null;
+                    setCopiedReply(false);
+                }, 1600);
+            } else {
+                message.error("复制失败");
+            }
+        } catch {
+            message.error("复制失败");
+        }
+    };
     const copyDiagnostics = async () => {
         try {
             const text = formatAssistantDiagnostics(turn, { canvasId, assistantSessionId: sessionId || undefined });
@@ -185,19 +209,41 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                 const started = handledProposals.has(proposal.proposalId) || admittedOnCanvas;
                 const skipped = handledProposals.has(dismissedProposalKey(proposal.proposalId));
                 const selectedModel = proposal.modelKey || proposal.model;
-                const videoModels = proposal.production
-                    ? proposal.production.targets.filter((target) => target.kind === "video").map((target) => target.modelKey)
-                    : [selectedModel];
-                const profile = proposal.kind === "video" ? resolveModelChannel(config, selectedModel).modelProfiles?.find((item) => item.model === modelOptionName(selectedModel)) : undefined;
-                const priceError = videoModels.filter((model) => seedancePortraitModel(model)).map((model) => portraitGenerationError(config, model)).find(Boolean) || "";
+                const channelProfile = resolveModelChannel(config, selectedModel).modelProfiles?.find((item) => item.model === modelOptionName(selectedModel));
+                const profile = proposal.kind === "video" ? channelProfile : undefined;
+                const configuredModelLabel = channelProfile?.displayName?.trim();
                 const running = Boolean(runningProposalIds?.has(proposal.proposalId));
                 const progress = started && nodes ? assistantProposalProgress(proposal, nodes) : null;
                 const awaitingConfirmation = !started && !skipped && !undone && !turn.proposalsInvalidated;
+                const inactiveProposal = !started && !awaitingConfirmation;
                 const productionParts = assistantProductionProposalParts(proposal, awaitingConfirmation);
                 const orderTargetLines = assistantOrderTargetLines(proposal, awaitingConfirmation);
-                const legacyProposalNote = !assistantVisibleReply(turn.reply || "") && proposal.note?.trim() ? proposal.note.trim() : "";
+                const legacyProposalNote = !visibleReplyText && proposal.note?.trim() ? proposal.note.trim() : "";
+                const statusTone = started ? "active" : awaitingConfirmation ? "pending" : "inactive";
+                const statusHeading = started
+                    ? (proposal.regenerate ? "原地重做中" : "生成进行中")
+                    : awaitingConfirmation
+                        ? (proposal.regenerate ? "待确认 · 原地重做" : proposal.kind === "mixed" ? "待确认 · 多模型方案" : "待确认 · 生成方案")
+                        : undone
+                            ? "已撤销"
+                            : skipped
+                                ? "已跳过"
+                                : "已失效";
+                const estimateSummary = proposal.production?.estimate ?? proposal.estimate;
+                const estimateAmount = estimateSummary?.amount;
+                const estimateUnknown = estimateSummary?.unknown ?? 0;
+                const estimateBadge = awaitingConfirmation && estimateUnknown === 0 && typeof estimateAmount === "number" && Number.isFinite(estimateAmount) && estimateAmount > 0
+                    ? `约 ¥${estimateAmount < 0.1 ? Number(estimateAmount.toFixed(4)).toString() : estimateAmount.toFixed(2)}`
+                    : null;
                 return (
-                    <div key={proposal.proposalId} className="canvas-assistant-card">
+                    <div key={proposal.proposalId} className={`canvas-assistant-card${inactiveProposal ? " canvas-assistant-card-inactive" : ""}`}>
+                        <div className="canvas-assistant-proposal-head">
+                            <span className="canvas-assistant-proposal-status-row">
+                                <span className="canvas-assistant-status-dot" data-tone={statusTone} aria-hidden="true" />
+                                <span>{statusHeading}</span>
+                            </span>
+                            {estimateBadge ? <span className="canvas-assistant-status-pill">{estimateBadge}</span> : null}
+                        </div>
                         {legacyProposalNote ? (
                             <div className="canvas-assistant-proposal-note">
                                 {legacyProposalNote.split("\n").map((part, partIndex) => <div key={partIndex} className={part.length > 80 ? "canvas-assistant-pretty-line" : undefined}>{part}</div>)}
@@ -210,10 +256,10 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                                 </div>
                                 {productionParts.targetLines.length > 0 ? (
                                     <details className="canvas-assistant-proposal-details">
-                                        <summary>查看 {productionParts.targetLines.length} 项镜头与提示词明细</summary>
+                                        <summary>{productionParts.summaryLabel}</summary>
                                         <div className="canvas-assistant-proposal-targets">
                                             {productionParts.targetLines.map((line, index) => (
-                                                <div key={proposal.production?.targets[index]?.nodeId || index} className="canvas-assistant-proposal-target">
+                                                <div key={proposal.production?.targets?.[index]?.nodeId || index} className="canvas-assistant-proposal-target">
                                                     {line.split("\n").map((part, partIndex) => <div key={partIndex} className={part.length > 80 ? "canvas-assistant-pretty-line" : undefined}>{part}</div>)}
                                                 </div>
                                             ))}
@@ -229,7 +275,7 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                         ) : (
                             <>
                                 <div className="canvas-assistant-proposal-lines">
-                                    {assistantProposalText(proposal, portraitPriceLines(profile?.videoPricing), awaitingConfirmation).split("\n").map((part, partIndex) => <div key={partIndex} className={part.length > 80 ? "canvas-assistant-pretty-line" : undefined}>{part}</div>)}
+                                    {assistantProposalText(proposal, videoPricingDisplayLines(profile?.videoPricing), awaitingConfirmation, configuredModelLabel).split("\n").map((part, partIndex) => <div key={partIndex} className={part.length > 80 ? "canvas-assistant-pretty-line" : undefined}>{part}</div>)}
                                 </div>
                                 {orderTargetLines.length > 0 ? (
                                     <details className="canvas-assistant-proposal-details">
@@ -245,7 +291,6 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                                 ) : null}
                             </>
                         )}
-                        {priceError && awaitingConfirmation ? <span className="canvas-assistant-meta" role="status">{priceError}</span> : null}
                         {!skipped && !running && ((!undone && !turn.proposalsInvalidated) || started) && proposalFeedback?.[proposal.proposalId] ? <span className="canvas-assistant-meta" role="status" style={{ overflowWrap: "anywhere" }}>{proposalFeedback[proposal.proposalId]}</span> : null}
                         {started ? (
                             <>
@@ -263,8 +308,8 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                             <span className="canvas-assistant-meta" role="status">{ASSISTANT_PROPOSAL_INVALIDATED_TEXT}</span>
                         ) : (
                             <div className="canvas-assistant-card-actions">
-                                <Button size="small" type="primary" autoInsertSpace={false} loading={running} disabled={generationDisabled || Boolean(priceError)} onClick={() => onRunProposal(proposal, turn.turnId)}>
-                                    {proposal.production ? "确认并制作整片" : "生成"}
+                                <Button size="small" type="primary" autoInsertSpace={false} loading={running} disabled={generationDisabled} onClick={() => onRunProposal(proposal, turn.turnId)}>
+                                    {assistantProposalConfirmLabel(proposal)}
                                 </Button>
                                 <Button size="small" disabled={running} onClick={() => onDismissProposal(proposal.proposalId)}>
                                     先不用
@@ -294,6 +339,20 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                         {finished ? (
                             <>
                                 <span className="canvas-assistant-meta" role="status">{assistantScriptResultStatusText(proposal)}</span>
+                                {proposal.result?.outputFiles?.length ? (
+                                    <div className="space-y-1.5">
+                                        {proposal.result.outputFiles.map((file, idx) => (
+                                            <AssistantFileDeliverableCard
+                                                key={file.resourceId || `${file.path}:${idx}`}
+                                                title="脚本产出文件"
+                                                resourceId={file.resourceId}
+                                                fileName={file.path.split("/").pop() || file.path}
+                                                mimeType={file.mimeType}
+                                                bytes={file.size}
+                                            />
+                                        ))}
+                                    </div>
+                                ) : null}
                                 {hasOutput ? (
                                     <details className="canvas-assistant-proposal-details">
                                         <summary>查看脚本输出</summary>
@@ -338,6 +397,38 @@ export function CanvasAssistantTurnView({ turn, canvasId, sessionId, status, han
                     </div>
                 );
             })}
+
+            {(visibleReplyText || onFork) ? (
+                <div className="canvas-assistant-turn-actions">
+                    {visibleReplyText ? (
+                        <Tooltip title={copiedReply ? "已复制回复" : "复制回复"}>
+                            <button
+                                type="button"
+                                className="canvas-assistant-micro-btn"
+                                aria-label="复制回复"
+                                onClick={() => void copyReply()}
+                            >
+                                {copiedReply ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                                <span>{copiedReply ? "已复制" : "复制"}</span>
+                            </button>
+                        </Tooltip>
+                    ) : null}
+                    {onFork ? (
+                        <Tooltip title="从这一轮分出新分支试稿，保留当前对话不变">
+                            <button
+                                type="button"
+                                className="canvas-assistant-micro-btn"
+                                aria-label="从此处分叉试稿"
+                                disabled={generationDisabled}
+                                onClick={() => onFork(turn.turnId)}
+                            >
+                                <GitBranch size={13} aria-hidden="true" />
+                                <span>分叉试稿</span>
+                            </button>
+                        </Tooltip>
+                    ) : null}
+                </div>
+            ) : null}
         </div>
     );
 }

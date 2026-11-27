@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"infinite-canvas/backend/internal/agentops"
 	"infinite-canvas/backend/internal/appearance"
 	"infinite-canvas/backend/internal/assistantruntime"
 	"infinite-canvas/backend/internal/beeftv"
@@ -15,7 +16,6 @@ import (
 	"infinite-canvas/backend/internal/localapp"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/modelcatalog"
-	localproject "infinite-canvas/backend/internal/project"
 	localtask "infinite-canvas/backend/internal/task"
 	"infinite-canvas/backend/internal/textreplay"
 	"infinite-canvas/backend/internal/workspace"
@@ -47,7 +47,6 @@ type RuntimeDependencies struct {
 	ProviderConfig     ProviderConfig
 	ModelCapability    localapp.ModelCapabilityPort
 	Assets             localapp.AssetPort
-	Projects           localapp.ProjectPort
 	Tasks              localapp.TaskPort
 	Generation         localapp.GenerationPort
 	Conversations      *conversation.Service
@@ -63,6 +62,9 @@ type RuntimeDependencies struct {
 	// DesktopTrust verifies both the launch token and the separate Wails UI bootstrap credential.
 	// 桌面形态用它代替开发引导开关签发 UI 会话；服务端形态为 nil。
 	DesktopTrust func(*http.Request) bool
+	// OnAgentOpsRegistry receives the registered ops registry so bootstrap can
+	// attach the mounted BusinessGateway after all API routes are registered.
+	OnAgentOpsRegistry func(*agentops.Registry)
 }
 
 type serviceRuntimeAdapter struct {
@@ -72,7 +74,6 @@ type serviceRuntimeAdapter struct {
 	saveModelConfig             func([]byte) error
 	resources                   func(string, int) ([]model.Resource, error)
 	uploadLocalResource         func(string, *multipart.FileHeader, string, int, int, int64, ...string) (*model.Resource, error)
-	listProjects                func(string) ([]localproject.Summary, error)
 	tasksWithOptions            func(string, localtask.ListOptions) ([]localtask.Summary, error)
 	createTask                  func(string, localtask.CreateRequest) (*model.Task, error)
 	createTimelineRender        func(string, localtask.TimelineRenderCreateRequest) (*model.Task, error)
@@ -86,7 +87,6 @@ type serviceRuntimeSource interface {
 	RequestCoordinator
 	ProviderConfig
 	localapp.AssetPort
-	localapp.ProjectPort
 	localapp.TaskPort
 	CreateLocalTask(string, localtask.CreateRequest) (*model.Task, error)
 }
@@ -96,7 +96,7 @@ func newServiceRuntimeAdapter(value serviceRuntimeSource) serviceRuntimeAdapter 
 		allowRequest: value.AllowRequest, requestRetryAfter: value.RequestRetryAfter,
 		readModelConfig: value.ReadLocalModelConfig, saveModelConfig: value.SaveLocalModelConfig,
 		resources: value.Resources, uploadLocalResource: value.UploadLocalResource,
-		listProjects: value.ListProjects, tasksWithOptions: value.TasksWithOptions, createTask: value.CreateLocalTask,
+		tasksWithOptions: value.TasksWithOptions, createTask: value.CreateLocalTask,
 		createTimelineRender: value.CreateTimelineRenderTask, createTimelineTranscription: value.CreateTimelineTranscriptionTask,
 		createDepthCapture: value.CreateDepthCaptureTask, createVideoEraseVSR: value.CreateVideoEraseVSRTask, recoverTask: value.RecoverTask,
 	}
@@ -124,10 +124,6 @@ func (a serviceRuntimeAdapter) Resources(userID string, limit int) ([]model.Reso
 
 func (a serviceRuntimeAdapter) UploadLocalResource(userID string, header *multipart.FileHeader, kind string, width, height int, durationMs int64, identity ...string) (*model.Resource, error) {
 	return a.uploadLocalResource(userID, header, kind, width, height, durationMs, identity...)
-}
-
-func (a serviceRuntimeAdapter) ListProjects(userID string) ([]localproject.Summary, error) {
-	return a.listProjects(userID)
 }
 
 func (a serviceRuntimeAdapter) TasksWithOptions(userID string, options localtask.ListOptions) ([]localtask.Summary, error) {
@@ -163,13 +159,6 @@ func requestAssetPort(c *gin.Context, fallback localapp.AssetPort) localapp.Asse
 		return dependencies.Assets
 	}
 	return fallback
-}
-
-func requestProjectPort(c *gin.Context, fallback serviceRuntimeSource) localapp.ProjectPort {
-	if dependencies, ok := runtimeDependencies(c); ok && dependencies.Projects != nil {
-		return dependencies.Projects
-	}
-	return newServiceRuntimeAdapter(fallback)
 }
 
 func requestTaskPort(c *gin.Context, fallback serviceRuntimeSource) localapp.TaskPort {

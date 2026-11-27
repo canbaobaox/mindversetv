@@ -119,6 +119,7 @@ type ListOptions struct {
 	Limit      int
 	ProjectID  string
 	ActiveOnly bool
+	AllActive  bool
 }
 
 // Summary is the stable local read model. It deliberately excludes protected

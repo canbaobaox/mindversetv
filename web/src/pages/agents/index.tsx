@@ -16,6 +16,8 @@ import { connectAgentIntegration, disconnectAgentIntegration, listAgentClients, 
 import { ApiError } from "@/services/api/request";
 
 import { agentClientDisplayLabel, agentClientKindLabel, agentClientKinds, agentClientLastUsedLabel, agentClientModeLabel, agentIntegrationAction, agentIntegrationHint, agentIntegrationStatusLabel } from "./agent-client-presentation";
+import { AssistantMcpSection } from "./assistant-mcp-section";
+import { ExternalGuardrailSection } from "./external-guardrail-section";
 import { RecentMCPCalls } from "./recent-mcp-calls";
 import { AgentConnectPanel } from "./agent-connect-panel";
 
@@ -152,6 +154,8 @@ export default function AgentsPage() {
                             })}
                         </ul>
                     </TableSurface>
+                    <ExternalGuardrailSection />
+                    <AssistantMcpSection />
                     <RecentMCPCalls />
                     {cli && !cli.available && (
                         <p role="alert" className="mt-4 text-sm">安装文件不完整，无法连接外部工具。请重新下载并完整解压 MindVerseTV。</p>

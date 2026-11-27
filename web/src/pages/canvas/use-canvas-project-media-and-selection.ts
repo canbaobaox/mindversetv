@@ -50,7 +50,6 @@ type MediaAndSelectionParams = {
     projectId: string;
     linkedProjectId: string;
     readOnly: boolean;
-    canvasTitle: string;
     directorScenes?: CanvasProject["directorScenes"];
     addedSkills: ReturnType<typeof useCanvasProjectLifecycle>["addedSkills"];
     projectLoaded: boolean;
@@ -91,7 +90,6 @@ export function useCanvasProjectMediaAndSelection({
     projectId,
     linkedProjectId,
     readOnly,
-    canvasTitle,
     directorScenes,
     addedSkills,
     projectLoaded,
@@ -215,7 +213,7 @@ export function useCanvasProjectMediaAndSelection({
         videoCropNodeId,
         maskEditNodeId,
         upscaleNodeId,
-        inlineTrimNodeId,
+        inlineVideoEditor,
         segmentRunningMode,
         setAngleNodeId,
         setLightingNodeId,
@@ -231,11 +229,11 @@ export function useCanvasProjectMediaAndSelection({
     const { startUpscaleBatch } = useCanvasUpscaleBatch({
         pageUi,
         projectId,
+        nodes: readOnly ? undefined : nodes,
         nodesRef,
         connectionsRef,
         setNodes,
         setConnections,
-        prepareResource: prepareUpscaleResource,
         observeTask: observeAIUpscale,
         bindTask: bindUpscaleTask,
     });
@@ -250,7 +248,7 @@ export function useCanvasProjectMediaAndSelection({
         setConnections(plan.connections);
         setNodes((current) => [...current, plan.processor]);
         setSelectedNodeIds(new Set([plan.processor.id]));
-        setDialogNodeId(null);
+        setDialogNodeId(plan.processor.id);
         setToolbarNodeId(null);
     }, [connectionsRef, message, nodesRef, recoverAIUpscale, selectedNodeIdsRef, setConnections, setDialogNodeId, setNodes, setSelectedNodeIds, setToolbarNodeId]);
 
@@ -388,7 +386,6 @@ export function useCanvasProjectMediaAndSelection({
     const nodeEditor = useCanvasNodeEditor({
         pageUi,
         canvasId: projectId,
-        canvasTitle,
         domainProjectId: linkedProjectId,
         readOnly,
         nodesRef,
@@ -412,9 +409,9 @@ export function useCanvasProjectMediaAndSelection({
     // Nodes that need live controls stay as DOM cards above the overview canvas.
     const lodPinnedNodeIds = useMemo(() => new Set([
         lodHoverNodeId, hoveredNodeId, singleSelectedNodeId, activeMediaNodeId, dialogNodeId,
-        cropNodeId, videoCropNodeId, annotationNodeId, maskEditNodeId,
+        cropNodeId, videoCropNodeId, annotationNodeId, maskEditNodeId, inlineVideoEditor?.nodeId,
         connectionTargetNodeId, connectingParams?.nodeId,
-    ].filter((nodeId): nodeId is string => Boolean(nodeId))), [activeMediaNodeId, annotationNodeId, connectingParams?.nodeId, connectionTargetNodeId, cropNodeId, dialogNodeId, hoveredNodeId, lodHoverNodeId, maskEditNodeId, singleSelectedNodeId, videoCropNodeId]);
+    ].filter((nodeId): nodeId is string => Boolean(nodeId))), [activeMediaNodeId, annotationNodeId, connectingParams?.nodeId, connectionTargetNodeId, cropNodeId, dialogNodeId, hoveredNodeId, inlineVideoEditor?.nodeId, lodHoverNodeId, maskEditNodeId, singleSelectedNodeId, videoCropNodeId]);
 
     const renderModel = useCanvasRenderModel({
         nodes,
@@ -461,12 +458,12 @@ export function useCanvasProjectMediaAndSelection({
     // Treat either signal as moving so floating editors disappear before the
     // first preview transform is painted and never affect drag layout.
     const isCanvasNodeMoving = isCanvasPointerMoving(isNodeDragging, dragPreview);
-    const inlineTrimNode = inlineTrimNodeId ? nodeById.get(inlineTrimNodeId) || null : null;
+    const inlineVideoEditorNode = inlineVideoEditor ? nodeById.get(inlineVideoEditor.nodeId) || null : null;
     const pendingConnectionSourceNode = connectionController.pendingConnectionCreate?.connection.handleType === "source" ? nodeById.get(connectionController.pendingConnectionCreate.connection.nodeId) : null;
     const canCreateDrawingFromConnection = !connectionController.pendingConnectionCreate?.batchSourceNodeIds?.length && pendingConnectionSourceNode?.type === CanvasNodeType.Image && Boolean(pendingConnectionSourceNode.metadata?.content);
 
     const { handleFrameToggle, toggleFrameCollapsed, toggleBatchExpanded } = nodeEditor;
-    const locateCanvasNode = useCallback((nodeId: string) => {
+    const locateCanvasNode = useCallback((nodeId: string, focusOptions?: Parameters<typeof focusCanvasNode>[1]) => {
         revealCanvasTargetNode(nodeId, {
             nodes: nodesRef.current,
             readOnly,
@@ -474,7 +471,7 @@ export function useCanvasProjectMediaAndSelection({
             toggleFrameCollapsed,
             handleFrameToggle,
             toggleBatchExpanded,
-        });
+        }, focusOptions);
     }, [focusCanvasNode, handleFrameToggle, nodesRef, readOnly, toggleBatchExpanded, toggleFrameCollapsed]);
 
     const canEditGenerationInput = useCallback(
@@ -505,6 +502,7 @@ export function useCanvasProjectMediaAndSelection({
         updateNodeFromContent,
         updateMediaNodeFromContent,
         addPanoramaCaptureNode: mediaTools.addPanoramaCaptureNode,
+        prepareUpscaleResource,
         startUpscaleBatch,
         recoverAIUpscale,
         stepImageHistory: readOnly ? undefined : nodeEditor.stepNodeHistoryImage,
@@ -549,8 +547,9 @@ export function useCanvasProjectMediaAndSelection({
         renderedConnections,
         dialogNode,
         isCanvasNodeMoving,
-        inlineTrimNode,
+        inlineVideoEditorNode,
         canCreateDrawingFromConnection,
         canvasNodeActions,
+        locateCanvasNode,
     };
 }

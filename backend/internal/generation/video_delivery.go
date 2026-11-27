@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -47,9 +48,14 @@ type videoProviderCredentials struct {
 type videoResultURLResolver func(context.Context) (string, error)
 type VideoResultSource struct {
 	URL              string
-	Read             func(context.Context) ([]byte, string, error)
+	ReadFile         func(context.Context) (string, string, error)
 	CredentialValues []string
 }
+
+func (s VideoResultSource) ready() bool {
+	return strings.TrimSpace(s.URL) != "" || s.ReadFile != nil
+}
+
 type videoResultResolver func(context.Context) (VideoResultSource, error)
 
 func withVideoProtocolAuth(ctx context.Context, auth protocol.ManifestAuth) context.Context {
@@ -143,94 +149,12 @@ func setVideoCredentialQuery(target *url.URL, name, value string) {
 	}
 }
 
-// DownloadVideoResult retrieves an existing task's media, including renewable
-// backup links. It never submits generation and shares the worker's retry loop.
-func DownloadVideoResult(ctx context.Context, config Config, rawURL, taskID string) ([]byte, string, error) {
-	policy := videoPollPolicyForConfig(ctx, config, DefaultVideoPollPolicy())
-	data, mimeType, err := RunVideoDownload(ctx, taskID, policy, videoResultDownloader(config, rawURL, taskID))
-	return data, NormalizedMediaMIMEType(mimeType, data), err
-}
-
 // videoBackupLinkExpiredError distinguishes a rejected external signed URL
 // from a rejected credential at the authenticated gateway.
 type videoBackupLinkExpiredError struct{ cause error }
 
 func (e videoBackupLinkExpiredError) Error() string { return e.cause.Error() }
 func (e videoBackupLinkExpiredError) Unwrap() error { return e.cause }
-
-// A download keeps the original provider task. Once its primary route fails,
-// each retry requests a fresh backup link rather than reusing the failed URL.
-func videoResultDownloader(config Config, rawURL, taskID string, renew ...videoResultURLResolver) func(context.Context) ([]byte, string, error) {
-	var resolver videoResultResolver
-	if len(renew) > 0 {
-		resolver = func(ctx context.Context) (VideoResultSource, error) {
-			freshURL, err := renew[0](ctx)
-			return videoURLSource(config, freshURL), err
-		}
-	}
-	return VideoResultDownloader(config, taskID, videoURLSource(config, rawURL), resolver)
-}
-
-func videoURLSource(config Config, rawURL string) VideoResultSource {
-	return VideoResultSource{URL: rawURL, Read: func(ctx context.Context) ([]byte, string, error) {
-		if strings.TrimSpace(rawURL) == "" {
-			return nil, "", errors.New("原视频任务没有返回可取回的结果")
-		}
-		if strings.HasPrefix(strings.TrimSpace(rawURL), "data:") {
-			mimeType, data, err := DecodeProviderDataURL(rawURL)
-			return data, mimeType, err
-		}
-		return GetProviderExternalBinary(ctx, config, rawURL)
-	}}
-}
-
-// The existing download loop owns retry/deadline/progress. This closure only
-// changes its source: BeefTV backup, or the same third-party task's fresh URL.
-func VideoResultDownloader(config Config, taskID string, primary VideoResultSource, renew func(context.Context) (VideoResultSource, error)) func(context.Context) ([]byte, string, error) {
-	refresh := false
-	readFresh := func(ctx context.Context) ([]byte, string, error) {
-		if IsBeefTVVideoConfig(ctx, config) {
-			backupURL := APIURL(config.BaseURL, "/videos/"+url.PathEscape(taskID)+"/content") + "?delivery=backup"
-			return getVideoBinaryWithIdleTimeout(ctx, config, backupURL, videoDeliveryIdleTimeout)
-		}
-		fresh, err := renew(withDownloadObserver(ctx, nil))
-		if err != nil {
-			return nil, "", err
-		}
-		ctx = withVideoCredentials(ctx, config, append(append([]string{}, primary.CredentialValues...), fresh.CredentialValues...))
-		data, mimeType, err := fresh.Read(context.WithValue(ctx, videoDeliveryRequestContext{}, videoDeliveryIdleTimeout))
-		if videoMediaLinkRejected(ctx, config, fresh.URL, err) {
-			err = videoBackupLinkExpiredError{cause: err}
-		}
-		return data, mimeType, err
-	}
-	return func(ctx context.Context) ([]byte, string, error) {
-		ctx = WithRequestKind(ctx, "download")
-		ctx = withVideoCredentials(ctx, config, primary.CredentialValues)
-		if refresh {
-			return readFresh(ctx)
-		}
-		data, mimeType, err := primary.Read(context.WithValue(ctx, videoDeliveryRequestContext{}, videoDeliveryIdleTimeout))
-		if err == nil {
-			return data, mimeType, nil
-		}
-		if ctx.Err() != nil {
-			return nil, "", ctx.Err()
-		}
-		if videoResultPending(err) {
-			return nil, "", err
-		}
-		retry, _ := RetryableVideoPollError(ctx, err)
-		if !retry && !videoMediaLinkRejected(ctx, config, primary.URL, err) {
-			return nil, "", err
-		}
-		if strings.TrimSpace(taskID) == "" || (!IsBeefTVVideoConfig(ctx, config) && renew == nil) {
-			return nil, "", err
-		}
-		refresh = true
-		return readFresh(ctx)
-	}
-}
 
 func videoMediaLinkRejected(ctx context.Context, config Config, rawURL string, err error) bool {
 	var httpErr HTTPError
@@ -256,6 +180,112 @@ func videoResultURL(status, rawURL string) (string, error) {
 	}
 }
 
-func getVideoBinaryWithIdleTimeout(ctx context.Context, config Config, rawURL string, idle time.Duration) ([]byte, string, error) {
-	return GetProviderExternalBinary(context.WithValue(ctx, videoDeliveryRequestContext{}, idle), config, rawURL)
+// videoResultFileDownloader is the single source of truth for video result
+// delivery: it streams remote/protocol responses directly to disk via
+// outbound.DownloadResumableToFile / StreamResponseToFile and switches to
+// BeefTV backup or the original third-party task's renewed URL on transient
+// failure or expired link.
+func videoResultFileDownloader(config Config, taskID string, primary VideoResultSource, renew func(context.Context) (VideoResultSource, error)) func(context.Context) (string, string, error) {
+	refresh := false
+	readSourceFile := func(ctx context.Context, src VideoResultSource) (string, string, error) {
+		dlCtx := context.WithValue(ctx, videoDeliveryRequestContext{}, videoDeliveryIdleTimeout)
+		if src.ReadFile != nil {
+			return src.ReadFile(dlCtx)
+		}
+		if strings.TrimSpace(src.URL) == "" {
+			return "", "", errors.New("原视频任务没有返回可取回的结果")
+		}
+		return getProviderExternalVideoFile(dlCtx, config, src.URL)
+	}
+	readFresh := func(ctx context.Context) (string, string, error) {
+		if IsBeefTVVideoConfig(ctx, config) {
+			backupURL := APIURL(config.BaseURL, "/videos/"+url.PathEscape(taskID)+"/content") + "?delivery=backup"
+			return getProviderExternalVideoFile(context.WithValue(ctx, videoDeliveryRequestContext{}, videoDeliveryIdleTimeout), config, backupURL)
+		}
+		fresh, err := renew(withDownloadObserver(ctx, nil))
+		if err != nil {
+			return "", "", err
+		}
+		ctx = withVideoCredentials(ctx, config, append(append([]string{}, primary.CredentialValues...), fresh.CredentialValues...))
+		filePath, mimeType, err := readSourceFile(ctx, fresh)
+		if videoMediaLinkRejected(ctx, config, fresh.URL, err) {
+			err = videoBackupLinkExpiredError{cause: err}
+		}
+		return filePath, mimeType, err
+	}
+	return func(ctx context.Context) (string, string, error) {
+		ctx = WithRequestKind(ctx, "download")
+		ctx = withVideoCredentials(ctx, config, primary.CredentialValues)
+		if refresh {
+			return readFresh(ctx)
+		}
+		filePath, mimeType, err := readSourceFile(ctx, primary)
+		if err == nil {
+			return filePath, mimeType, nil
+		}
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		if videoResultPending(err) {
+			return "", "", err
+		}
+		retry, _ := RetryableVideoPollError(ctx, err)
+		if !retry && !videoMediaLinkRejected(ctx, config, primary.URL, err) {
+			return "", "", err
+		}
+		if strings.TrimSpace(taskID) == "" || (!IsBeefTVVideoConfig(ctx, config) && renew == nil) {
+			return "", "", err
+		}
+		refresh = true
+		return readFresh(ctx)
+	}
+}
+
+// downloadVideoArtifactMap streams remote video results to disk and persists
+// them directly into workspace resources via persistDownloadedVideoFile so
+// large protocol, ResultAdapter, and custom-channel videos never allocate
+// multi-hundred-MiB Go heap buffers. Inline data: URLs are decoded directly.
+func downloadVideoArtifactMap(
+	ctx context.Context,
+	config Config,
+	taskID string,
+	pollPolicy VideoPollPolicy,
+	source VideoResultSource,
+	renew videoResultResolver,
+	identitySuffix string,
+) (map[string]interface{}, error) {
+	if raw := strings.TrimSpace(source.URL); strings.HasPrefix(raw, "data:") {
+		mimeType, data, err := DecodeProviderDataURL(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
+			return nil, errors.New("视频结果内容为空")
+		}
+		mimeType = NormalizedMediaMIMEType(mimeType, data)
+		return map[string]interface{}{"dataUrl": DataURL(mimeType, data), "mimeType": mimeType}, nil
+	}
+	filePath, fileMime, err := RunVideoDownloadFile(ctx, taskID, pollPolicy, videoResultFileDownloader(config, taskID, source, renew))
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(filePath)
+	return persistDownloadedVideoFile(ctx, filePath, fileMime, identitySuffix)
+}
+
+func downloadVideoURLArtifactMap(
+	ctx context.Context,
+	config Config,
+	rawURL, taskID string,
+	pollPolicy VideoPollPolicy,
+	renew ...videoResultURLResolver,
+) (map[string]interface{}, error) {
+	var resolver videoResultResolver
+	if len(renew) > 0 && renew[0] != nil {
+		resolver = func(ctx context.Context) (VideoResultSource, error) {
+			freshURL, err := renew[0](ctx)
+			return VideoResultSource{URL: freshURL}, err
+		}
+	}
+	return downloadVideoArtifactMap(ctx, config, taskID, pollPolicy, VideoResultSource{URL: rawURL}, resolver, "video")
 }

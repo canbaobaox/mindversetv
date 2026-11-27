@@ -108,6 +108,7 @@ export type SubtitleEraseCapabilities = SmartEraseCapabilityMatrix & {
     eraseMethods: SubtitleEraseMethod[];
     subtitleModels: SubtitleEraseModel[];
     maxVideoDurationMs: number;
+    maxVideoBytes?: number;
     cloudProcessing: boolean;
     available: boolean;
     capabilitiesLoaded?: boolean;

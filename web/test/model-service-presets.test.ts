@@ -87,7 +87,7 @@ test("native provider models use installed native adapters and never invent a mi
 });
 
 test("external video protocols require an explicit contract and keep user selections", () => {
-    const channel = createModelChannel({ baseUrl: "https://www.whatstoken.ai/v1" });
+    const channel = createModelChannel({ baseUrl: "https://api.example.com/v1" });
     const installed = [...protocols, { value: "video-generations-json", capability: "video", enabled: true } as ModelProtocolDefinition];
     for (const id of ["seedance-2.5", "sora-2", "veo-video", "opaque"]) {
         expect(serviceModelProfile(channel, { id }, installed, "video").protocol).toBeUndefined();
@@ -173,7 +173,7 @@ test("API key is optional only when every selected protocol auth is none", () =>
     expect(serviceConnectionError(createModelChannel({ baseUrl: "https://api.example.com/v1", apiKey: "" }), { requireCredential: false })).toBe("");
     const mixed = createModelChannel({ baseUrl: "http://127.0.0.1:11434", apiKey: "", models: ["llama3", "gpt"], modelProfiles: [{ model: "llama3", capability: "text", protocol: "ollama-chat", authType: "none" }, { model: "gpt", capability: "text", protocol: "chat-completion" }] });
     expect(serviceConnectionError(mixed, { protocols: [ollama, ...protocols] })).toBe("请填写 API Key");
-    expect(modelConfigChannelStatusLabel(channel, { status: "saved", revision: 1, dirty: false, error: "" })).toBe("已保存 · 尚未测试");
+    expect(modelConfigChannelStatusLabel(channel, { status: "saved", revision: 1, dirty: false, error: "" })).toBe("已保存 · 可直接使用（未测连通）");
 });
 
 test("explicit asset origin survives channel creation and generation request assembly", () => {
@@ -185,7 +185,7 @@ test("explicit asset origin survives channel creation and generation request ass
 
 test("saved credentials do not imply tested generation and browser cache omits all credential copies", () => {
     const channel = createModelChannel({ id: "manual", apiKey: "synthetic-key", secretKey: "synthetic-secret", headers: [{ name: "X-Key", value: "synthetic-header" }] });
-    expect(modelConfigChannelStatusLabel(channel, { status: "saved", revision: 1, dirty: false, error: "" })).toBe("已保存 · 尚未测试");
+    expect(modelConfigChannelStatusLabel(channel, { status: "saved", revision: 1, dirty: false, error: "" })).toBe("已保存 · 可直接使用（未测连通）");
     const config = { ...defaultConfig, apiKey: "synthetic-root", channels: [channel] };
     expect(JSON.stringify(configWithoutCachedSecrets(config))).not.toContain("synthetic-");
     expect(config.channels[0].apiKey).toBe("synthetic-key");
@@ -1220,4 +1220,17 @@ test("dynamic partner metadata still lands in the preset catalog for saved chann
             { id: "beeftv-plugin-ysdui", presetId: "ysdui", name: "银盛云枢壹算", live: true, installed: true, enabled: true, keysUrl: "https://www.ysdui.cn/" },
         ]);
     }
+});
+
+test("serviceModelProfile maps third-party catalog anthropic and gemini endpoint hints to native assistant protocols", () => {
+    const channel = createModelChannel({ id: "relay-byok", baseUrl: "https://relay.example.com/v1" });
+    const withNativeProtocols = [
+        ...protocols,
+        { value: "claude-api", label: "Anthropic Messages", capability: "text", authType: "anthropic", create: "POST /v1/messages", contentType: "application/json", media: "none", enabled: true } as ModelProtocolDefinition,
+        { value: "gemini-generate-content", label: "Google Gemini", capability: "text", authType: "google-api-key", create: "POST /v1beta/models", contentType: "application/json", media: "none", enabled: true } as ModelProtocolDefinition,
+    ];
+    const claude = serviceModelProfile(channel, { id: "claude-sonnet-4-6", supportedEndpointTypes: ["anthropic"] }, withNativeProtocols);
+    expect(claude.protocol).toBe("claude-api");
+    const gemini = serviceModelProfile(channel, { id: "gemini-2.5-pro", supportedEndpointTypes: ["gemini"] }, withNativeProtocols);
+    expect(gemini.protocol).toBe("gemini-generate-content");
 });

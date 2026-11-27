@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 
 import { canvasLodContainRect, canvasLodHitTest, type CanvasLodDragOffset } from "@/lib/canvas/canvas-lod";
-import { getCanvasLodThumbnail, setCanvasLodRedrawListener } from "@/lib/canvas/canvas-lod-thumbnails";
+import { clearCanvasLodThumbnails, getCanvasLodThumbnail, setCanvasLodRedrawListener } from "@/lib/canvas/canvas-lod-thumbnails";
 import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview } from "@/lib/canvas/canvas-live-viewport";
 import { sortCanvasNodesByStackOrder, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
 import type { CanvasTheme } from "@/lib/canvas-theme";
@@ -135,7 +135,7 @@ export function CanvasLodLayer(props: CanvasLodLayerProps) {
                 context.lineWidth = 2 * pixel;
                 strokeBox(context, { x: x - 2 * pixel, y: y - 2 * pixel, width: w + 4 * pixel, height: h + 4 * pixel }, radius);
             }
-            if (!propsRef.current.pinnedNodeIds?.has(node.id) && !node.metadata?.reusableWorkflow) {
+            if (node.type !== CanvasNodeType.Upscale && !propsRef.current.pinnedNodeIds?.has(node.id) && !node.metadata?.reusableWorkflow) {
                 drawNodeTitle(context, node.title, box, k, selectedNodeIds.has(node.id) ? theme.node.text : theme.node.label);
             }
         }
@@ -239,6 +239,7 @@ export function CanvasLodLayer(props: CanvasLodLayerProps) {
         return () => {
             stopViewport();
             stopDrag();
+            clearCanvasLodThumbnails();
         };
     }, [draw, resolveContainer]);
 

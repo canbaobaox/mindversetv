@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// Table keeps the field names of one row in BeefTV official compute's public price catalog
-// (/api/enterprise/catalog), so a stored model profile reads like its source.
+// Table keeps the field names of one inline pricing row returned by BeefTV
+// official compute's /v1/models endpoint, so a stored model profile reads like its source.
 type Table struct {
 	Mode                string             `json:"mode"`
 	Kind                string             `json:"display_kind,omitempty"`

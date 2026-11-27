@@ -30,6 +30,14 @@ type DesktopApp struct {
 	mu                      sync.RWMutex
 	migrationMu             sync.Mutex
 	workspaceLockMu         sync.Mutex
+	batchSaveMu             sync.Mutex
+	autoDownloadMu          sync.Mutex
+	mediaClipboardMu        sync.Mutex
+	mediaClipboardPath      string
+	writeMediaClipboard     func(context.Context, string) error
+	batchDirToken           string
+	batchDirPath            string
+	batchDirExpiresAt       time.Time
 	migrating               bool
 	migrationCancel         context.CancelFunc
 	migrationProgress       desktopstorage.Progress
@@ -41,16 +49,24 @@ type DesktopApp struct {
 	downloadsDir            string
 	usePlatformDownloads    bool
 	lastDiagnosticPath      string
+	uncleanPreviousSession  bool
+	lastCrashDiagnosticPath string
 	wailsCtx                context.Context
 	pendingSkillLink        string
 	boot                    desktopBootAttempt
 	openRuntime             func(ctx context.Context, dataDir string, onPhase func(phase, detail string)) (*bootstrap.Runtime, error)
 	chooseSavePath          func(ctx context.Context, fileName string) (string, error)
+	chooseSaveDir           func(ctx context.Context) (string, error)
+	chooseAutoDownloadDir   func(ctx context.Context) (string, error)
 	resolveDownloadsDir     func() string
 	revealFile              func(path string) error
 	openDirectory           func(path string) error
 	copyOwnedMedia          func(resourceID, destPath string) error
 	copyEagleMedia          func(baseURL, itemID, destPath string) error
+	emitReloadEvent         func(ctx context.Context, payload map[string]any)
+	subscribeReloadAck      func(ctx context.Context, onAck func()) func()
+	nativeReloadFn          func(ctx context.Context)
+	gracefulReloadWait      time.Duration
 }
 
 // Wails reflects every field type reachable from a bound object. Keeping the
@@ -119,6 +135,9 @@ func openDesktopRuntimeWithPhase(ctx context.Context, dataDir string, onPhase fu
 func (a *DesktopApp) stop(ctx context.Context) error {
 	a.mu.Lock()
 	runtime := a.runtime()
+	a.batchDirToken = ""
+	a.batchDirPath = ""
+	a.batchDirExpiresAt = time.Time{}
 	a.boot = desktopBootAttempt{
 		state: DesktopStartupState{State: "idle", DataDir: a.dataDir},
 	}
@@ -132,13 +151,15 @@ func (a *DesktopApp) stop(ctx context.Context) error {
 	desktopRuntimeRegistryMu.Unlock()
 	a.clearUpdater()
 	a.mu.Unlock()
-	return closeDesktopRuntime(ctx, runtime)
+	err := closeDesktopRuntime(ctx, runtime)
+	a.clearCrashSentinel()
+	return err
 }
 
 // RuntimeConfig preserves the v2.2.x Wails binding for existing desktop plugins
 // that read local runtime credentials before migrating to host.channels.
 func (a *DesktopApp) RuntimeConfig() DesktopRuntimeConfig {
-	state := a.StartupState()
+	state := a.startupStateSnapshot(false)
 	return DesktopRuntimeConfig{
 		BaseURL:          state.BaseURL,
 		LaunchToken:      state.LaunchToken,
@@ -300,6 +321,32 @@ func (a *DesktopApp) copyMedia(resourceID, destPath string) error {
 	return runtime.CopyOwnedResourceTo(resourceID, destPath)
 }
 
+func (a *DesktopApp) copyMediaExclusive(resourceID, destPath string) error {
+	a.mu.RLock()
+	copyFn := a.copyOwnedMedia
+	a.mu.RUnlock()
+	if copyFn != nil {
+		file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return os.ErrExist
+			}
+			return errors.New("无法写入所选位置")
+		}
+		_ = file.Close()
+		if err := copyFn(resourceID, destPath); err != nil {
+			_ = os.Remove(destPath)
+			return err
+		}
+		return nil
+	}
+	runtime := a.runtime()
+	if runtime == nil {
+		return errors.New("本地后端尚未就绪")
+	}
+	return runtime.CopyOwnedResourceExclusive(resourceID, destPath)
+}
+
 func (a *DesktopApp) copyEagle(baseURL, itemID, destPath string) error {
 	a.mu.RLock()
 	copyFn := a.copyEagleMedia
@@ -370,7 +417,7 @@ func (h desktopAssetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeUntrustedDesktopOrigin(w)
 			return
 		}
-		state := h.app.StartupState()
+		state := h.app.startupStateSnapshot(false)
 		if state.State == "idle" {
 			state = h.app.ensureBootStarted()
 		}
@@ -453,7 +500,7 @@ func writeUntrustedDesktopOrigin(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"code":   http.StatusForbidden,
 		"data":   nil,
-		"msg":    "不受信任的页面来源无法访问本地接口",
+		"msg":    "不受信任的页面来源无法访问本地接口：请使用 BeefTV 桌面客户端打开；浏览器本地/局域网调试请将该来源加入环境变量 BEEFTV_ALLOWED_ORIGINS",
 		"reason": "untrusted_origin",
 	})
 }

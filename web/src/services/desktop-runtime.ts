@@ -1,6 +1,8 @@
 import { configureApiRuntime } from "@/services/api/request";
+import { applySessionCanvasMemoryMode } from "@/lib/canvas/canvas-memory-policy";
 import { isDesktopShellOrigin } from "@/lib/desktop-shell";
 import { getEmbeddedHarnessConfig } from "@/lib/embedded-runtime";
+import { purgeLegacyResourceBlobIndexedDB } from "@/lib/diagnostics-storage";
 import {
     clearWorkspaceStartupFailure,
     DesktopStartupError,
@@ -70,11 +72,21 @@ export type DesktopRuntimeBinding = {
     StartupState?: () => Promise<DesktopStartupState>;
     RetryStartup?: () => Promise<DesktopStartupState>;
     RuntimeConfig?: () => Promise<DesktopRuntimeConfig>;
+    ExportRuntimeDiagnosticsToDownloads?: (clientPayload: string) => Promise<string>;
     ExportStartupDiagnostics?: (clientPayload: string) => Promise<string>;
+    ReloadWindow?: (safeMode: boolean) => Promise<void>;
     SaveDiagnosticBundle?: (fileName: string, data: string) => Promise<string>;
     RevealDiagnosticBundle?: () => Promise<void>;
     SaveEagleMedia?: (fileName: string, baseURL: string, itemID: string) => Promise<boolean>;
     SaveOwnedMedia?: (fileName: string, resourceID: string) => Promise<boolean>;
+    CopyOwnedMediaToClipboard?: (fileName: string, resourceID: string) => Promise<void>;
+    ChooseOwnedMediaBatchDirectory?: () => Promise<string>;
+    SaveOwnedMediaBatch?: (items: DesktopOwnedMediaBatchItem[], dirToken: string) => Promise<DesktopOwnedMediaBatchResult>;
+    AutoDownloadSettings?: () => Promise<DesktopAutoDownloadSettings>;
+    ChooseAutoDownloadDirectory?: () => Promise<DesktopAutoDownloadSettings>;
+    ResetAutoDownloadDirectory?: () => Promise<DesktopAutoDownloadSettings>;
+    OpenAutoDownloadDirectory?: () => Promise<void>;
+    SaveAutoDownloadedMedia?: (fileName: string, resourceID: string, projectName: string) => Promise<DesktopAutoDownloadSaveResult>;
     SaveOwnedArtifact?: (fileName: string, data: string) => Promise<boolean>;
     SaveOwnedArchive?: (fileName: string, entries: Array<{ name: string; resourceId?: string; data?: string }>) => Promise<boolean>;
     UpdateStatus?: () => Promise<DesktopUpdateState>;
@@ -91,6 +103,11 @@ export type DesktopRuntimeBinding = {
 };
 
 export type DesktopStorageUsage = { dataDir: string; usedBytes: number; freeBytes: number; previousDir?: string; previousBytes?: number };
+export type DesktopOwnedMediaBatchItem = { fileName: string; resourceId?: string; data?: string };
+export type DesktopOwnedMediaBatchFailure = { fileName: string; reason: string };
+export type DesktopOwnedMediaBatchResult = { saved: number; failed: number; cancelled?: boolean; directory?: string; failures?: DesktopOwnedMediaBatchFailure[] };
+export type DesktopAutoDownloadSettings = { directory: string; defaultDirectory: string; customDirectory?: string; available: boolean; cancelled?: boolean };
+export type DesktopAutoDownloadSaveResult = { savedPath: string; directory: string };
 export type DesktopMigrationProgress = { phase: "preparing" | "transferring" | "processing" | "done"; detail: string; loadedBytes: number; totalBytes: number; completedFiles: number; totalFiles: number };
 export type DepthComponentState = {
     status: "not_installed" | "downloading" | "installing" | "ready" | "paused" | "error" | "unsupported";
@@ -106,7 +123,11 @@ export type ReferenceStorageConfig = { enabled: boolean; endpoint: string; bucke
 
 declare global {
     interface Window {
-        runtime?: { BrowserOpenURL?: (url: string) => void };
+        runtime?: {
+            BrowserOpenURL?: (url: string) => void;
+            EventsOn?: (eventName: string, callback: (...data: unknown[]) => void) => () => void;
+            EventsEmit?: (eventName: string, ...data: unknown[]) => void;
+        };
         go?: {
             main?: {
                 DesktopApp?: DesktopRuntimeBinding;
@@ -122,6 +143,80 @@ export function getDesktopAppBinding(): DesktopRuntimeBinding | undefined {
 let wrappedFetch: typeof fetch | undefined;
 let underlyingFetch: typeof fetch | undefined;
 let upgradeProbeTimer: ReturnType<typeof setInterval> | null = null;
+let desktopEventsBound = false;
+let legacyBlobPurgeTimer: ReturnType<typeof setTimeout> | null = null;
+let reloadFlushInFlight = false;
+let beforeReloadFlusher: (() => Promise<void>) | null = null;
+
+/**
+ * Registers the workspace persistence flusher invoked before a graceful
+ * menu-triggered window reload. Kept as an injected hook so early desktop
+ * startup never imports application stores before boot finishes.
+ */
+export function registerBeforeReloadFlusher(flusher: (() => Promise<void>) | null) {
+    beforeReloadFlusher = flusher;
+}
+
+async function flushAllWorkspacePersistenceBeforeReload() {
+    if (!beforeReloadFlusher) return;
+    try {
+        await Promise.race([
+            beforeReloadFlusher().catch(() => undefined),
+            waitMs(8_000),
+        ]);
+    } catch {
+        // Best-effort flush before reload; never block recovery.
+    }
+}
+
+function ensureDesktopLifecycleHelpers() {
+    if (typeof window === "undefined" || !isDesktopShellOrigin(window.location)) return;
+    if (!desktopEventsBound && typeof window.runtime?.EventsOn === "function") {
+        desktopEventsBound = true;
+        window.runtime.EventsOn("diagnostics:last-crash-ready", (savedPath) => {
+            if (typeof savedPath === "string" && savedPath.trim()) {
+                updateDesktopBootSnapshot({
+                    uncleanPreviousShutdown: true,
+                    lastCrashDiagnosticPath: savedPath.trim(),
+                });
+            }
+        });
+        window.runtime.EventsOn("desktop:request-reload", () => {
+            // Check in-flight guard BEFORE acking: a duplicate event while a
+            // flush is already running must not emit a duplicate ack.
+            if (reloadFlushInFlight) return;
+            reloadFlushInFlight = true;
+            window.runtime?.EventsEmit?.("desktop:reload-ack");
+            void flushAllWorkspacePersistenceBeforeReload()
+                .finally(() => {
+                    // Reset flag before/after calling reload so if beforeunload
+                    // cancels navigation (user clicks Stay), subsequent menu
+                    // reload actions remain functional.
+                    reloadFlushInFlight = false;
+                    window.location.reload();
+                });
+        });
+        // Close the subscribe-after-emit window if Go already wrote the last-crash zip.
+        const snapshot = getDesktopBootSnapshot();
+        const binding = getDesktopAppBinding();
+        if (snapshot.uncleanPreviousShutdown && !snapshot.lastCrashDiagnosticPath && typeof binding?.StartupState === "function") {
+            void binding.StartupState().then((fresh) => {
+                if (fresh?.lastCrashDiagnosticPath) {
+                    updateDesktopBootSnapshot({
+                        uncleanPreviousShutdown: true,
+                        lastCrashDiagnosticPath: fresh.lastCrashDiagnosticPath,
+                    });
+                }
+            }).catch(() => undefined);
+        }
+    }
+    if (!legacyBlobPurgeTimer) {
+        legacyBlobPurgeTimer = setTimeout(() => {
+            void purgeLegacyResourceBlobIndexedDB();
+        }, 3_000);
+        (legacyBlobPurgeTimer as { unref?: () => void }).unref?.();
+    }
+}
 
 function stopLoopbackUpgradeProbe() {
     if (!upgradeProbeTimer) return;
@@ -175,6 +270,7 @@ export function configureDesktopRuntime(config: DesktopRuntimeConfig) {
         streamAvailable: true,
         failure: null,
     });
+    ensureDesktopLifecycleHelpers();
 }
 
 function startLoopbackUpgradeProbe(config: DesktopRuntimeConfig, probeTimeoutMs: number, intervalMs: number) {
@@ -241,6 +337,7 @@ export function configureSameOriginDesktopFallback(
         streamAvailable: false,
         failure: null,
     });
+    ensureDesktopLifecycleHelpers();
     recordStartupDiagnosticEvent({
         level: "warning",
         category: "environment",
@@ -388,12 +485,17 @@ export async function bootstrapDesktopRuntime(options?: {
 
         if (stateCandidate) {
             const prev = getDesktopBootSnapshot();
+            if (stateCandidate.safeModeRequested) {
+                applySessionCanvasMemoryMode("thumbnail-only");
+            }
             updateDesktopBootSnapshot({
                 state: stateCandidate.state,
                 phase: stateCandidate.phase ?? prev.phase,
                 detail: stateCandidate.detail ?? prev.detail,
                 dataDir: stateCandidate.dataDir || prev.dataDir,
                 diagnosticPath: stateCandidate.diagnosticPath || prev.diagnosticPath,
+                uncleanPreviousShutdown: Boolean(stateCandidate.uncleanPreviousShutdown || prev.uncleanPreviousShutdown),
+                lastCrashDiagnosticPath: stateCandidate.lastCrashDiagnosticPath || prev.lastCrashDiagnosticPath,
             });
             if (stateCandidate.state === "failed") {
                 throw new DesktopStartupError({

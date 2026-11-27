@@ -5,8 +5,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,6 +21,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"infinite-canvas/backend/internal/buildinfo"
 	"infinite-canvas/backend/internal/localipc"
 	"infinite-canvas/backend/internal/runtimeinfo"
 )
@@ -377,6 +376,10 @@ func run(args []string) error {
 	// 顶层 --help/-h 与各子命令一致：打印用法后正常退出。
 	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
 		usage()
+		return nil
+	}
+	if args[0] == "--version" || args[0] == "version" {
+		fmt.Println(buildinfo.Current().Version)
 		return nil
 	}
 	if args[0] == "skills" {
@@ -1039,7 +1042,7 @@ func runMCP(c *client, args []string) error {
 }
 
 func isDefaultMCPOperation(id string) bool {
-	return !strings.HasPrefix(id, "conversation.") && !strings.HasPrefix(id, "skill.publish.") && id != "skill.script.run"
+	return !strings.HasPrefix(id, "conversation.") && !strings.HasPrefix(id, "skill.publish.") && id != "skill.script.run" && id != "canvas.document.patch"
 }
 
 func orNone(value string) string {
@@ -1082,14 +1085,6 @@ func mustJSON(value any) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return encoded
-}
-
-func newRequestID() string {
-	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("cli-%d", time.Now().UnixNano())
-	}
-	return "cli-" + hex.EncodeToString(buf)
 }
 
 type stringList []string

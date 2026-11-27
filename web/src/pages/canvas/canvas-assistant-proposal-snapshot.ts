@@ -6,9 +6,7 @@ import type { AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { normalizeCanvasMediaNodeSemanticsList } from "@/lib/canvas/canvas-node-semantics";
 import { resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
-import type { CanvasUnconfirmedReason } from "@/lib/canvas/canvas-unconfirmed-edits";
 import { ownedResourceIdFromMediaRef } from "@/services/api/resources";
-import { seedancePortraitModel } from "@/lib/seedance-portrait";
 import { buildNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 
 /** Use the editor's load normalization on both documents. Never discard prompts or unknown metadata. */
@@ -43,8 +41,6 @@ export type ProposalSourceState = ConfirmedGenerationInputs & {
     modelConfigRevision: number;
     /** The editor has canvas changes the server has not confirmed yet (usually an autosave in flight). */
     canvasHasUnconfirmedEdits: boolean;
-    /** Why the canvas has unconfirmed edits; "blocked" means a version conflict that waiting cannot resolve. */
-    canvasUnconfirmedReason?: CanvasUnconfirmedReason;
     /** Generation settings are edited but not saved, or still saving. */
     modelConfigHasUnconfirmedEdits: boolean;
 };
@@ -52,7 +48,6 @@ export type ProposalSourceState = ConfirmedGenerationInputs & {
 export type AssistantProposalBlockedReason =
     | "invalid_source"
     | "canvas_saving"
-    | "canvas_conflict"
     | "settings_unsaved"
     | "canvas_changed"
     | "settings_changed"
@@ -62,7 +57,6 @@ export type AssistantProposalBlockedReason =
 export const ASSISTANT_PROPOSAL_BLOCKED_TEXT: Record<AssistantProposalBlockedReason, string> = {
     invalid_source: "这项方案缺少核对信息。请让助手重新提出方案。",
     canvas_saving: "画布还在保存。稍等几秒再点生成。",
-    canvas_conflict: "画布有未解决的版本冲突。请在顶部保存状态中使用最新版本，再让助手重新提出方案。",
     settings_unsaved: "生成设置还没保存。保存后再点生成。",
     canvas_changed: "画布在提出方案后改过。请让助手重新提出方案。",
     settings_changed: "生成设置在提出方案后改过。请让助手重新提出方案。",
@@ -89,23 +83,60 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 type SourceRevisions = Pick<ProposalSourceState, "canvasId" | "canvasRevision" | "modelConfigRevision">;
 
+function comparableChannel(channel: AiConfig["channels"][number]) {
+    // GET /workspace/model-config redacts secret values to __BEEFTV_REDACTED__, so we compare
+    // secret/header presence (plus header names and non-secret channel fields) rather than raw secret strings.
+    const hasApiKey = Boolean(channel.apiKey?.trim() || channel.hasApiKey);
+    const hasSecretKey = Boolean(channel.secretKey?.trim() || channel.hasSecretKey);
+    const normalizedHeaders = (channel.headers || []).map((header) => ({
+        name: header.name,
+        hasValue: Boolean(header.value?.trim()),
+    }));
+    if (channel.id === "beeftv" && channel.pinned) {
+        const {
+            models: _cm,
+            modelProfiles: _cp,
+            apiKey: _ak,
+            secretKey: _sk,
+            credentialRef: _cr,
+            hasApiKey: _hak,
+            hasSecretKey: _hsk,
+            baseUrl: _bu,
+            headers: _hd,
+            ...channelRest
+        } = channel;
+        const videoQuotes = Object.fromEntries(
+            (channel.modelProfiles || [])
+                .filter((item) => item.videoPricing)
+                .map((item) => [item.model, item.videoPricing])
+                .sort(([a], [b]) => String(a).localeCompare(String(b))),
+        );
+        return { ...channelRest, videoQuotes };
+    }
+    const {
+        apiKey: _ak,
+        secretKey: _sk,
+        hasApiKey: _hak,
+        hasSecretKey: _hsk,
+        headers: _hd,
+        ...channelRest
+    } = channel;
+    return {
+        ...channelRest,
+        hasApiKey,
+        hasSecretKey,
+        headers: normalizedHeaders,
+    };
+}
+
 function comparableConfig(config: AiConfig) {
-    // Managed credentials and backend-owned catalog ordering/profiles on the
-    // pinned beeftv channel are supplied by the backend, never by the proposal.
-    const { models: _m, imageModels: _im, videoModels: _vm, textModels: _tm, audioModels: _am, ...rest } = config;
+    // Managed credentials/profiles on pinned beeftv and redacted BYOK secrets
+    // returned by GET /workspace/model-config must not trigger false mismatches.
+    const { models: _m, imageModels: _im, videoModels: _vm, textModels: _tm, audioModels: _am, apiKey: rootApiKey, ...rest } = config;
     return canonicalize({
         ...rest,
-        channels: config.channels.map((channel) => {
-            if (channel.id !== "beeftv" || !channel.pinned) return channel;
-            const { models: _cm, modelProfiles: _cp, apiKey: _ak, secretKey: _sk, credentialRef: _cr, hasApiKey: _hak, hasSecretKey: _hsk, baseUrl: _bu, ...channelRest } = channel;
-            const portraitQuotes = Object.fromEntries(
-                (channel.modelProfiles || [])
-                    .filter((item) => seedancePortraitModel(item.model) && item.videoPricing)
-                    .map((item) => [item.model, item.videoPricing])
-                    .sort(([a], [b]) => String(a).localeCompare(String(b))),
-            );
-            return { ...channelRest, portraitQuotes };
-        }),
+        hasRootApiKey: Boolean(rootApiKey?.trim()),
+        channels: config.channels.map(comparableChannel),
     });
 }
 
@@ -123,7 +154,6 @@ async function readSettledCurrent(readCurrent: () => ProposalSourceState, option
     for (;;) {
         const state = structuredClone(readCurrent());
         if (state.modelConfigHasUnconfirmedEdits) throw new AssistantProposalBlockedError("settings_unsaved");
-        if (state.canvasUnconfirmedReason === "blocked") throw new AssistantProposalBlockedError("canvas_conflict");
         if (!state.canvasHasUnconfirmedEdits) return state;
         if (waited >= saveWaitMs) throw new AssistantProposalBlockedError("canvas_saving");
         await sleep(pollMs);
@@ -161,7 +191,6 @@ export async function prepareAssistantProposalSnapshot(
     const snapshotContent = proposalCanvasContent(snapshot.nodes, snapshot.connections);
     if (snapshotContent !== proposalCanvasContent(persisted.nodes, persisted.connections)) throw new AssistantProposalBlockedError("content_mismatch");
     const latest = structuredClone(readCurrent());
-    if (latest.canvasUnconfirmedReason === "blocked") throw new AssistantProposalBlockedError("canvas_conflict");
     if (snapshot.canvasId !== latest.canvasId || snapshot.canvasRevision !== latest.canvasRevision ||
         latest.canvasHasUnconfirmedEdits || snapshotContent !== proposalCanvasContent(latest.nodes, latest.connections)) {
         throw new AssistantProposalBlockedError("canvas_changed");

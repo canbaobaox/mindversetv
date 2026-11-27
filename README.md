@@ -31,6 +31,11 @@ Windows 安装包在 [Releases](https://github.com/canbaobaox/mindversetv/releas
 - **[v2.2.3](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.3)** — 接入 Seedream 5.5 图片生成与图层拆分。
 - **[v2.2.2](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.2)** — 上线实时余额与在线充值，完善费用预估。
 - **[v2.2.1](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.1)** — 新增银盛云枢壹算渠道插件。
+- **[v2.5.0](https://github.com/glanderness/BeefTV/releases/tag/v2.5.0)** — 内置创作助手全面升级并改版侧栏界面，支持文档与扫描 PDF 读取、文件导出、创作设定集、对话分叉、多模型合并确认与外部 MCP 接入；新增项目素材自动保存本地、应用内网络代理、视频快捷裁剪及更多模型协议支持。
+- **[v2.4.5](https://github.com/glanderness/BeefTV/releases/tag/v2.4.5)** — 内置创作助手更稳定、参考音频连线与本地直传，以及有声无画视频自动兼容播放。
+- **[v2.4.4](https://github.com/glanderness/BeefTV/releases/tag/v2.4.4)** — 解决素材较多时启动卡顿，大视频上传提速并支持最高 2GB 文件保存，视频超分估价更快。
+- **[v2.4.3](https://github.com/glanderness/BeefTV/releases/tag/v2.4.3)** — 局部重绘与表情/角度调整保留所选模型，画布右键新增直接复制图片和视频，修复旧版 macOS 启动问题。
+- **[v2.4.2](https://github.com/glanderness/BeefTV/releases/tag/v2.4.2)** — 修复创作助手发起纯文生图整片方案后画布报错，以及画布名过长导致顶栏文字重叠的问题。
 
 [查看全部版本与详细说明](https://github.com/canbaobaox/mindversetv/releases)
 

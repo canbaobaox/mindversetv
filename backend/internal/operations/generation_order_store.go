@@ -37,6 +37,7 @@ func UpsertGenerationOrderInTx(tx *gorm.DB, userID string, order GenerationOrder
 	}
 	opID := generationOrderOpID(proposalID)
 	status := "order:" + string(order.Status)
+	turnID := strings.TrimSpace(order.SourceTurnID)
 	var existing model.AgentOpRecord
 	findErr := tx.Where("user_id = ? AND op_id = ?", userID, opID).First(&existing).Error
 	if errors.Is(findErr, gorm.ErrRecordNotFound) {
@@ -47,7 +48,7 @@ func UpsertGenerationOrderInTx(tx *gorm.DB, userID string, order GenerationOrder
 			PayloadHash: strings.TrimSpace(order.CanvasID),
 			Status:      status,
 			ResultJSON:  string(encoded),
-			TurnID:      "",
+			TurnID:      turnID,
 		}).Error
 	}
 	if findErr != nil {
@@ -57,6 +58,7 @@ func UpsertGenerationOrderInTx(tx *gorm.DB, userID string, order GenerationOrder
 		"payload_hash": strings.TrimSpace(order.CanvasID),
 		"status":       status,
 		"result_json":  string(encoded),
+		"turn_id":      turnID,
 	}).Error
 }
 
@@ -163,6 +165,7 @@ func MarkGenerationOrderSubmittedInTx(
 	targets []GenerationTarget,
 	admitResult any,
 	continuationID, approvedBy string,
+	regenerate bool,
 ) error {
 	if strings.TrimSpace(proposalID) == "" {
 		return nil
@@ -186,6 +189,21 @@ func MarkGenerationOrderSubmittedInTx(
 		order.ApprovedAt = now
 		order.TaskIDs = taskIDs
 		order.ContinuationID = continuationID
+		if strings.TrimSpace(order.SourceTurnID) == "" {
+			order.SourceTurnID = turnID
+		}
+		if resultMap, ok := admitResult.(map[string]any); ok {
+			if sid, _ := resultMap["sessionId"].(string); strings.TrimSpace(sid) != "" {
+				order.SessionID = strings.TrimSpace(sid)
+			}
+			if est, ok := resultMap["estimatedCny"].(float64); ok && est >= 0 {
+				cp := roundCNY(est)
+				order.EstimatedCNY = &cp
+			}
+		}
+		if len(targets) > 0 {
+			order.Targets = targets
+		}
 		order.UpdatedAt = now
 	} else {
 		modelDisplay := ""
@@ -218,10 +236,20 @@ func MarkGenerationOrderSubmittedInTx(
 			Targets:        targets,
 			TargetViews:    BuildGenerationOrderTargetViews(domain, targets),
 			SourceTurnID:   turnID,
+			Regenerate:     regenerate,
 			TaskIDs:        taskIDs,
 			ContinuationID: continuationID,
 			CreatedAt:      now,
 			UpdatedAt:      now,
+		}
+		if resultMap, ok := admitResult.(map[string]any); ok {
+			if sid, _ := resultMap["sessionId"].(string); strings.TrimSpace(sid) != "" {
+				order.SessionID = strings.TrimSpace(sid)
+			}
+			if est, ok := resultMap["estimatedCny"].(float64); ok && est >= 0 {
+				cp := roundCNY(est)
+				order.EstimatedCNY = &cp
+			}
 		}
 	}
 	if err := UpsertGenerationOrderInTx(tx, userID, order); err != nil {
@@ -330,34 +358,167 @@ func ApproveExternalGenerationOrderInTx(tx *gorm.DB, domain Domain, userID, prop
 	return admitted, nil
 }
 
-func RecordAssistantGenerationProposalInTx(tx *gorm.DB, userID, turnID, canvasID string, proposal GenerationAuthorization) error {
-	if strings.TrimSpace(turnID) == "" || strings.TrimSpace(proposal.ProposalID) == "" || len(proposal.Targets) == 0 {
-		return nil
+// LookupTurnSubmittedOrderInTx returns the canonical owner-confirmed GenerationOrder owned by turnID.
+// For pre-upgrade databases where AgentOpRecord.TurnID was empty, it falls back to matching
+// submitted canvas orders by SourceTurnID in ResultJSON.
+func LookupTurnSubmittedOrderInTx(tx *gorm.DB, userID, canvasID, turnID string) (*GenerationOrder, error) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return nil, nil
 	}
-	var turn model.AssistantTurn
-	if err := tx.First(&turn, "turn_id = ? AND user_id = ? AND canvas_id = ?", turnID, userID, canvasID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+	var directRows []model.AgentOpRecord
+	if err := tx.Where("user_id = ? AND op = ? AND payload_hash = ? AND status = ? AND turn_id = ?",
+		userID, generationOrderOpName, strings.TrimSpace(canvasID), "order:"+string(GenerationOrderSubmitted), turnID).
+		Order("created_at DESC").Find(&directRows).Error; err != nil {
+		return nil, err
+	}
+	for _, rec := range directRows {
+		var order GenerationOrder
+		if json.Unmarshal([]byte(rec.ResultJSON), &order) == nil && order.IsOwnerConfirmed() {
+			return &order, nil
 		}
-		return err
 	}
-	if turn.GenerationAuthorizationJSON != "" {
-		var existing GenerationAuthorization
-		if json.Unmarshal([]byte(turn.GenerationAuthorizationJSON), &existing) == nil && existing.SourceTurnID != "" {
-			return nil
+	var legacyRows []model.AgentOpRecord
+	if err := tx.Where("user_id = ? AND op = ? AND payload_hash = ? AND status = ? AND turn_id = ''",
+		userID, generationOrderOpName, strings.TrimSpace(canvasID), "order:"+string(GenerationOrderSubmitted)).
+		Order("created_at DESC").Find(&legacyRows).Error; err != nil {
+		return nil, err
+	}
+	for _, rec := range legacyRows {
+		var order GenerationOrder
+		if json.Unmarshal([]byte(rec.ResultJSON), &order) == nil && order.SourceTurnID == turnID && order.IsOwnerConfirmed() {
+			return &order, nil
 		}
 	}
-	proposal.SourceTurnID = ""
-	encoded, err := json.Marshal(proposal)
+	return nil, nil
+}
+
+// ResolveProposalTargetsForConfirmInTx resolves the authoritative targets for confirming
+// (turnID, proposalID). When a canonical GenerationOrder exists for proposalID, inline client
+// targets cannot diverge from it and proposals from another turn are rejected.
+func ResolveProposalTargetsForConfirmInTx(
+	tx *gorm.DB,
+	userID, canvasID, turnID, proposalID string,
+	inlineTargets []GenerationTarget,
+) ([]GenerationTarget, error) {
+	order, err := LookupGenerationOrderInTx(tx, userID, proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if order != nil {
+		if order.CanvasID != "" && order.CanvasID != canvasID {
+			return nil, Conflict("production_changed", "制作方案不属于当前画布，请重新确认", nil)
+		}
+		if order.SourceTurnID != "" && order.SourceTurnID != turnID {
+			return nil, Conflict("production_changed", "这一轮已确认了不同的制作方案", nil)
+		}
+		if len(order.Targets) > 0 {
+			if len(inlineTargets) > 0 && !GenerationTargetsEqual(inlineTargets, order.Targets) {
+				return nil, Conflict("production_changed", "制作方案已变化，请重新确认", nil)
+			}
+			return order.Targets, nil
+		}
+	}
+	return inlineTargets, nil
+}
+
+// ValidateTurnOrderConflictInTx rejects confirming a second distinct plan on a turn that has
+// already submitted an owner-confirmed GenerationOrder.
+func ValidateTurnOrderConflictInTx(tx *gorm.DB, userID, canvasID, turnID string, plan GenerationAuthorization) error {
+	submitted, err := LookupTurnSubmittedOrderInTx(tx, userID, canvasID, turnID)
 	if err != nil {
 		return err
 	}
-	return tx.Model(&turn).Update("generation_authorization_json", string(encoded)).Error
+	if submitted != nil {
+		existing := GenerationAuthorization{SourceTurnID: turnID, ProposalID: submitted.ProposalID, Targets: submitted.Targets, Regenerate: submitted.Regenerate}
+		if !existing.SamePlan(plan) {
+			return Conflict("production_changed", "这一轮已确认了不同的制作方案", nil)
+		}
+	}
+	return nil
+}
+
+// ResolveProposalRegenerateInTx returns the authoritative regenerate flag for
+// confirming a proposal: if a canonical GenerationOrder exists, its recorded
+// Regenerate flag wins (a caller cannot upgrade a non-regenerate order).
+func ResolveProposalRegenerateInTx(tx *gorm.DB, userID, proposalID string, requested bool) (bool, error) {
+	order, err := LookupGenerationOrderInTx(tx, userID, proposalID)
+	if err != nil {
+		return false, err
+	}
+	if order != nil {
+		return order.Regenerate, nil
+	}
+	return requested, nil
+}
+
+// LookupConfirmedOrderPlanInTx resolves a specific owner-confirmed (sourceTurnID, proposalID)
+// plan from the canonical GenerationOrder store.
+func LookupConfirmedOrderPlanInTx(tx *gorm.DB, userID, canvasID, sourceTurnID, proposalID string) (*GenerationAuthorization, error) {
+	if strings.TrimSpace(proposalID) == "" {
+		return nil, nil
+	}
+	order, err := LookupGenerationOrderInTx(tx, userID, proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if order != nil && order.IsOwnerConfirmed() && order.CanvasID == canvasID && order.SourceTurnID == sourceTurnID {
+		return &GenerationAuthorization{
+			SourceTurnID: order.SourceTurnID,
+			ProposalID:   order.ProposalID,
+			Targets:      order.Targets,
+			Regenerate:   order.Regenerate,
+		}, nil
+	}
+	return nil, nil
+}
+
+// ResolveAuthorizedOrderForTurnInTx resolves the owner-confirmed production authorization
+// governing turnID: either an owner-confirmed GenerationOrder created on turnID itself, or
+// the exact 1-hop continuation receipt bound to turnID (never walking up to ancestor plans).
+func ResolveAuthorizedOrderForTurnInTx(tx *gorm.DB, userID, canvasID, turnID string) (*GenerationAuthorization, error) {
+	if own, err := LookupTurnSubmittedOrderInTx(tx, userID, canvasID, turnID); err != nil {
+		return nil, err
+	} else if own != nil {
+		return &GenerationAuthorization{SourceTurnID: own.SourceTurnID, ProposalID: own.ProposalID, Targets: own.Targets, Regenerate: own.Regenerate}, nil
+	}
+	var cont model.AssistantContinuation
+	err := tx.Where("user_id = ? AND canvas_id = ? AND turn_id = ?", userID, canvasID, strings.TrimSpace(turnID)).First(&cont).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cont.State == "cancelled" {
+		return nil, nil
+	}
+	return LookupConfirmedOrderPlanInTx(tx, userID, canvasID, cont.SourceTurnID, cont.ProposalID)
 }
 
 func ProductionTargetHash(target GenerationTarget) string {
-	encoded, _ := json.Marshal(target)
+	encoded, _ := json.Marshal(NormalizeGenerationTarget(target))
 	return fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func productionTargetHashMatches(recorded any, target GenerationTarget) bool {
+	got, ok := recorded.(string)
+	if !ok || got == "" {
+		return false
+	}
+	canonical := NormalizeGenerationTarget(target)
+	if got == ProductionTargetHash(canonical) {
+		return true
+	}
+	if len(canonical.ReferenceNodeIDs) == 0 {
+		legacy := canonical
+		legacy.ReferenceNodeIDs = nil
+		encoded, _ := json.Marshal(legacy)
+		if got == fmt.Sprintf("%x", sha256.Sum256(encoded)) {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidateProductionTask(task *model.Task, canvasID string, target GenerationTarget) error {
@@ -367,7 +528,7 @@ func ValidateProductionTask(task *model.Task, canvasID string, target Generation
 	if err := json.Unmarshal([]byte(task.InputJSON), &original); err != nil {
 		return err
 	}
-	if task.ProjectID != canvasID || task.Type != "canvas_"+target.Kind || task.Prompt != target.Prompt || original.Metadata["assistantProductionTargetHash"] != ProductionTargetHash(target) {
+	if task.ProjectID != canvasID || task.Type != "canvas_"+target.Kind || task.Prompt != target.Prompt || !productionTargetHashMatches(original.Metadata["assistantProductionTargetHash"], target) {
 		return Conflict("production_task_changed", "原制作任务与确认记录不一致，请先检查原任务", nil)
 	}
 	return nil

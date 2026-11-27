@@ -112,6 +112,8 @@ test("video prompt defaults do not invent local ceilings", () => {
     for (const [protocol, model] of [
         ["minimax-video", "MiniMax-H3"],
         ["minimax-video", "MiniMax-Hailuo-2.3"],
+        ["vllm-omni-videos", "minimax-h3-fl2va"],
+        ["openai-videos-media-json", "minimax/h3"],
         ["dashscope-wan-video", "wan2.1-t2v-turbo"],
         ["dashscope-wan-video", "wan2.6-i2v"],
         ["dashscope-wan-video", "wan2.7-r2v"],
@@ -219,6 +221,14 @@ test("moss-image-sft-1.0 uses URL response format and disables unsupported OpenA
     assert.equal(profile.references.maskSupported, false);
 });
 
+test("mask edit preserves Seedream 5.5 even when native-mask GPT models are available", () => {
+    const model = "dola-seedream-5-5-261028";
+    const config = { imageModel: `ch::${model}`, imageModels: [`ch::${model}`, "ch::gpt-image-2"], channels: [{ id: "ch", models: [model, "gpt-image-2"], interfaceType: "openai-image" }] } as AiConfig;
+    assert.equal(modelCapabilityConfigFor(config, `ch::${model}`).image!.references.maskSupported, false);
+    assert.equal(resolveMaskEditModel(config, `ch::${model}`), `ch::${model}`);
+    assert.equal(initialMaskEditConfig(config).imageModel, `ch::${model}`);
+});
+
 test("mask edit model selection ignores text models and normalizes quality/size aliases across models", () => {
     const config = {
         model: "ch::gpt-5.4",
@@ -236,14 +246,15 @@ test("mask edit model selection ignores text models and normalizes quality/size 
             models: ["gpt-5.4", "doubao-seedream-5-0-260128", "gpt-image-2"],
         }],
     } as AiConfig;
-    assert.equal(resolveMaskEditModel(config), "ch::gpt-image-2");
-    const initialized = initialMaskEditConfig(config);
+    assert.equal(resolveMaskEditModel(config), "ch::doubao-seedream-5-0-260128");
+    assert.equal(resolveMaskEditModel(config, "ch::doubao-seedream-5-0-260128"), "ch::doubao-seedream-5-0-260128");
+    const initialized = initialMaskEditConfig({ ...config, imageModel: "ch::gpt-image-2" });
     assert.equal(initialized.model, "ch::gpt-image-2");
     assert.equal(initialized.imageModel, "ch::gpt-image-2");
     assert.equal(initialized.quality, "medium");
     assert.equal(initialized.size, "1:1");
 
-    const customSizeInitialized = initialMaskEditConfig({ ...config, size: "1440x1440" });
+    const customSizeInitialized = initialMaskEditConfig({ ...config, imageModel: "ch::gpt-image-2", size: "1440x1440" });
     assert.equal(customSizeInitialized.size, "1440x1440");
 
     const noMaskConfig = {

@@ -56,6 +56,7 @@ func TestMCPClientLoop(t *testing.T) {
 	registry := operations.NewRegistry(nil, nil)
 	operations.RegisterDefaultOps(registry)
 	excluded := map[string]bool{
+		"canvas.document.patch":       true,
 		"conversation.message.attach": true,
 		"skill.publish.prepare":       true,
 		"skill.publish.status":        true,
@@ -67,8 +68,8 @@ func TestMCPClientLoop(t *testing.T) {
 			expected = append(expected, op)
 		}
 	}
-	if len(expected) != 50 {
-		t.Fatalf("expected 50 default MCP operations, got %d", len(expected))
+	if len(expected) != 54 {
+		t.Fatalf("expected 54 default MCP operations, got %d", len(expected))
 	}
 	for _, tool := range tools.Tools {
 		if excluded[tool.Name] {

@@ -275,22 +275,22 @@ func ExecuteProtocolBinaryRequest(ctx context.Context, config Config, spec proto
 	return ExecuteProtocolBinaryRequestWithConsumer(ctx, config, spec, nil)
 }
 
-func ExecuteProtocolBinaryRequestWithConsumer(ctx context.Context, config Config, spec protocol.RequestSpec, consume func(string, []byte)) ([]byte, string, error) {
+func buildProtocolHTTPRequest(ctx context.Context, config Config, spec protocol.RequestSpec) (*http.Request, error) {
 	if err := spec.Validate(); err != nil {
-		return nil, "", RequestPreparationError{Cause: err}
+		return nil, RequestPreparationError{Cause: err}
 	}
 	method := strings.ToUpper(strings.TrimSpace(spec.Method))
 	body, contentType, err := ProtocolRequestBody(ctx, config, spec)
 	if err != nil {
-		return nil, "", RequestPreparationError{Cause: err}
+		return nil, RequestPreparationError{Cause: err}
 	}
 	requestURL, err := ProtocolRequestURL(config.BaseURL, spec)
 	if err != nil {
-		return nil, "", RequestPreparationError{Cause: err}
+		return nil, RequestPreparationError{Cause: err}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
-		return nil, "", RequestPreparationError{Cause: err}
+		return nil, RequestPreparationError{Cause: err}
 	}
 	if req.Body != nil && ((method == http.MethodPut && contentType == "application/octet-stream") || strings.HasPrefix(CanonicalCallMeta(ctx).RequestKind, "reference_")) {
 		req.Body = io.NopCloser(referenceUploadReader(ctx, req.Body))
@@ -305,10 +305,26 @@ func ExecuteProtocolBinaryRequestWithConsumer(ctx context.Context, config Config
 		}
 		outbound.ApplyOutboundHeaders(req, config.Headers)
 		if err := ApplyProtocolAuth(req, config, spec.Auth); err != nil {
-			return nil, "", RequestPreparationError{Cause: err}
+			return nil, RequestPreparationError{Cause: err}
 		}
 	}
 	applyBeefTVVideoDeliveryHeader(ctx, config, req)
+	return req, nil
+}
+
+func ExecuteProtocolVideoFileRequest(ctx context.Context, config Config, spec protocol.RequestSpec) (string, string, error) {
+	req, err := buildProtocolHTTPRequest(ctx, config, spec)
+	if err != nil {
+		return "", "", err
+	}
+	return executeVideoRequestToFile(req)
+}
+
+func ExecuteProtocolBinaryRequestWithConsumer(ctx context.Context, config Config, spec protocol.RequestSpec, consume func(string, []byte)) ([]byte, string, error) {
+	req, err := buildProtocolHTTPRequest(ctx, config, spec)
+	if err != nil {
+		return nil, "", err
+	}
 	if consume != nil {
 		req.Header.Set("Accept", "text/event-stream")
 		return DoBinaryWithConsumer(req, consume)
@@ -472,7 +488,7 @@ func ProtocolRequestURL(baseURL string, spec protocol.RequestSpec) (string, erro
 	}
 	base, err := url.Parse(channelurl.CleanBase(baseURL))
 	if err != nil || base.Scheme == "" || base.Host == "" {
-		return "", fmt.Errorf("协议根路径请求的 Base URL 无效")
+		return "", PreparationUserError{Category: CategoryInvalidParams, Reason: "渠道服务地址（Base URL）配置无效", Action: "请前往设置 → 模型服务检查并填写完整的 http(s):// 服务地址后重试"}
 	}
 	requestPath, err := url.Parse(spec.Path)
 	if err != nil || !strings.HasPrefix(requestPath.Path, "/") {

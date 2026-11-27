@@ -4,9 +4,11 @@ import { bringCanvasNodeToFront, type CanvasNodeStackOrder } from "@/lib/canvas/
 import { refreshLocalCanvasProjectIfChanged } from "@/services/local-workspace-repository";
 import { notifyExternalCanvasEvent, subscribeCanvasEventsStream } from "@/services/canvas-external-writes";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
+import { canvasDocumentBase, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { persistCanvasNodeFailure } from "@/lib/canvas/canvas-node-failure-state";
 import { useCanvasNodeContent } from "./use-canvas-node-content";
+import { subscribeWorkspaceResume } from "@/lib/workspace-resume";
 
 function captureFailures(next: CanvasNodeData[], previous?: CanvasNodeData[]) {
     if (next === previous) return next;
@@ -85,17 +87,93 @@ export function useCanvasDocumentState(projectId: string) {
     useEffect(() => {
         if (!projectId || !isLocalWorkspaceMode()) return;
         let disposed = false;
-        // Both event and timer refresh the repository. The lifecycle's single
-        // revision-aware subscription merges it into the editor document.
+        let sseConnected = false;
+        let debounceTimer: number | null = null;
+        let pollTimer: number | null = null;
+
+        const appliedRevision = () => {
+            const baseRev = canvasDocumentBase(projectId)?.revision ?? 0;
+            const storeRev = useCanvasStore.getState().projects.find((item) => item.id === projectId)?.revision ?? 0;
+            return Math.max(baseRev, storeRev);
+        };
+
         const sync = () => {
             if (!disposed) void refreshLocalCanvasProjectIfChanged(projectId);
         };
-        const timer = window.setInterval(sync, 4000);
-        const unsubscribeStream = subscribeCanvasEventsStream(projectId, () => {
+
+        const scheduleFallbackPoll = () => {
+            if (pollTimer !== null) {
+                window.clearTimeout(pollTimer);
+                pollTimer = null;
+            }
+            if (disposed || (typeof document !== "undefined" && document.hidden)) return;
+            // Healthy SSE carries instant revision notifications; fall back to a
+            // light 30s safety-net check (8s while SSE is disconnected).
+            const intervalMs = sseConnected ? 30_000 : 8_000;
+            pollTimer = window.setTimeout(() => {
+                pollTimer = null;
+                if (!disposed && (typeof document === "undefined" || !document.hidden)) {
+                    sync();
+                    scheduleFallbackPoll();
+                }
+            }, intervalMs);
+        };
+
+        const handleVisibilityChange = () => {
+            if (typeof document !== "undefined" && document.hidden) {
+                if (pollTimer !== null) {
+                    window.clearTimeout(pollTimer);
+                    pollTimer = null;
+                }
+                return;
+            }
+            if (pollTimer === null) {
+                scheduleFallbackPoll();
+            }
+        };
+        const unsubscribeResume = subscribeWorkspaceResume(() => {
             sync();
-            if (!disposed) notifyExternalCanvasEvent(projectId);
+            scheduleFallbackPoll();
         });
-        return () => { disposed = true; window.clearInterval(timer); unsubscribeStream(); };
+
+        const unsubscribeStream = subscribeCanvasEventsStream(
+            projectId,
+            (incomingRevision) => {
+                if (disposed) return;
+                if (incomingRevision !== undefined && incomingRevision <= appliedRevision()) {
+                    return;
+                }
+                if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+                debounceTimer = window.setTimeout(() => {
+                    debounceTimer = null;
+                    sync();
+                    if (!disposed) notifyExternalCanvasEvent(projectId);
+                }, 150);
+            },
+            {
+                onConnectionChange(connected) {
+                    if (sseConnected === connected) return;
+                    sseConnected = connected;
+                    scheduleFallbackPoll();
+                },
+            },
+        );
+
+        scheduleFallbackPoll();
+        if (typeof document !== "undefined") {
+            document.addEventListener("visibilitychange", handleVisibilityChange);
+        }
+
+        return () => {
+            disposed = true;
+            if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+            if (pollTimer !== null) window.clearTimeout(pollTimer);
+            if (typeof document !== "undefined") {
+                document.removeEventListener("visibilitychange", handleVisibilityChange);
+            }
+            unsubscribeResume();
+            unsubscribeStream();
+        };
     }, [projectId]);
     return { nodes, nodesRef, setNodes, setNodesState, adoptNodes, connections, connectionsRef, setConnections, chatSessions, chatSessionsRef, setChatSessions, activeChatId, activeChatIdRef, setActiveChatId, nodeStackOrder, bringNodeToFront, ...content };
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"infinite-canvas/backend/internal/model"
 )
@@ -120,13 +121,17 @@ func (s *Store) Run(ctx context.Context, req RunRequest, fn func(tx *gorm.DB) ([
 			PayloadHash: req.PayloadHash, Status: "running", TurnID: strings.TrimSpace(req.TurnID),
 			CallerKind: strings.TrimSpace(req.CallerKind), ClientID: strings.TrimSpace(req.ClientID),
 			ClientLabel: strings.TrimSpace(req.ClientLabel)}
-		if err := tx.Create(&record).Error; err != nil {
-			if !isDuplicateKey(err) {
-				return AsError(err)
-			}
+		createRes := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record)
+		if createRes.Error != nil && !isDuplicateKey(createRes.Error) {
+			return AsError(createRes.Error)
+		}
+		if createRes.Error != nil || createRes.RowsAffected == 0 {
 			var existing model.AgentOpRecord
 			if findErr := tx.Where("user_id = ? AND op_id = ?", req.UserID, req.OpID).First(&existing).Error; findErr != nil {
-				return AsError(err)
+				if createRes.Error != nil {
+					return AsError(createRes.Error)
+				}
+				return AsError(findErr)
 			}
 			if existing.Status != "succeeded" {
 				return Conflict("operation_in_progress",
@@ -181,7 +186,7 @@ func (s *Store) Run(ctx context.Context, req RunRequest, fn func(tx *gorm.DB) ([
 // 事务实现，不能套在外层写事务里，否则同一 SQLite 连接会重入加锁。
 func runsOutsideOperationTx(op string) bool {
 	switch op {
-	case "task.cancel", "canvas.external.write.undo":
+	case "task.cancel", "canvas.external.write.undo", "business.call":
 		return true
 	default:
 		return false
@@ -216,13 +221,17 @@ func (s *Store) runOutOfTx(db *gorm.DB, req RunRequest, fn func(tx *gorm.DB) ([]
 		ClientLabel: strings.TrimSpace(req.ClientLabel), CreatedAt: time.Now().UTC()}
 	executionToken := record.CreatedAt
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&record).Error; err != nil {
-			if !isDuplicateKey(err) {
-				return AsError(err)
-			}
+		createRes := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record)
+		if createRes.Error != nil && !isDuplicateKey(createRes.Error) {
+			return AsError(createRes.Error)
+		}
+		if createRes.Error != nil || createRes.RowsAffected == 0 {
 			var existing model.AgentOpRecord
 			if findErr := tx.Where("user_id = ? AND op_id = ?", req.UserID, req.OpID).First(&existing).Error; findErr != nil {
-				return AsError(err)
+				if createRes.Error != nil {
+					return AsError(createRes.Error)
+				}
+				return AsError(findErr)
 			}
 			if !payloadHashAccepted(existing.PayloadHash, req) || existing.Op != req.Op {
 				return Conflict("operation_id_reused_with_different_payload",
@@ -300,6 +309,12 @@ func (s *Store) runOutOfTx(db *gorm.DB, req RunRequest, fn func(tx *gorm.DB) ([]
 
 // RunDomain 把当前事务绑成 Domain 再执行：业务端口拿不到 *gorm.DB。
 func (s *Store) RunDomain(ctx context.Context, req RunRequest, binder DomainBinder, fn func(domain Domain) ([]byte, error)) (RunOutcome, error) {
+	return s.runDomainInTx(ctx, req, binder, func(_ *gorm.DB, domain Domain) ([]byte, error) {
+		return fn(domain)
+	})
+}
+
+func (s *Store) runDomainInTx(ctx context.Context, req RunRequest, binder DomainBinder, fn func(tx *gorm.DB, domain Domain) ([]byte, error)) (RunOutcome, error) {
 	if binder == nil {
 		return RunOutcome{}, newError(CodeInternal, "op_domain_unavailable", "操作域绑定不可用", nil)
 	}
@@ -311,7 +326,7 @@ func (s *Store) RunDomain(ctx context.Context, req RunRequest, binder DomainBind
 		if domain == nil {
 			return nil, newError(CodeInternal, "op_domain_unavailable", "操作域绑定不可用", nil)
 		}
-		return fn(domain)
+		return fn(tx, domain)
 	})
 }
 

@@ -2,14 +2,14 @@ import { createClientId } from "@/lib/client-id";
 import { getMediaBlob } from "@/services/file-storage";
 import { resolveReferenceMediaDuration } from "@/lib/reference-media-metadata";
 import { getImageBlob } from "@/services/image-storage";
-import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { ownedResourceStorageKey, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { createGenerationTask, findGenerationTaskByOperation, waitForGenerationTask, type GenerationTask, type GenerationTaskOutput, type CreateTaskInput } from "@/services/api/task-center";
 import { submitGenerationCommand } from "./generation-submission";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { isArkPlanBaseUrl } from "@/lib/seedance-video";
 import { seedreamFamily } from "@/lib/seedream-image";
-import { declaredOrOmniVideoCapability, isBeefTVModelRoute, portraitGenerationError, resolveVideoOperation } from "@/lib/model-selection";
-import { logicalModelIDForConfig, modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
+import { declaredOrOmniVideoCapability, resolveVideoOperation } from "@/lib/model-selection";
+import { modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { buildBackendToolRequests, type ResponseFunctionTool, type ResponseInputMessage, type ToolChoice, type ToolResponseResult } from "@/services/api/image";
@@ -17,14 +17,12 @@ import { assertAgentExchangeBudget } from "@/lib/canvas/agent-context-budget";
 import { ApiError } from "@/services/api/request";
 import { isReferenceHTTPSLink, uploadReferenceLinks, type ResolveReferenceLinks, type ReferenceLinkRequest } from "./reference-link-replacement";
 
-export { logicalModelIDForConfig };
-
 export type BackendGenerationMode = "text" | "image" | "video" | "audio";
 
 export type BackendGenerationResult = {
     mode?: BackendGenerationMode;
     images?: Array<{ dataUrl: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string }>;
-    video?: { dataUrl: string; url?: string; storageKey?: string; previewUrl?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string; lastFrame?: { dataUrl: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string } };
+    video?: { dataUrl?: string; url?: string; storageKey?: string; resourceId?: string; previewUrl?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string; lastFrame?: { dataUrl: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string } };
     audio?: { dataUrl: string; url?: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; format?: string };
     text?: string;
     toolCalls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string }; thoughtSignature?: string }>;
@@ -158,15 +156,13 @@ export function prepareBackendToolGenerationTask(options: BackendToolGenerationO
             imageKeys.add(key);
         }
     }
-    const logicalModelId = logicalModelIDForConfig(options.config);
     const requestConfig = resolveModelRequestConfig(options.config, options.config.model);
-    if (!logicalModelId && !requestConfig.channelId && !requestConfig.interfaceType) throw new Error("当前模型还没选接口格式，请在模型设置里选择");
+    if (!requestConfig.channelId && !requestConfig.interfaceType) throw new Error("当前模型还没选接口格式，请在模型设置里选择");
     const task: CreateTaskInput = {
         type: "canvas_text",
         operation: "text",
         prompt: options.prompt,
         model: options.config.model,
-        ...(logicalModelId ? { logicalModelId } : {}),
         input: {
             mode: "text",
             prompt: options.prompt,
@@ -217,6 +213,11 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
 
 function generationOperation(options: BackendGenerationTaskOptions) {
     if (options.mode !== "video") return options.mode;
+    const hasExplicitFrame = Boolean(
+        options.metadata?.videoStartFrameNodeId ||
+            options.metadata?.videoEndFrameNodeId ||
+            options.metadata?.videoMiddleFrameNodeId,
+    );
     return resolveVideoOperation(
         {
             textCount: 0,
@@ -227,8 +228,7 @@ function generationOperation(options: BackendGenerationTaskOptions) {
         },
         options.metadata?.videoEditOperation as string | undefined,
         declaredOrOmniVideoCapability(options.config, options.config.model),
-        options.config.model,
-        isBeefTVModelRoute(options.config.model, options.config),
+        { hasExplicitFrame },
     );
 }
 
@@ -237,7 +237,6 @@ export function isGenerationTaskCancelled(error: unknown, signal?: AbortSignal) 
 }
 
 function assertBackendRuntimeConfigured(config: AiConfig) {
-    if (logicalModelIDForConfig(config)) return;
     const requestConfig = resolveModelRequestConfig(config, config.model);
     if (!requestConfig.channelId && !requestConfig.interfaceType) throw new Error("当前模型还没选接口格式，请在模型设置里选择");
 }
@@ -254,8 +253,6 @@ async function prepareGenerationReferences({
     referenceAudios = [],
     mask,
 }: Pick<BackendGenerationTaskOptions, "config" | "mode" | "referenceImages" | "referenceVideos" | "referenceAudios" | "mask">): Promise<PreparedGenerationReferences> {
-    const portraitError = mode === "video" ? portraitGenerationError(config, config.model, config.vquality) : "";
-    if (portraitError) throw new Error(portraitError);
     // asset:// 仅视频生成可用；Agent Plan Seedream 与 Seedance 共用 /api/plan/v3，不能按 BaseURL 误判。
     const preferArkAssetUrl = mode === "video" && usesArkVideoAssetReference(config);
     const preparedImages = await Promise.all(referenceImages.map((image) => prepareBackendImageReference(image, preferArkAssetUrl)));
@@ -346,19 +343,16 @@ export async function prepareBackendGenerationTask(options: BackendGenerationTas
 function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences): CreateTaskInput {
     const { projectId, mode, prompt, config, metadata } = options;
     const videoOperation = generationOperation(options);
-    const logicalModelId = logicalModelIDForConfig(config);
     return {
         ...(projectId ? { projectId } : {}),
         type: `canvas_${mode}`,
         operation: mode === "video" ? videoOperation : mode,
         prompt,
         model: config.model,
-        ...(logicalModelId ? { logicalModelId } : {}),
         input: {
             mode,
             prompt,
             config: backendProviderConfig(config),
-            capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
             textHistory: options.textHistory,
             ...(mode === "text" ? { textOptions: { stream: options.streamText !== false, thinking: options.enableThinking === true } } : {}),
             referenceImages: prepared.referenceImages,
@@ -387,14 +381,23 @@ function generationMetadata(config: AiConfig, metadata?: Record<string, unknown>
     return { ...metadata, providerOptions: { ...existing, [protocol]: { ...defaults, ...namespace } } };
 }
 
+async function fetchReferenceBlob(url: string, label: string) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`${label}无法读取（HTTP ${response.status}），请重新上传后再生成`);
+    }
+    return response.blob();
+}
+
 async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAudio) {
     media = await resolveReferenceMediaDuration(media);
-    if (resourceIdFromStorageKey(media.storageKey)) return backendMediaReference(media, { storageKey: media.storageKey });
     const url = media.url || "";
+    const ownedStorageKey = ownedResourceStorageKey(media.storageKey, url);
+    if (resourceIdFromStorageKey(ownedStorageKey)) return backendMediaReference(media, { storageKey: ownedStorageKey });
     if (/^https?:\/\//i.test(url)) return backendMediaReference(media, { url });
     let blob: Blob | null = null;
     if (media.storageKey) blob = await getMediaBlob(media.storageKey);
-    if (!blob && (url.startsWith("blob:") || url.startsWith("data:"))) blob = await (await fetch(url)).blob();
+    if (!blob && (url.startsWith("blob:") || url.startsWith("data:"))) blob = await fetchReferenceBlob(url, "参考媒体");
     if (!blob) throw new Error("参考媒体尚未保存，请重新上传后再生成");
     try {
         const kind: "video" | "audio" | "file" = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
@@ -407,10 +410,11 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
 
 async function prepareBackendImageReference(image: ReferenceImage, preferArkAssetUrl = false) {
     if (preferArkAssetUrl && image.arkAssetId) return backendImageReference(image, { url: `asset://${image.arkAssetId}` });
-    if (resourceIdFromStorageKey(image.storageKey)) return backendImageReference(image, { storageKey: image.storageKey });
     const sourceUrl = image.url || image.dataUrl;
+    const ownedStorageKey = ownedResourceStorageKey(image.storageKey, sourceUrl);
+    if (resourceIdFromStorageKey(ownedStorageKey)) return backendImageReference(image, { storageKey: ownedStorageKey });
     if (/^https?:\/\//i.test(sourceUrl)) return backendImageReference(image, { url: sourceUrl });
-    const blob = image.storageKey ? await getImageBlob(image.storageKey) : sourceUrl ? await (await fetch(sourceUrl)).blob() : null;
+    const blob = image.storageKey ? await getImageBlob(image.storageKey) : sourceUrl ? await fetchReferenceBlob(sourceUrl, "参考图片") : null;
     if (!blob) throw new Error("参考图片尚未保存，请重新上传后再生成");
     try {
         const resource = await uploadResourceFile(blob, "image", { fileName: image.name });
@@ -477,7 +481,6 @@ export function backendProviderConfig(config: AiConfig) {
         audioInstructions: config.audioInstructions,
         systemPrompt: config.systemPrompt,
     };
-    if (logicalModelIDForConfig(config)) return generationOptions;
     const modelProfile = resolveModelChannel(config, config.model).modelProfiles?.find((item) => item.model === requestConfig.model);
     const hasDeclaredCapability = Boolean(modelProfile?.capabilityConfig || modelProfile?.imageCapabilitiesVersion || modelProfile?.videoCapabilitiesVersion);
     return {
@@ -498,23 +501,6 @@ export function backendProviderConfig(config: AiConfig) {
         videoCapabilitiesVersion: modelProfile?.videoCapabilitiesVersion,
         systemPrompt: config.systemPrompt,
     };
-}
-
-function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode) {
-    const channel = resolveModelChannel(config, config.model);
-    const spec = channel.modelProfiles?.find((item) => item.model === modelOptionName(config.model))?.logicalCapabilitySpec;
-    const candidates: Record<string, unknown> =
-        mode === "image"
-            ? { size: config.size, quality: omittedImageQuality(config.quality, resolveModelRequestConfig(config, config.model)), transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
-            : mode === "video"
-              ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.videoDraft === "true" ? "480p" : config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
-              : mode === "audio"
-                ? { audioVoice: config.audioVoice, audioFormat: config.audioFormat, audioSpeed: Number(config.audioSpeed), audioPitch: Number(config.audioPitch), audioVolume: Number(config.audioVolume) }
-                : {};
-    const filtered = Object.fromEntries(Object.entries(candidates).filter(([key]) => Boolean(spec?.options?.[key])));
-    // 只把前台模型声明过的参数送进能力匹配。未声明的 quality 不能因为画布选了 4K 档位
-    // 而被硬塞进去，否则会报“不支持参数 生成质量”；插件仍从 config.quality 读取档位。
-    return filtered;
 }
 
 function omittedImageQuality(value: string | undefined, request: { model: string; interfaceType?: string }) {

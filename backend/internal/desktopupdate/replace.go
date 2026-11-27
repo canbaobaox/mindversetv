@@ -26,10 +26,6 @@ func SwapInstall(req HelperRequest) error {
 	}
 }
 
-func backupRoot(req HelperRequest) string {
-	return req.BackupPath
-}
-
 func swapBundle(req HelperRequest, name string) error {
 	stagedApp := filepath.Join(req.StagedPath, name)
 	if err := os.MkdirAll(filepath.Dir(req.BackupPath), 0o755); err != nil {
@@ -119,6 +115,11 @@ func restoreWindows(req HelperRequest) error {
 		}); err != nil {
 			failures = append(failures, fmt.Errorf("还原随包资源 %s 失败: %w", name, err))
 		}
+	}
+	if len(failures) == 0 {
+		// Remove the backup directory once all files have been restored so an
+		// empty directory cannot be mistaken for an un-restored recovery copy.
+		_ = os.Remove(req.BackupPath)
 	}
 	return errors.Join(failures...)
 }

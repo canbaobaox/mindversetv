@@ -68,6 +68,10 @@ func OfficialDeclarativeVideoInterface(interfaceType string) (string, bool) {
 		return "NewAPI Video Generations", true
 	case "video-generations-json":
 		return "视频生成 JSON", true
+	case "openai-videos-media-json":
+		return "Videos JSON · media 数组", true
+	case "vllm-omni-videos":
+		return "vLLM-Omni Videos", true
 	case string(model.ChannelInterfaceNewAPIChannel1):
 		return "NewAPI 媒体任务", true
 	case string(model.ChannelInterfaceXAIVideo):
@@ -97,17 +101,6 @@ func OfficialDeclarativeImageInterface(interfaceType string) (string, bool) {
 		return "火山方舟 Agent Plan 图片", true
 	case string(model.ChannelInterfaceVolcengineJiMengImage):
 		return "即梦图片", true
-	default:
-		return "", false
-	}
-}
-
-func OfficialDeclarativeAudioInterface(interfaceType string) (string, bool) {
-	switch strings.TrimSpace(interfaceType) {
-	case string(model.ChannelInterfaceOpenAIAudio):
-		return "OpenAI Audio", true
-	case string(model.ChannelInterfaceAsyncAudio):
-		return "异步音频", true
 	default:
 		return "", false
 	}
@@ -245,24 +238,6 @@ func resolveOfficialPluginPackageDir(candidates []string) (string, error) {
 // 兼容包内未导出旧名（service 薄包装与未改调用点）。
 func withProtocolRegistry(ctx context.Context, registry *protocol.Registry) context.Context {
 	return WithProtocolRegistry(ctx, registry)
-}
-func protocolRegistryFromContext(ctx context.Context) (*protocol.Registry, bool) {
-	return ProtocolRegistryFromContext(ctx)
-}
-func protocolAdapterForContext(ctx context.Context, id string) (protocol.Adapter, bool) {
-	return ProtocolAdapterForContext(ctx, id)
-}
-func ensureOfficialProtocolAdapter(ctx context.Context, interfaceType string) context.Context {
-	return EnsureOfficialProtocolAdapter(ctx, interfaceType)
-}
-func officialDeclarativeVideoInterface(interfaceType string) (string, bool) {
-	return OfficialDeclarativeVideoInterface(interfaceType)
-}
-func officialDeclarativeImageInterface(interfaceType string) (string, bool) {
-	return OfficialDeclarativeImageInterface(interfaceType)
-}
-func officialDeclarativeAudioInterface(interfaceType string) (string, bool) {
-	return OfficialDeclarativeAudioInterface(interfaceType)
 }
 func declarativeProtocolAdapterForContext(ctx context.Context, id string) (protocol.Adapter, bool) {
 	return DeclarativeProtocolAdapterForContext(ctx, id)

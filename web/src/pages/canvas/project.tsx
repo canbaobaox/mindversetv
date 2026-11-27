@@ -24,6 +24,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode } from "@/types/canvas";
 import { highlightAssistantNodes } from "./canvas-assistant-highlight";
 import { CanvasAssistantSidebar } from "./canvas-assistant-sidebar";
+import { useExternalMcpActivityToast } from "@/hooks/use-external-mcp-activity-toast";
 import { CanvasProjectEditorDialogs } from "./canvas-project-editor-dialogs";
 import { CanvasProjectStage } from "./canvas-project-stage";
 import { CanvasTopBar } from "./canvas-project-top-bar";
@@ -167,7 +168,8 @@ function InfiniteCanvasPage() {
     const [shortcutRequestNonce, setShortcutRequestNonce] = useState(0);
     const [workspaceView, setWorkspaceView] = useState<"workflow" | "storyboard">("workflow");
 
-    const { tasks: activeTasks } = useCanvasActiveTasks(projectId, projectLoaded);
+    const activeTaskQuery = useCanvasActiveTasks(projectId, projectLoaded);
+    const activeTasks = activeTaskQuery.tasks;
     const selectedNodeIdsRef = useRef(selectedNodeIds);
 
     const { adoptExternalSnapshot, getHistoryCleanupContext, historyPausedRef, historyState, redoCanvas, resetHistory, undoCanvas } = useCanvasHistory({
@@ -197,7 +199,7 @@ function InfiniteCanvasPage() {
         [cleanupAssetImages, getHistoryCleanupContext],
     );
 
-    const { loadError, retryLoad, addedSkills, clearCanvasFiles, createAndOpenCanvas, currentProject, deleteCurrentProject, renameCurrentProject, reloadLatestCanvasProject, restoreCanvasProjectVersion, saveCanvasProject, forceSaveCanvasProject, updateProject } = useCanvasProjectLifecycle({
+    const { loadError, retryLoad, addedSkills, clearCanvasFiles, createAndOpenCanvas, currentProject, deleteCurrentProject, renameCurrentProject, restoreCanvasProjectVersion, saveCanvasProject, forceSaveCanvasProject, updateProject } = useCanvasProjectLifecycle({
         adoptNodes,
         projectId,
         projectLoaded,
@@ -294,11 +296,11 @@ function InfiniteCanvasPage() {
         versions.close();
         assistant.setOpen(true);
     }, [assistant, exitFocusMode, versions]);
-    // 修复素材关联仍遵守当前画布版本，不能替用户确认覆盖云端的新内容。
+    // 修复素材关联并重新核对画布媒体绑定。
     const confirmForceSaveCanvas = useCallback(() => {
         modal.confirm({
             title: "修复素材关联并保存？",
-            content: "核对画布媒体与素材库的关联，补齐缺失素材后保存。若云端已有新版本，会保留本地草稿并提示加载最新版。",
+            content: "核对画布媒体与素材库的关联，补齐缺失素材并保存到本地工作区。",
             okText: "修复并保存",
             cancelText: "取消",
             onOk: () => forceSaveCanvasProject(),
@@ -367,7 +369,7 @@ function InfiniteCanvasPage() {
         connectionsRef,
         setConnections,
         getCanvasCenter,
-        persist: () => saveCanvasProject({ requireRemote: false }),
+        persist: () => saveCanvasProject(),
         focusNode: (node) => {
             const k = Math.min(1, (size.width - 96) / node.width, (size.height - 160) / node.height);
             const next = { x: size.width / 2 - (node.position.x + node.width / 2) * k, y: size.height / 2 - (node.position.y + node.height / 2) * k, k };
@@ -415,7 +417,8 @@ function InfiniteCanvasPage() {
     });
 
     const assistantContinuation = useCanvasAssistantContinuation(assistant, !readOnly && internalAssistantEnabled);
-    const { runAssistantProposal, assistantProposalFeedback, runningProposalIds } = useCanvasAssistantProposal({
+    useExternalMcpActivityToast(!readOnly);
+    const { runAssistantProposal, autoConfirmAssistantProposal, assistantProposalFeedback, runningProposalIds } = useCanvasAssistantProposal({
         projectId,
         addedSkills,
         nodesRef,
@@ -427,6 +430,54 @@ function InfiniteCanvasPage() {
         onContinuationArmed: assistantContinuation.refresh,
         handleGenerateNode: generation.handleGenerateNode,
     });
+
+    const seenAutoConfirmProposalsRef = useRef<Set<string> | null>(null);
+    const autoConfirmSessionRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!assistant.historyLoaded) return;
+        const key = `${projectId}:${assistant.sessionId || ""}`;
+        if (autoConfirmSessionRef.current !== key || seenAutoConfirmProposalsRef.current === null) {
+            autoConfirmSessionRef.current = key;
+            const baseline = new Set<string>();
+            for (const turn of assistant.turns) {
+                for (const proposal of turn.proposals || []) baseline.add(proposal.proposalId);
+            }
+            seenAutoConfirmProposalsRef.current = baseline;
+            return;
+        }
+        if (readOnly || assistant.autoConfirmMaxCny <= 0) {
+            for (const turn of assistant.turns) {
+                for (const proposal of turn.proposals || []) seenAutoConfirmProposalsRef.current.add(proposal.proposalId);
+            }
+            return;
+        }
+        // 流式收尾阶段（onTurnEnd 刚写入新回合但 streaming 尚未清零）不能把新提案标成已见过，
+        // 否则流结束后自动确认永远不会触发。
+        if (assistant.streaming || assistant.sessionBusy || assistant.compacting) {
+            return;
+        }
+        const latestTurn = assistant.turns.at(-1);
+        if (!latestTurn || latestTurn.proposalsInvalidated || assistant.turnStatus[latestTurn.turnId]?.undone) return;
+        for (const proposal of latestTurn.proposals || []) {
+            if (seenAutoConfirmProposalsRef.current.has(proposal.proposalId)) continue;
+            seenAutoConfirmProposalsRef.current.add(proposal.proposalId);
+            if (proposal.regenerate || assistant.handledProposals.has(proposal.proposalId)) continue;
+            void autoConfirmAssistantProposal(proposal, latestTurn.turnId);
+        }
+    }, [
+        assistant.autoConfirmMaxCny,
+        assistant.compacting,
+        assistant.handledProposals,
+        assistant.historyLoaded,
+        assistant.sessionBusy,
+        assistant.sessionId,
+        assistant.streaming,
+        assistant.turnStatus,
+        assistant.turns,
+        autoConfirmAssistantProposal,
+        projectId,
+        readOnly,
+    ]);
 
     const uploads = useCanvasUpload({
         pageUi,
@@ -446,7 +497,6 @@ function InfiniteCanvasPage() {
         projectId,
         linkedProjectId,
         readOnly,
-        canvasTitle: currentProject?.title || "未命名画布",
         directorScenes: currentProject?.directorScenes,
         addedSkills,
         projectLoaded,
@@ -589,7 +639,7 @@ function InfiniteCanvasPage() {
                                             setScriptEditorNodeId(null);
                                         }
                                     }}
-                                    syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} />}
+                                    syncStatus={<CanvasSyncStatus projectId={projectId} onOpenVersions={openVersions} />}
                                     readOnly={readOnly}
                                     onDuplicateProject={projectMenu.duplicateCurrentProject}
                                     versionsOpen={versions.open}
@@ -662,11 +712,10 @@ function InfiniteCanvasPage() {
                                 pageUi={pageUi}
                                 workflowsRef={workflowsRef}
                                 versions={versions}
-                                activeTasks={activeTasks}
+                                activeTaskQuery={activeTaskQuery}
                                 historyState={historyState}
                                 undoCanvas={undoCanvas}
                                 redoCanvas={redoCanvas}
-                                reloadLatestCanvasProject={reloadLatestCanvasProject}
                                 openVersions={openVersions}
                                 toggleVersions={toggleVersions}
                                 nodeGraphContext={nodeGraphContext}

@@ -69,7 +69,7 @@ type ProjectActionsParams = {
     openAssistant: () => void;
     undoCanvas: () => void;
     redoCanvas: () => void;
-    saveCanvasProject: (options?: { requireRemote?: boolean }) => Promise<boolean>;
+    saveCanvasProject: () => Promise<boolean>;
     updateProject: (id: string, patch: Partial<CanvasProject>) => void;
     viewportState: ReturnType<typeof useCanvasViewportState>;
     viewportController: ReturnType<typeof useCanvasViewportController>;
@@ -156,7 +156,6 @@ export function useCanvasProjectActions({
         linkedProjectQuery,
         timelineAssetInsert,
         mediaTools,
-        startUpscaleBatch,
         setAngleNodeId,
         setLightingNodeId,
         setEmotionNodeId,
@@ -181,7 +180,7 @@ export function useCanvasProjectActions({
         autoArrangeCanvasNodes,
     } = nodeOperations;
     const { cancelSelectionBox, deselectCanvas, handleNodeMouseDown, nodeDropTargetId } = selectionController;
-    const { recoverAIUpscale, retryDepthCaptureNode, setAnnotationNodeId, setCropNodeId, setFrameDialogNodeId, setMaskEditNodeId } = mediaTools;
+    const { recoverAIUpscale, retryDepthCaptureNode, setAnnotationNodeId, setCropNodeId, setMaskEditNodeId } = mediaTools;
     const { handleConfigNodeChange, handleFrameToggle } = nodeEditor;
 
     const styles = useCanvasStyleWorkflow({
@@ -386,7 +385,7 @@ export function useCanvasProjectActions({
             if (node.metadata?.workflowOperation?.id.endsWith(".ai-upscale")) {
                 const processor = nodesRef.current.find((item) => item.id === node.metadata?.generatedFromProcessingNodeId);
                 if (canRecoverManagedToolNode(node) || (!processor && node.metadata.taskClientOperationId)) void recoverAIUpscale(node).catch((error) => message.error(generationErrorMessage(error)));
-                else if (processor && !canvasNodeFailureView(node).regenerateBlocked) void startUpscaleBatch(processor).catch((error) => message.error(generationErrorMessage(error)));
+                else if (processor && !canvasNodeFailureView(node).regenerateBlocked) focusCanvasNode(processor.id);
                 else message.info("请在超分处理节点中查询原批次，暂勿重复提交");
                 return;
             }
@@ -430,7 +429,7 @@ export function useCanvasProjectActions({
             }
             void handleRetryNode(node);
         },
-        [generateScriptRows, handleRetryNode, mediaTools, message, nodesRef, reconcileImageBatchRootNode, retryDepthCaptureNode, retryImageBatchChildren, setGenerationHistoryOpen, recoverAIUpscale, startUpscaleBatch],
+        [generateScriptRows, handleRetryNode, mediaTools, message, nodesRef, reconcileImageBatchRootNode, retryDepthCaptureNode, retryImageBatchChildren, setGenerationHistoryOpen, recoverAIUpscale, focusCanvasNode],
     );
 
     // 改动卡片的「在画布上查看」：选中这些节点并把视野带过去，再点亮一下。
@@ -496,14 +495,6 @@ export function useCanvasProjectActions({
         }
         focusCanvasNode(styleNode.id);
     }, [focusCanvasNode, message, nodesRef]);
-    const openFrameAnalysisOrCreate = useCallback(() => {
-        const selectedVideo = nodesRef.current.find((node) => selectedNodeIds.has(node.id) && node.type === CanvasNodeType.Video);
-        if (selectedVideo) {
-            setFrameDialogNodeId(selectedVideo.id);
-            return;
-        }
-        message.info("请先选中一个视频节点，再打开逐帧拉片");
-    }, [message, nodesRef, selectedNodeIds, setFrameDialogNodeId]);
     const freeformCreateCommands = useCanvasCreateCommands({
         workspaceMode,
         isProjectLinked: Boolean(shortDramaEnabled && currentProject?.projectId),
@@ -513,7 +504,6 @@ export function useCanvasProjectActions({
             onAddVideo: () => createNode(CanvasNodeType.Video),
             onAddAudio: () => createNode(CanvasNodeType.Audio),
             onAddScript: () => createNode(CanvasNodeType.Script),
-            onAddFrame: openFrameAnalysisOrCreate,
             onAddFolder: createFolder,
             onAddDrawing: () => createNode(CanvasNodeType.Drawing),
             onAddWorkflow: () => createNode(CanvasNodeType.Config),
@@ -580,7 +570,6 @@ export function useCanvasProjectActions({
         handleLodNodeContextMenu,
         handleLodNodeDoubleClick,
         locateProjectStyleNode,
-        openFrameAnalysisOrCreate,
         emptyCanvasState,
     };
 }

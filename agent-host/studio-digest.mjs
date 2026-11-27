@@ -9,7 +9,7 @@ const TYPE_LABEL = {
 };
 const MEDIA = new Set(['image', 'video', 'audio']);
 
-const HEADER_SECTION_ORDER = ['instructions', 'beeftv_skill_catalog'];
+const HEADER_SECTION_ORDER = ['instructions', 'beeftv_skill_catalog', 'codemode'];
 
 function extractMessageText(message) {
   if (!message) return '';
@@ -23,10 +23,8 @@ function extractMessageText(message) {
 const SERIALIZED_STUDIO_TAIL_RE =
   /^(?:\[系统恢复：以下技能之前已加载，因对话被压缩，原文补回。[\s\S]*<\/skill>(?:\n\n|$))?(?:<beeftv_plan>\n[\s\S]*\n<\/beeftv_plan>(?:\n\n|$))?(?:<beeftv_studio>\n[\s\S]*\n<\/beeftv_studio>)?$/;
 
-export function isTransientStudioTailMessage(message) {
-  if (!message || message.role !== 'user') return false;
-  if (message.transientStudioTail === true) return true;
-  const text = extractMessageText(message).trim();
+export function isTransientStudioTailText(raw) {
+  const text = typeof raw === 'string' ? raw.trim() : '';
   if (!text) return false;
   return (
     (text.startsWith('<beeftv_studio>\n') ||
@@ -36,13 +34,29 @@ export function isTransientStudioTailMessage(message) {
   );
 }
 
+export function isTransientStudioTailMessage(message) {
+  if (!message || message.role !== 'user') return false;
+  if (message.transientStudioTail === true) return true;
+  return isTransientStudioTailText(extractMessageText(message));
+}
+
 const HISTORICAL_TOOL_IMAGE_OMITTED_TEXT =
-  '[历史媒体预览图已省略，如需复查概览请调 media_overview，查看原图或局部细节请调 media_inspect]';
+  '[此前已展示过的历史媒体预览图已在后续步骤折叠以节省上下文；如需复查概览请调 media_overview，查看原图或局部细节请调 media_inspect]';
+const HISTORICAL_FILE_IMAGE_OMITTED_TEXT =
+  '[此前已展示过的文档扫描页画面已在后续步骤折叠以节省上下文；你此前据此读取并记录的内容仍然有效，如需再次查看请重新调用 file_read]';
 // 仅裁剪 >=16KB base64 的真实媒体预览图；几百字节的小占位图/图标直接保留以维持前缀缓存字节一致。
 const DEFAULT_MIN_PRUNE_IMAGE_CHARS = 16 * 1024;
 
 function isToolResultMessage(message) {
   return message?.role === 'toolResult' || message?.role === 'tool';
+}
+
+function isFileReadToolResult(message) {
+  const name = typeof message?.toolName === 'string' ? message.toolName : typeof message?.name === 'string' ? message.name : '';
+  if (name === 'file_read' || name === 'file.read') return true;
+  if (!Array.isArray(message?.content)) return false;
+  const firstText = message.content.find((part) => part?.type === 'text' && typeof part.text === 'string')?.text || '';
+  return firstText.includes('"op":"file.read"') || firstText.includes('"format":"pdf-images"');
 }
 
 function isPrunableImagePart(part, minChars = DEFAULT_MIN_PRUNE_IMAGE_CHARS) {
@@ -82,6 +96,8 @@ const NON_MUTATING_CONTINUATION_TOOLS = new Set([
   'plan.update',
   'canvas_get',
   'canvas.get',
+  'file_read',
+  'file.read',
   'skill_load',
   'skill.load',
   'task_list',
@@ -101,6 +117,7 @@ function isKeepImageContinuationTool(name) {
 export function pruneHistoricalToolImages(messages = [], { minImageChars = DEFAULT_MIN_PRUNE_IMAGE_CHARS } = {}) {
   return messages.map((message, idx) => {
     if (!isToolResultMessage(message) || !hasPrunableImagePart(message, minImageChars)) return message;
+    const isScannedFileRead = isFileReadToolResult(message);
     let firstAssistantAfter = -1;
     let shouldPrune = false;
     for (let j = idx + 1; j < messages.length; j++) {
@@ -127,7 +144,10 @@ export function pruneHistoricalToolImages(messages = [], { minImageChars = DEFAU
           shouldPrune = true;
           break;
         }
-        if (later.role === 'assistant') {
+        // file_read 扫描件的画面本身就是文档正文：同轮内写文件/改画布后不能立即折叠，
+        // 否则推理模型在生成最终回复时看不到文档内容，会误判自己此前调用的参数为幻觉并覆写成果；
+        // 跨轮（下一条用户消息）或读入新一批大图时照常折叠以省流量。
+        if (!isScannedFileRead && later.role === 'assistant') {
           const names = assistantToolNames(later);
           if (names.length === 0 || names.some((name) => !isKeepImageContinuationTool(name))) {
             shouldPrune = true;
@@ -137,10 +157,13 @@ export function pruneHistoricalToolImages(messages = [], { minImageChars = DEFAU
       }
     }
     if (!shouldPrune) return message;
+    const omittedText = isScannedFileRead
+      ? HISTORICAL_FILE_IMAGE_OMITTED_TEXT
+      : HISTORICAL_TOOL_IMAGE_OMITTED_TEXT;
     return {
       ...message,
       content: message.content.map((part) =>
-        isPrunableImagePart(part, minImageChars) ? { type: 'text', text: HISTORICAL_TOOL_IMAGE_OMITTED_TEXT } : part,
+        isPrunableImagePart(part, minImageChars) ? { type: 'text', text: omittedText } : part,
       ),
     };
   });
@@ -324,16 +347,38 @@ export function buildStudioDigest(canvas, { maxBytes = 3600, selectedNodeIds = [
   }
   const selected = selectedNodeIds.map((id) => byId.get(id)).filter(Boolean);
   if (selected.length) lines.push(`用户选中：${selected.slice(0, 8).map((node) => `${node.id}「${clip(node.title, 14)}」`).join('、')}`);
+  const bibleDigest = typeof canvas?.creativeBibleDigest === 'string' ? canvas.creativeBibleDigest.trim() : '';
+
+  const clipUtf8 = (str, byteLimit) => {
+    if (Buffer.byteLength(str, 'utf8') <= byteLimit) return str;
+    let out = '';
+    for (const ch of str) {
+      if (Buffer.byteLength(out + ch + '…', 'utf8') > byteLimit) break;
+      out += ch;
+    }
+    return `${out}…`;
+  };
+
+  let boundedBible = '';
+  let bodyBudget = maxBytes;
+  if (bibleDigest) {
+    const bibleBudget = Math.max(400, Math.floor(maxBytes * 0.45));
+    boundedBible = clipUtf8(bibleDigest, bibleBudget);
+    bodyBudget = Math.max(800, maxBytes - Buffer.byteLength(boundedBible, 'utf8') - 1);
+  }
 
   let text = lines.join('\n');
-  // 超预算时从分镜明细开始收缩，保证概况、进行中、失败这些关键信息留下。
-  while (Buffer.byteLength(text, 'utf8') > maxBytes) {
+  // 超预算时从分镜明细开始收缩，保证概况、进行中、失败与创作设定集留下。
+  while (Buffer.byteLength(text, 'utf8') > bodyBudget) {
     const index = lines.findLastIndex((line) => line.startsWith('  镜'));
-    if (index < 0) { text = clip(text, Math.floor(maxBytes / 3)); break; }
+    if (index < 0) { text = clipUtf8(text, bodyBudget); break; }
     lines.splice(index, 1);
     const hidden = lines.filter((line) => line.startsWith('…')).length;
     if (!hidden) lines.push('…分镜明细已收缩，需要时用 canvas_get 读取分镜板');
     text = lines.join('\n');
+  }
+  if (boundedBible) {
+    text = `${text}\n${boundedBible}`;
   }
   return { text, snapshot: snapshotOf(nodes), stats: { revision: canvas?.revision ?? null, nodes: nodes.length, connections: connections.length } };
 }

@@ -19,6 +19,7 @@ type AssistantScope struct {
 	CanvasID       string
 	AssetIDs       map[string]bool
 	CanvasIDs      map[string]bool
+	ResourceIDs    map[string]bool
 	TaskIDs        map[string]bool
 	// SkillPins holds exact pin identities selected in this round or in an
 	// earlier round of the same conversation; a loaded skill stays readable.
@@ -48,13 +49,15 @@ func (s *AssistantScope) Allows(op *operations.Op, params json.RawMessage) error
 		return denied("本轮助手权限不允许该操作")
 	}
 	var args struct {
-		CanvasID    string `json:"canvasId"`
-		NodeID      string `json:"nodeId"`
-		AssetID     string `json:"assetId"`
-		TaskID      string `json:"taskId"`
-		SkillID     string `json:"skillId"`
-		VersionID   string `json:"versionId"`
-		ContentHash string `json:"contentHash"`
+		CanvasID    string   `json:"canvasId"`
+		NodeID      string   `json:"nodeId"`
+		AssetID     string   `json:"assetId"`
+		ResourceID  string   `json:"resourceId"`
+		TaskID      string   `json:"taskId"`
+		TaskIDs     []string `json:"taskIds"`
+		SkillID     string   `json:"skillId"`
+		VersionID   string   `json:"versionId"`
+		ContentHash string   `json:"contentHash"`
 	}
 	if len(params) > 0 {
 		_ = json.Unmarshal(params, &args)
@@ -71,13 +74,18 @@ func (s *AssistantScope) Allows(op *operations.Op, params json.RawMessage) error
 		return denied("只能修改当前画布")
 	}
 	switch op.ID {
-	case "model.catalog":
+	case "model.catalog", "asset.list", "canvas.search", "generation.estimate":
 		return nil
 	case "project.media.search", "project.canvas.search":
 		if args.CanvasID == s.CanvasID {
 			return nil
 		}
 		return denied("只能搜索当前画布所属项目")
+	case "project.bible.get":
+		if s.canvasAllowed(args.CanvasID) {
+			return nil
+		}
+		return denied("只能读取当前画布所属项目的创作设定集")
 	case "skill.catalog", "skill.market.search", "skill.market.get", "skill.market.file":
 		return nil
 	case "skill.publish.status":
@@ -103,7 +111,7 @@ func (s *AssistantScope) Allows(op *operations.Op, params json.RawMessage) error
 			return nil
 		}
 		return denied("请先加载或选用该技能，再运行它的脚本")
-	case "canvas.get":
+	case "canvas.get", "canvas.nodes.get":
 		if s.canvasAllowed(args.CanvasID) || s.projectReferenceAllowed("canvas", args.CanvasID) {
 			return nil
 		}
@@ -123,18 +131,46 @@ func (s *AssistantScope) Allows(op *operations.Op, params json.RawMessage) error
 		if args.CanvasID != s.CanvasID {
 			return denied("只能检查当前画布关联的媒体")
 		}
-		if args.NodeID != "" && args.AssetID == "" {
+		nodeID := strings.TrimSpace(args.NodeID)
+		assetID := strings.TrimSpace(args.AssetID)
+		if nodeID != "" && assetID == "" {
 			return nil
 		}
-		if args.AssetID != "" && args.NodeID == "" && (s.AssetIDs[args.AssetID] || s.projectReferenceAllowed("asset", args.AssetID)) {
+		if assetID != "" && nodeID == "" && (s.AssetIDs[assetID] || s.projectReferenceAllowed("asset", assetID)) {
 			return nil
 		}
 		return denied("这个媒体未关联到当前画布或本次对话")
-	case "task.get":
+	case "file.read":
+		if s.ResourceIDs[strings.TrimSpace(args.ResourceID)] {
+			return nil
+		}
+		return denied("这个文件没有在本次对话中附带")
+	case "task.get", "task.cancel":
 		if s.TaskIDs[strings.TrimSpace(args.TaskID)] {
 			return nil
 		}
 		return denied("这个任务与当前画布无关")
+	case "task.wait":
+		if canvasID := strings.TrimSpace(args.CanvasID); canvasID != "" && !s.canvasAllowed(canvasID) {
+			return denied("这个画布不在本次对话范围内")
+		}
+		rawIDs := args.TaskIDs
+		if id := strings.TrimSpace(args.TaskID); id != "" {
+			rawIDs = []string{id}
+		}
+		if len(rawIDs) == 0 {
+			return nil
+		}
+		for _, id := range rawIDs {
+			trimmed := strings.TrimSpace(id)
+			if trimmed == "" {
+				continue
+			}
+			if !s.TaskIDs[trimmed] {
+				return denied("这个任务与当前画布无关")
+			}
+		}
+		return nil
 	default:
 		return denied("内置助手不能调用该操作")
 	}

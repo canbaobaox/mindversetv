@@ -12,6 +12,7 @@ export const TRANSIENT_TASK_TELEMETRY_KEYS = [
     "taskDurationMs",
     "taskStartedAt",
     "taskProviderRequestId",
+    "taskProviderCancelStatus",
     "taskOfficialStatus",
     "taskReceiptRecorded",
 ] as const satisfies ReadonlyArray<keyof CanvasNodeMetadata>;
@@ -35,6 +36,7 @@ export const GENERATION_TASK_LIFECYCLE_METADATA_KEYS = [
     "taskDurationMs",
     "taskErrorCode",
     "taskProviderRequestId",
+    "taskProviderCancelStatus",
     "taskOfficialStatus",
     "taskReceiptRecorded",
     "taskUpdatedAt",
@@ -175,6 +177,7 @@ export const UPLOAD_REPLACEMENT_RESET_KEYS = [
     "depthSourceNodeId",
     "importSource",
     "emotionEdit",
+    "maskEdit",
     "portraitTexture",
     "cameraControl",
 ] as const satisfies ReadonlyArray<keyof CanvasNodeMetadata | (typeof GENERATION_ERROR_METADATA_KEYS)[number]>;

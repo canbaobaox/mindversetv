@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -21,53 +22,117 @@ import (
 
 const defaultReadyTimeout = 20 * time.Second
 
+// childProcess 绑定单次启动的子进程句柄与显式生命周期标记，防止迟退出的旧进程
+// 误判为新进程崩溃，也消除 health 通过到 endpoint 公布之间的窄窗口竞态。
+type childProcess struct {
+	cmd      *exec.Cmd
+	done     chan struct{}
+	stopping bool
+	ready    bool
+	exited   bool
+	waitErr  error
+}
+
+func unexpectedHostExitError(waitErr error) error {
+	if waitErr != nil {
+		return fmt.Errorf("宿主进程意外退出: %w", waitErr)
+	}
+	return errors.New("宿主进程意外退出")
+}
+
+func (s *supervisor) finishChildExit(owned *childProcess, waitErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owned.exited = true
+	owned.waitErr = waitErr
+	if s.active != owned {
+		return
+	}
+	pipeMode := s.pipeMode
+	pid := 0
+	if owned.cmd != nil && owned.cmd.Process != nil {
+		pid = owned.cmd.Process.Pid
+	}
+	s.clearIdentityLocked()
+	s.active = nil
+	if !owned.stopping {
+		if owned.ready {
+			s.lastErr = unexpectedHostExitError(waitErr)
+			log.Printf("assistantruntime: agent-host exited unexpectedly (pid=%d, pipe=%v): %v", pid, pipeMode, waitErr)
+		} else {
+			log.Printf("assistantruntime: agent-host exited before ready (pid=%d, pipe=%v): %v", pid, pipeMode, waitErr)
+		}
+	}
+}
+
 // supervisor 持有本实例启动的子进程、回环端点与实例 nonce。
 // 端点只在本进程就绪且 health 证明 nonce 之后才暴露；绝不把全局端口或别人的 PID 当成所有权。
 type supervisor struct {
-	mu          sync.Mutex
-	cmd         *exec.Cmd
-	done        chan struct{}
-	fingerprint string
-	launchedAt  time.Time
-	lastErr     error
-	endpoint    string
-	pipePath    string
-	pipeMode    bool
-	nonce       string
-	lifetimeW   *os.File
-	testOwned   bool
+	mu                sync.Mutex
+	active            *childProcess
+	starting          bool
+	fingerprint       string
+	proxyFingerprint  string
+	launchedAt        time.Time
+	lastErr           error
+	failedFingerprint string
+	failedAt          time.Time
+	endpoint          string
+	pipePath          string
+	pipeMode          bool
+	nonce             string
+	lifetimeW         *os.File
+	testOwned         bool
 }
 
 // State 是状态查询需要的宿主进程事实（不含 nonce 或其它凭据）。
 type State struct {
-	Running     bool
-	Fingerprint string
-	LaunchedAt  time.Time
-	LastError   error
-	Endpoint    string
+	Running           bool
+	Starting          bool
+	Fingerprint       string
+	ProxyFingerprint  string
+	LaunchedAt        time.Time
+	LastError         error
+	FailedFingerprint string
+	FailedAt          time.Time
+	Endpoint          string
+	TestOwned         bool
 }
 
 func (s *supervisor) state() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return State{
-		Running:     s.isRunningLocked(),
-		Fingerprint: s.fingerprint,
-		LaunchedAt:  s.launchedAt,
-		LastError:   s.lastErr,
-		Endpoint:    s.endpoint,
+		Running:           s.isRunningLocked(),
+		Starting:          s.starting,
+		Fingerprint:       s.fingerprint,
+		ProxyFingerprint:  s.proxyFingerprint,
+		LaunchedAt:        s.launchedAt,
+		LastError:         s.lastErr,
+		FailedFingerprint: s.failedFingerprint,
+		FailedAt:          s.failedAt,
+		Endpoint:          s.endpoint,
+		TestOwned:         s.testOwned,
 	}
+}
+
+func (s *supervisor) clearFailure() {
+	s.mu.Lock()
+	s.lastErr = nil
+	s.failedFingerprint = ""
+	s.failedAt = time.Time{}
+	s.mu.Unlock()
 }
 
 func (s *supervisor) isRunningLocked() bool {
 	if s.testOwned && s.endpoint != "" && s.nonce != "" {
 		return true
 	}
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.active == nil || s.active.cmd == nil || s.active.cmd.Process == nil {
 		return false
 	}
 	select {
-	case <-s.done:
+	case <-s.active.done:
 		return false
 	default:
 		return true
@@ -83,10 +148,10 @@ func (s *supervisor) running() bool {
 func (s *supervisor) pid() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.active == nil || s.active.cmd == nil || s.active.cmd.Process == nil {
 		return 0
 	}
-	return s.cmd.Process.Pid
+	return s.active.cmd.Process.Pid
 }
 
 func (s *supervisor) identity() (endpoint, nonce string) {
@@ -131,7 +196,13 @@ func pipeSyntheticBaseURL(pipePath string) string {
 	return "http://pipe-" + hex.EncodeToString(sum[:8]) + ".invalid"
 }
 
-func (s *supervisor) startOwned(config HostConfig, fingerprint string, timeout time.Duration, envFor func(port int, nonce, listenFD, listenPipe string) []string, token string) error {
+func (s *supervisor) startOwned(ctx context.Context, config HostConfig, fingerprint string, timeout time.Duration, envFor func(port int, nonce, listenFD, listenPipe string) ([]string, string), token string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.isRunningLocked() && !s.testOwned {
 		s.mu.Unlock()
@@ -140,7 +211,13 @@ func (s *supervisor) startOwned(config HostConfig, fingerprint string, timeout t
 	if s.testOwned {
 		s.clearIdentityLocked()
 	}
+	s.starting = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
+	}()
 
 	nonce, err := randomNonce()
 	if err != nil {
@@ -209,13 +286,26 @@ func (s *supervisor) startOwned(config HostConfig, fingerprint string, timeout t
 
 	cmd := exec.Command(parts[0], parts[1:]...)
 	ConfigureHostProcess(cmd)
-	cmd.Env = envFor(port, nonce, listenFD, listenPipe)
+	childEnv, proxyFingerprint := envFor(port, nonce, listenFD, listenPipe)
+	cmd.Env = childEnv
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = lifetimeR
 	cmd.ExtraFiles = extraListenFiles(listenFile)
 
 	s.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		_ = lifetimeR.Close()
+		_ = lifetimeW.Close()
+		if listenFile != nil {
+			_ = listenFile.Close()
+		}
+		if listener != nil {
+			_ = listener.Close()
+		}
+		return err
+	}
 	if s.isRunningLocked() && !s.testOwned {
 		s.mu.Unlock()
 		_ = lifetimeR.Close()
@@ -230,6 +320,8 @@ func (s *supervisor) startOwned(config HostConfig, fingerprint string, timeout t
 	}
 	if err := cmd.Start(); err != nil {
 		s.lastErr = err
+		s.failedFingerprint = fingerprint
+		s.failedAt = time.Now()
 		s.mu.Unlock()
 		_ = lifetimeR.Close()
 		_ = lifetimeW.Close()
@@ -248,9 +340,13 @@ func (s *supervisor) startOwned(config HostConfig, fingerprint string, timeout t
 	if listener != nil {
 		_ = listener.Close()
 	}
-	s.cmd = cmd
-	s.done = make(chan struct{})
+	owned := &childProcess{
+		cmd:  cmd,
+		done: make(chan struct{}),
+	}
+	s.active = owned
 	s.fingerprint = fingerprint
+	s.proxyFingerprint = proxyFingerprint
 	s.launchedAt = time.Now()
 	s.lastErr = nil
 	s.nonce = nonce
@@ -259,47 +355,80 @@ func (s *supervisor) startOwned(config HostConfig, fingerprint string, timeout t
 	s.pipeMode = listenPipe != ""
 	s.lifetimeW = lifetimeW
 	s.testOwned = false
-	done := s.done
-	ownedCmd := cmd
 	go func() {
-		_ = ownedCmd.Wait()
-		s.mu.Lock()
-		if s.cmd == ownedCmd {
-			s.clearIdentityLocked()
-			s.cmd = nil
-			s.done = nil
-		}
-		s.mu.Unlock()
-		close(done)
+		waitErr := owned.cmd.Wait()
+		s.finishChildExit(owned, waitErr)
+		close(owned.done)
 	}()
 	s.mu.Unlock()
 
 	if timeout <= 0 {
 		timeout = defaultReadyTimeout
 	}
-	if err := waitChildReady(baseURL, listenPipe, nonce, token, timeout, done); err != nil {
+	if err := waitChildReady(ctx, baseURL, listenPipe, nonce, token, timeout, owned.done); err != nil {
 		s.mu.Lock()
 		s.lastErr = err
+		if ctx.Err() == nil {
+			s.failedFingerprint = fingerprint
+			s.failedAt = time.Now()
+		}
 		s.mu.Unlock()
-		_ = s.stop()
+		if ctx.Err() != nil {
+			cancelStopCtx, cancelStop := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			_ = s.stopContext(cancelStopCtx)
+			cancelStop()
+		} else {
+			_ = s.stop()
+		}
 		return err
 	}
 	s.mu.Lock()
-	if s.cmd == ownedCmd {
+	if s.active == owned && !owned.exited && !owned.stopping {
+		owned.ready = true
 		s.endpoint = baseURL
 		s.pipePath = listenPipe
 		s.lastErr = nil
+		s.failedFingerprint = ""
+		s.failedAt = time.Time{}
+		s.mu.Unlock()
+		return nil
+	}
+	stopping := owned.stopping
+	exitErr := unexpectedHostExitError(owned.waitErr)
+	if !stopping && s.active == nil {
+		s.lastErr = exitErr
+		log.Printf("assistantruntime: agent-host exited immediately after health check: %v", owned.waitErr)
 	}
 	s.mu.Unlock()
-	return nil
+	if stopping {
+		return context.Canceled
+	}
+	return exitErr
 }
 
-func waitChildReady(baseURL, pipePath, nonce, token string, timeout time.Duration, done <-chan struct{}) error {
+func waitChildReady(ctx context.Context, baseURL, pipePath, nonce, token string, timeout time.Duration, done <-chan struct{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	pipePath = strings.TrimSpace(pipePath)
 	pipeTightened := pipePath == ""
 	deadline := time.Now().Add(timeout)
+	waitRetry := func() error {
+		timer := time.NewTimer(20 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-done:
+			return errors.New("宿主进程在就绪前退出")
+		case <-timer.C:
+			return nil
+		}
+	}
 	for time.Now().Before(deadline) {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-done:
 			return errors.New("宿主进程在就绪前退出")
 		default:
@@ -307,22 +436,28 @@ func waitChildReady(baseURL, pipePath, nonce, token string, timeout time.Duratio
 		if !pipeTightened {
 			if err := localipc.TightenEndpointSecurity(pipePath); err != nil {
 				if localipc.IsTransientSecurityError(err) {
-					time.Sleep(20 * time.Millisecond)
+					if waitErr := waitRetry(); waitErr != nil {
+						return waitErr
+					}
 					continue
 				}
 				return fmt.Errorf("收紧本地命名管道权限失败: %w", err)
 			}
 			pipeTightened = true
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
-		health := probeOwned(ctx, baseURL, pipePath, nonce, token)
+		probeCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+		health := probeOwned(probeCtx, baseURL, pipePath, nonce, token)
 		cancel()
 		if health.OK && health.Instance == InstanceProof(nonce) {
 			return nil
 		}
-		time.Sleep(20 * time.Millisecond)
+		if waitErr := waitRetry(); waitErr != nil {
+			return waitErr
+		}
 	}
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-done:
 		return errors.New("宿主进程在就绪前退出")
 	default:
@@ -331,49 +466,76 @@ func waitChildReady(baseURL, pipePath, nonce, token string, timeout time.Duratio
 }
 
 func (s *supervisor) stop() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.stopLocked()
+	return s.stopContext(context.Background())
 }
 
-func (s *supervisor) stopLocked() error {
+func (s *supervisor) stopContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopLocked(ctx)
+}
+
+func (s *supervisor) stopLocked(ctx context.Context) error {
 	if s.testOwned {
 		s.clearIdentityLocked()
 		return nil
 	}
-	cmd := s.cmd
-	if cmd == nil || cmd.Process == nil {
+	owned := s.active
+	if owned == nil || owned.cmd == nil || owned.cmd.Process == nil {
 		s.clearIdentityLocked()
 		return nil
 	}
+	owned.stopping = true
+	cmd := owned.cmd
 	if s.lifetimeW != nil {
 		_ = s.lifetimeW.Close()
 		s.lifetimeW = nil
 	}
-	if runtime.GOOS == "windows" {
+	forceKillNow := runtime.GOOS == "windows" || ctx.Err() != nil
+	if forceKillNow {
 		_ = cmd.Process.Kill()
 	} else {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 	}
-	done := s.done
+	done := owned.done
 	s.mu.Unlock()
 	var waitErr error
 	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
+		if forceKillNow {
 			select {
 			case <-done:
-			case <-time.After(3 * time.Second):
+			case <-time.After(1 * time.Second):
 				waitErr = errors.New("宿主进程未在超时内退出")
+			}
+		} else {
+			graceTimer := time.NewTimer(5 * time.Second)
+			select {
+			case <-done:
+				graceTimer.Stop()
+			case <-ctx.Done():
+				graceTimer.Stop()
+				_ = cmd.Process.Kill()
+				select {
+				case <-done:
+				case <-time.After(1 * time.Second):
+					waitErr = errors.New("宿主进程未在超时内退出")
+				}
+			case <-graceTimer.C:
+				_ = cmd.Process.Kill()
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					waitErr = errors.New("宿主进程未在超时内退出")
+				}
 			}
 		}
 	}
 	s.mu.Lock()
-	if s.cmd == cmd {
-		s.cmd = nil
-		s.done = nil
+	if s.active == owned {
+		s.active = nil
 		s.clearIdentityLocked()
 	}
 	return waitErr
@@ -383,6 +545,7 @@ func (s *supervisor) clearIdentityLocked() {
 	s.endpoint = ""
 	s.pipePath = ""
 	s.nonce = ""
+	s.proxyFingerprint = ""
 	s.testOwned = false
 	if s.lifetimeW != nil {
 		_ = s.lifetimeW.Close()
@@ -399,8 +562,8 @@ func (s *supervisor) testingUseEndpoint(baseURL, nonce, fingerprint string) {
 	s.pipeMode = false
 	s.nonce = nonce
 	s.fingerprint = fingerprint
+	s.proxyFingerprint = ""
 	s.launchedAt = time.Now()
 	s.lastErr = nil
-	s.cmd = nil
-	s.done = nil
+	s.active = nil
 }

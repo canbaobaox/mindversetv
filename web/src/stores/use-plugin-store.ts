@@ -35,6 +35,23 @@ function notifyLifecycle(pluginId?: string): void {
     }
 }
 
+function shallowEqualRecord(a: Record<string, string>, b: Record<string, string>): boolean {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const key of aKeys) {
+        if (a[key] !== b[key]) return false;
+    }
+    return true;
+}
+
+function clearInvalidRuntimeStatus(statuses: Record<string, string>, pluginId: string): Record<string, string> {
+    if (statuses[pluginId] !== "invalid") return statuses;
+    const next = { ...statuses };
+    delete next[pluginId];
+    return next;
+}
+
 type BackendPluginEntry = { manifest: PluginManifest | PluginManifestV2; enabled: boolean };
 
 type PluginStore = {
@@ -132,7 +149,7 @@ function fallbackManifest(pluginId: string): PluginManifest | PluginManifestV2 {
 
 export const usePluginStore = create<PluginStore>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             hydrated: false,
             installations: [],
             runtimeStatuses: {},
@@ -150,7 +167,12 @@ export const usePluginStore = create<PluginStore>()(
                     const next: PluginInstallation = current
                         ? { ...current, manifest: normalizedManifest, updatedAt: timestamp }
                         : { manifest: normalizedManifest, enabled: false, config: {}, installedAt: timestamp, updatedAt: timestamp };
-                    return { hydrated: true, installations: [...migrated.filter((item) => item.manifest.id !== canonicalId), next] };
+                    const nextRuntimeStatuses = clearInvalidRuntimeStatus(state.runtimeStatuses, canonicalId);
+                    return {
+                        hydrated: true,
+                        installations: [...migrated.filter((item) => item.manifest.id !== canonicalId), next],
+                        ...(nextRuntimeStatuses !== state.runtimeStatuses ? { runtimeStatuses: nextRuntimeStatuses } : {}),
+                    };
                 });
                 notifyLifecycle(manifest.id);
             },
@@ -159,17 +181,27 @@ export const usePluginStore = create<PluginStore>()(
                 set((state) => {
                     const migrated = migrateLegacyPluginInstallations(state.installations);
                     const installations = new Map(migrated.map((item) => [item.manifest.id, item]));
+                    let nextRuntimeStatuses = state.runtimeStatuses;
                     const timestamp = now();
                     for (const { manifest, enabled } of plugins) {
                         const current = installations.get(manifest.id);
+                        const changed = Boolean(current && !sameManifestRevision(current.manifest, manifest));
+                        if (changed) {
+                            nextRuntimeStatuses = clearInvalidRuntimeStatus(nextRuntimeStatuses, manifest.id);
+                        }
                         installations.set(
                             manifest.id,
                             current
-                                ? { ...current, manifest: sameManifestRevision(current.manifest, manifest) ? current.manifest : manifest, enabled, updatedAt: timestamp, lastError: undefined }
+                                ? { ...current, manifest: changed ? manifest : current.manifest, enabled, updatedAt: timestamp, lastError: changed ? undefined : current.lastError }
                                 : { manifest, enabled, config: {}, installedAt: timestamp, updatedAt: timestamp },
                         );
                     }
-                    return { hydrated: true, pluginStates: states, installations: [...installations.values()] };
+                    return {
+                        hydrated: true,
+                        pluginStates: states,
+                        installations: [...installations.values()],
+                        ...(nextRuntimeStatuses !== state.runtimeStatuses ? { runtimeStatuses: nextRuntimeStatuses } : {}),
+                    };
                 });
                 notifyLifecycle();
             },
@@ -193,11 +225,16 @@ export const usePluginStore = create<PluginStore>()(
                                   updatedAt: timestamp,
                               },
                           ];
-                    return { installations };
+                    const nextRuntimeStatuses = clearInvalidRuntimeStatus(state.runtimeStatuses, canonicalId);
+                    return {
+                        installations,
+                        ...(nextRuntimeStatuses !== state.runtimeStatuses ? { runtimeStatuses: nextRuntimeStatuses } : {}),
+                    };
                 });
                 notifyLifecycle(canonicalId);
             },
             setRuntimeStatuses: (runtimeStatuses) => {
+                if (shallowEqualRecord(get().runtimeStatuses, runtimeStatuses)) return;
                 set({ runtimeStatuses });
                 notifyLifecycle();
             },
@@ -226,11 +263,17 @@ export const usePluginStore = create<PluginStore>()(
             },
             removePlugin: (pluginId) => {
                 const canonicalId = LEGACY_PLUGIN_ID_MAP[pluginId] ?? pluginId;
-                set((state) => ({
-                    installations: migrateLegacyPluginInstallations(state.installations).filter(
-                        (item) => item.manifest.id !== canonicalId && item.manifest.id !== pluginId,
-                    ),
-                }));
+                set((state) => {
+                    const nextRuntimeStatuses = { ...state.runtimeStatuses };
+                    delete nextRuntimeStatuses[canonicalId];
+                    delete nextRuntimeStatuses[pluginId];
+                    return {
+                        installations: migrateLegacyPluginInstallations(state.installations).filter(
+                            (item) => item.manifest.id !== canonicalId && item.manifest.id !== pluginId,
+                        ),
+                        runtimeStatuses: nextRuntimeStatuses,
+                    };
+                });
                 notifyLifecycle(canonicalId);
             },
         }),
@@ -255,6 +298,7 @@ export const usePluginStore = create<PluginStore>()(
 
 export function isPluginEffectivelyEnabled(pluginId: string, fallbackEnabled?: boolean) {
     const state = usePluginStore.getState();
+    if (state.runtimeStatuses[pluginId] === "invalid") return false;
     const serverState = state.pluginStates[pluginId];
     if (serverState) return serverState.effectiveEnabled;
     if (pluginId in state.runtimeStatuses) return state.runtimeStatuses[pluginId] === "enabled";

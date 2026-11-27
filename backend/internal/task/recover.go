@@ -2,10 +2,13 @@ package task
 
 import (
 	"context"
+	"errors"
 	"strings"
 
+	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/outbound"
 )
 
 const (
@@ -67,7 +70,7 @@ func (s *Service) RecoverTask(ctx context.Context, userID, id string) (*model.Ta
 	case model.TaskStatusSucceeded:
 		recovered, err := s.deps.Recovery.ResumeDelivery(ctx, userID, task.ID)
 		if err != nil {
-			return nil, err
+			return nil, mapRecoveryError(err)
 		}
 		if recovered == nil {
 			return nil, unavailable()
@@ -87,7 +90,7 @@ func (s *Service) RecoverTask(ctx context.Context, userID, id string) (*model.Ta
 			return nil, kernel.BadAuthRequest(RecoverUnsupportedTypeText)
 		}
 		if err != nil {
-			return nil, err
+			return nil, mapRecoveryError(err)
 		}
 		if recovered == nil {
 			return nil, unavailable()
@@ -96,4 +99,35 @@ func (s *Service) RecoverTask(ctx context.Context, userID, id string) (*model.Ta
 	default:
 		return nil, kernel.BadAuthRequest(RecoverUnsupportedStatusText)
 	}
+}
+
+func RecoveryAttemptError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "tls: handshake failure") {
+		return "下载连接失败，TLS 握手未完成"
+	}
+	return generation.ClassifyError(err).UserMessage()
+}
+
+func mapRecoveryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var appErr *kernel.AppError
+	if errors.As(err, &appErr) {
+		return err
+	}
+	if outbound.IsConnectionDrop(err) {
+		return &kernel.AppError{
+			Status:    kernel.CodeBadGateway,
+			Code:      kernel.CodeBadGateway,
+			Reason:    kernel.ReasonBadGateway,
+			Message:   outbound.ResumableConnectionDropMessage,
+			Retryable: true,
+			Cause:     err,
+		}
+	}
+	return err
 }

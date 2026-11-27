@@ -87,6 +87,23 @@ describe("generation-failure-ux", () => {
                 explanation: explainGenerationError({ code: "request_not_sent", message: "未能连接服务" }),
             }),
         ).toEqual({ label: "本次未扣费", tone: "safe" });
+
+        const uploadFailure = explainGenerationError({
+            code: "reference_upload_failed",
+            message: "对象存储密钥无效（HTTP 403，InvalidAccessKeyId），本次尚未开始生成。请检查 Access Key ID（腾讯云 COS 为 SecretId）后重试。",
+        });
+        expect(
+            resolveFailureBillingBadge({
+                explanation: uploadFailure,
+                outcome: notChargedTaskOutcome(),
+                taskId: "task-upload-1",
+            }),
+        ).toEqual({ label: "本次未扣费", tone: "safe" });
+        expect(
+            resolveFailureBillingBadge({
+                explanation: uploadFailure,
+            }),
+        ).toEqual({ label: "本次未扣费", tone: "safe" });
     });
 
     test("returns output-stage reassurance hint only for moderation_output", () => {
@@ -363,6 +380,21 @@ describe("generation-failure-ux", () => {
         expect(modals[2]).toEqual({ title: "输入尚未修改，确认直接重试？", cancelText: "去修改输入" });
         expect(dualWarningContent).toContain("未修改直接重试大概率仍会失败");
         expect(dualWarningContent).toContain("重新生成可能会再扣一次");
+
+        let pendingCancelContent = "";
+        const pendingCancelRejected = await confirmCreationRetryIfNeeded({
+            category: "cancelled",
+            outcome: { phase: "failed", regenerate: "allowed", reason: "task_failed" },
+            providerCancelStatus: "requested",
+            modalConfirm: (config) => {
+                pendingCancelContent = String(config.content || "");
+                modals.push({ title: config.title, cancelText: config.cancelText });
+                config.onCancel?.();
+            },
+        });
+        expect(pendingCancelRejected).toBe(false);
+        expect(modals[3]?.title).toContain("取消仍在确认中");
+        expect(pendingCancelContent).toContain("可能会再扣一次");
     });
 
     test("CanvasNodeErrorContent suppresses retry and reload controls in readOnly mode", () => {

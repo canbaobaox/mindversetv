@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 
-import { confirmAssistantProduction, confirmAssistantProposalRunnable, type AssistantGenerationProposal } from "@/services/api/agent-assistant";
+import { autoConfirmAssistantProduction, confirmAssistantProduction, confirmAssistantProposalRunnable, type AssistantGenerationProposal } from "@/services/api/agent-assistant";
+import { ApiError } from "@/services/api/request";
 import { armAssistantContinuation, registerAssistantSubmission } from "@/services/api/assistant-continuation";
 import { refreshLocalCanvasProjectIfChanged } from "@/services/local-workspace-repository";
 import type { Skill } from "@/services/api/skills";
@@ -26,6 +27,22 @@ type UseCanvasAssistantProposalOptions = {
     continuePlan?: boolean;
     onContinuationArmed?: () => void;
 };
+
+export function productionConfirmationErrorMessage(error: unknown): string {
+    if (error instanceof AssistantProposalBlockedError) {
+        return error.message;
+    }
+    if (error instanceof ApiError) {
+        if (error.reason === "continuation_intent_changed") {
+            return "要求已更新，请让助手重新提出生成方案。";
+        }
+        const statusOrCode = error.status !== undefined && error.status >= 400 ? error.status : error.code;
+        if (!error.retryable && statusOrCode !== undefined && statusOrCode >= 400 && statusOrCode < 500 && error.message) {
+            return error.message;
+        }
+    }
+    return "暂未确认制作是否开始，请重试查询同一方案，不会重复提交已接受的素材。";
+}
 
 export function useCanvasAssistantProposal({
     projectId,
@@ -91,8 +108,8 @@ export function useCanvasAssistantProposal({
                     setAssistantProposalFeedback(current => ({ ...current, [proposalId]: "正在按已确认方案制作，素材保存后会自动继续。" }));
                 })().catch(error => {
                     if (!lifetime.matches(owner, projectIdRef.current)) return;
-                    if (error instanceof AssistantProposalBlockedError && (error.reason === "canvas_saving" || error.reason === "canvas_conflict")) recordAssistantProposalCanvasRejection(owner.canvasId);
-                    setAssistantProposalFeedback(current => ({ ...current, [proposalId]: error instanceof AssistantProposalBlockedError ? error.message : "暂未确认制作是否开始，请重试查询同一方案，不会重复提交已接受的素材。" }));
+                    if (error instanceof AssistantProposalBlockedError && error.reason === "canvas_saving") recordAssistantProposalCanvasRejection(owner.canvasId);
+                    setAssistantProposalFeedback(current => ({ ...current, [proposalId]: productionConfirmationErrorMessage(error) }));
                 }).finally(() => {
                     claimsRef.current.delete(proposalId);
                     setRunningProposalIds(current => { const next = new Set(current); next.delete(proposalId); return next; });
@@ -111,13 +128,14 @@ export function useCanvasAssistantProposal({
                         () => readAssistantProposalSourceState(owner.canvasId, nodesRef.current, connectionsRef.current, addedSkillsRef.current),
                         () => readPersistedAssistantProposalSource(owner.canvasId),
                     ).catch(error => {
-                        if (error instanceof AssistantProposalBlockedError && (error.reason === "canvas_saving" || error.reason === "canvas_conflict") && lifetime.matches(owner, projectIdRef.current)) recordAssistantProposalCanvasRejection(owner.canvasId);
+                        if (error instanceof AssistantProposalBlockedError && error.reason === "canvas_saving" && lifetime.matches(owner, projectIdRef.current)) recordAssistantProposalCanvasRejection(owner.canvasId);
                         throw error;
                     });
                     return snapshot;
                 },
                 confirmOrder: async (confirmedInputs) => {
-                    const canConfirmViaOrder = confirmedInputs.nodes
+                    const requiresOrderPath = proposal.kind === "mixed" || proposal.kind === "audio" || !proposal.modelKey?.trim();
+                    const canConfirmViaOrder = requiresOrderPath || confirmedInputs.nodes
                         .filter((node) => proposal.nodeIds.includes(node.id))
                         .every((node) => {
                             const count = Number(node.metadata?.count ?? 1);
@@ -157,5 +175,49 @@ export function useCanvasAssistantProposal({
         [connectionsRef, lifetime, nodesRef, projectId, continuationSessionId, continuePlan, onContinuationArmed],
     );
 
-    return { runAssistantProposal, assistantProposalFeedback, runningProposalIds };
+    const autoConfirmAssistantProposal = useCallback(
+        async (proposal: AssistantGenerationProposal, turnId: string) => {
+            const owner = lifetime.capture(projectId);
+            const proposalId = proposal.proposalId;
+            if (claimsRef.current.has(proposalId) || handledRef.current.has(proposalId)) return false;
+            claimsRef.current.add(proposalId);
+            setRunningProposalIds((current) => new Set(current).add(proposalId));
+            try {
+                await prepareAssistantProposalSnapshot(
+                    proposal,
+                    () => readAssistantProposalSourceState(owner.canvasId, nodesRef.current, connectionsRef.current, addedSkillsRef.current),
+                    () => readPersistedAssistantProposalSource(owner.canvasId),
+                );
+                if (!lifetime.matches(owner, projectIdRef.current)) return false;
+                const result = await autoConfirmAssistantProduction(owner.canvasId, turnId, proposal, Boolean(proposal.production || (continuePlan && continuationSessionId)));
+                await refreshLocalCanvasProjectIfChanged(owner.canvasId);
+                if (!lifetime.matches(owner, projectIdRef.current)) return false;
+                markHandledRef.current(proposalId);
+                if (proposal.production || result.continuationId) onContinuationArmed?.();
+                const estLabel = typeof result.estimatedCny === "number" ? `预计 ¥${result.estimatedCny.toFixed(2)}` : "";
+                const limitLabel = typeof result.limitCny === "number" ? `¥${result.limitCny.toFixed(2)}` : "";
+                setAssistantProposalFeedback((current) => ({
+                    ...current,
+                    [proposalId]: `已按本会话 ${limitLabel} 免确认额度自动发起${estLabel ? `（${estLabel}）` : ""}。`,
+                }));
+                return true;
+            } catch (error) {
+                if (!lifetime.matches(owner, projectIdRef.current)) return false;
+                if (error instanceof ApiError && error.reason !== "auto_confirm_disabled" && error.message) {
+                    setAssistantProposalFeedback((current) => ({ ...current, [proposalId]: error.message }));
+                }
+                return false;
+            } finally {
+                claimsRef.current.delete(proposalId);
+                setRunningProposalIds((current) => {
+                    const next = new Set(current);
+                    next.delete(proposalId);
+                    return next;
+                });
+            }
+        },
+        [connectionsRef, continuationSessionId, continuePlan, lifetime, nodesRef, onContinuationArmed, projectId],
+    );
+
+    return { runAssistantProposal, autoConfirmAssistantProposal, assistantProposalFeedback, runningProposalIds };
 }

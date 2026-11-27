@@ -103,7 +103,7 @@ func seedanceMaterialLibraryHost(baseURL string) bool {
 		return false
 	}
 	switch strings.ToLower(u.Hostname()) {
-	case "beeftv.app", "www.whatstoken.ai", "whatstoken.ai":
+	case "beeftv.app":
 		return true
 	default:
 		return false
@@ -287,9 +287,10 @@ func validateVideoReferenceMedia(profile *VideoCapabilityConfig, input TaskInput
 		return nil
 	}
 	profile = tightenedVideoCapability(input.Config, profile)
-	refs := videoReferencesForOperation(profile, metadataString(input.Metadata, "videoEditOperation"))
+	operation := videoTaskOperation(profile, input)
+	refs := videoReferencesForOperation(profile, operation)
 	applySeedanceDocumentedVideoPixelFloor(input.Config, &refs)
-	if !hasServerVideoCapability(input.Config) && isNativeDreaminaSeedance(input.Config.InterfaceType, input.Config.Model) && isSeedance25Model(input.Config.Model) && metadataString(input.Metadata, "videoEditOperation") == "inpaint" && refs.MinVideoDuration < 4 {
+	if !hasServerVideoCapability(input.Config) && isNativeDreaminaSeedance(input.Config.InterfaceType, input.Config.Model) && isSeedance25Model(input.Config.Model) && operation == "inpaint" && refs.MinVideoDuration < 4 {
 		refs.MinVideoDuration = 4
 	}
 
@@ -445,10 +446,6 @@ func IsSeedance2Family(protocol, modelName string) bool {
 
 func IsSeedance25Model(modelName string) bool {
 	return isSeedance25Model(modelName)
-}
-
-func OverlayOfficialSeedance2References(base VideoReferenceConfig, is25 bool) VideoReferenceConfig {
-	return overlayOfficialSeedance2References(base, is25)
 }
 
 func ApplySeedanceDocumentedVideoPixelFloor(config TaskConfig, refs *VideoReferenceConfig) {

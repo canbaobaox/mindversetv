@@ -92,8 +92,7 @@ beforeAll(async () => {
         import { createRoot } from "react-dom/client";
         import { MemoryRouter } from "react-router";
 
-        import { WorkspaceTopBar } from "@/components/layout/workspace-top-bar";
-        import { WorkspaceTopBarExtensionProvider } from "@/components/layout/workspace-top-bar-extension";
+        import { WorkspaceTopBarExtensionProvider, WorkspaceTopBarExtensionSlot } from "@/components/layout/workspace-top-bar-extension";
         import CreatePage, { CreatePageView } from "@/pages/create/index";
         import { useCreateConversations } from "@/pages/create/use-create-conversations";
         import { useCreatePageController } from "@/pages/create/use-create-page-controller";
@@ -131,54 +130,6 @@ beforeAll(async () => {
             });
         }
 
-        function ConflictHarness() {
-            const base = useCreatePageController();
-            const [parked, setParked] = useState(false);
-            const [actions] = useState(() => ({ useSaved: [] as string[], overwrite: [] as string[], restoreParked: [] as string[] }));
-            (window as unknown as { __conflictActions: typeof actions }).__conflictActions = actions;
-
-            const conflictConversation = {
-                id: "conv-conflict-harness",
-                title: "冲突草稿",
-                updatedAt: "2026-08-14T01:00:00.000Z",
-                messages: [{ id: "u-conflict", role: "user" as const, content: "本地提问", createdAt: "2026-08-14T01:00:00.000Z" }],
-                ...(parked
-                    ? {}
-                    : {
-                          conflictRemote: {
-                              revision: 2,
-                              document: {
-                                  id: "conv-conflict-harness",
-                                  title: "已存版本",
-                                  updatedAt: "2026-08-14T00:00:00.000Z",
-                                  messages: [{ id: "u-saved", role: "user" as const, content: "已存提问", createdAt: "2026-08-14T00:00:00.000Z" }],
-                              },
-                          },
-                      }),
-            };
-
-            const controller = {
-                ...base,
-                hydrated: true,
-                activeConversation: conflictConversation,
-                isEmpty: false,
-                parkedDraftId: parked ? conflictConversation.id : "",
-                useSavedConflictVersion: async (conversation: { id: string }) => {
-                    actions.useSaved.push(conversation.id);
-                    setParked(true);
-                },
-                overwriteSavedWithDraft: async (conversation: { id: string }) => {
-                    actions.overwrite.push(conversation.id);
-                    base.setConflictOpen(false);
-                },
-                restoreParkedDraft: async (conversationId: string) => {
-                    actions.restoreParked.push(conversationId);
-                    setParked(false);
-                },
-            };
-            return <CreatePageView controller={controller} />;
-        }
-
         function RecoveryInner() {
             const { toast, modal } = App.useApp();
             const followLatestMessageRef = useRef(true);
@@ -190,7 +141,6 @@ beforeAll(async () => {
 
             const state = useCreateConversations({
                 demoConversation: false,
-                localMode: true,
                 navigate: (() => undefined) as never,
                 toast,
                 modal,
@@ -257,9 +207,9 @@ beforeAll(async () => {
                     <App>
                         <WorkspaceTopBarExtensionProvider>
                             <div data-testid="topbar-host">
-                                <WorkspaceTopBar sidebarOpen onToggleSidebar={() => undefined} />
+                                <WorkspaceTopBarExtensionSlot />
                             </div>
-                            {scenario === "conflict" ? <ConflictHarness /> : scenario === "recovery" ? <RecoveryHarness /> : <CreatePage />}
+                            {scenario === "recovery" ? <RecoveryHarness /> : <CreatePage />}
                         </WorkspaceTopBarExtensionProvider>
                     </App>
                 </MemoryRouter>
@@ -341,12 +291,6 @@ beforeAll(async () => {
             if (path === "/api/skills/added") return Response.json({ code: 0, data: { skills: [] }, msg: "ok" });
             if (path === "/api/creation-conversations" && request.method === "GET") {
                 return Response.json({ code: 0, data: { conversations: Array.from(records.values()), deletedIds: [] }, msg: "ok" });
-            }
-            if (path === "/api/creation-conversations/import" && request.method === "POST") {
-                const body = (await request.json()) as { document: { id: string } };
-                const rec = { id: body.document.id, revision: 1, updatedAt: new Date().toISOString(), document: body.document };
-                records.set(rec.id, rec);
-                return Response.json({ code: 0, data: { imported: true, id: rec.id, conversation: rec }, msg: "ok" });
             }
             if (path.startsWith("/api/creation-conversations/")) {
                 const id = decodeURIComponent(path.slice("/api/creation-conversations/".length));
@@ -436,30 +380,6 @@ test("homepage defaults to defaultCreationMode, submit click never leaks event t
         await portaledToolbar.waitFor({ timeout: 5000 });
         expect(await portaledToolbar.count()).toBe(1);
         expect(await portaledToolbar.textContent()).toContain("画布中继续");
-    } finally {
-        await page.close();
-    }
-});
-
-test("CreatePageView conflict banner and dialog buttons invoke saved, overwrite, and restore actions", async () => {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    try {
-        await page.goto(`${server.url}?scenario=conflict`);
-        await page.getByRole("button", { name: "查看两边" }).waitFor({ timeout: 5000 });
-        await page.getByRole("button", { name: "查看两边" }).click();
-        await page.getByRole("button", { name: "用这份草稿替换已保存的版本" }).waitFor({ timeout: 5000 });
-        await page.getByRole("button", { name: "用这份草稿替换已保存的版本" }).click();
-
-        await page.getByRole("button", { name: "用已保存的版本" }).first().click();
-        await page.getByRole("button", { name: "恢复刚才的草稿" }).waitFor({ timeout: 5000 });
-        await page.getByRole("button", { name: "恢复刚才的草稿" }).click();
-
-        const actions = await page.evaluate(() => (window as unknown as { __conflictActions: { useSaved: string[]; overwrite: string[]; restoreParked: string[] } }).__conflictActions);
-        expect(actions).toEqual({
-            overwrite: ["conv-conflict-harness"],
-            useSaved: ["conv-conflict-harness"],
-            restoreParked: ["conv-conflict-harness"],
-        });
     } finally {
         await page.close();
     }

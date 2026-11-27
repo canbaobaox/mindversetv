@@ -1,5 +1,4 @@
-import { Tooltip } from "antd";
-import { ArrowLeft, Globe, MessagesSquare, Star } from "lucide-react";
+import { Tooltip } from "antd";import { ArrowLeft, Globe, MessagesSquare, Star } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import Github from "@lobehub/icons/es/Github";
@@ -94,7 +93,6 @@ export function WorkspaceSidebarSocialLinks({ collapsed, onExpand }: { collapsed
                         <Github aria-hidden="true" />
                     </a>
                 </Tooltip>
-
             </motion.div>
         </div>
     );

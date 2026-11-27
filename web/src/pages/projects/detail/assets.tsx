@@ -11,6 +11,7 @@ import { AssetLibraryCard, AssetLibraryCardMedia } from "@/components/assets/ass
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useResourceVideoPlayback } from "@/hooks/use-resource-video-playback";
 import { CanvasFolderPreview } from "@/components/canvas/canvas-folder-preview";
 import { CANVAS_FOLDER_THEME_OPTIONS, resolveCanvasFolderTheme } from "@/lib/canvas/canvas-folder-theme";
 import { resolveProjectCanvasStyle } from "@/lib/canvas/canvas-style-catalog";
@@ -40,7 +41,6 @@ import {
     type ProjectAsset,
     type ProjectAssetFolder,
 } from "@/services/api/projects";
-import { hasRemoteUserDataSyncSession, saveRemoteUserDataNow } from "@/services/local-workspace-sync";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { useAssetStore, type Asset, type AssetCategory, type AssetStatus, type EntityAsset, type ImageAsset } from "@/stores/use-asset-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -170,6 +170,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
             id: asset.id,
             title: asset.title,
             category: normalizeAssetCategory(asset.category, defaultAssetCategoryForKind(asset.kind)),
+            folderId: asset.folderId,
             kindLabel: mediaLabel(asset.kind),
             asset,
             description: asset.note,
@@ -182,6 +183,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
             id: asset.id,
             title: asset.title,
             category: normalizeAssetCategory(asset.category, defaultAssetCategoryForKind(asset.kind)),
+            folderId: asset.folderId,
             kindLabel: "图片",
             asset,
             searchText: (asset.tags || []).join(" "),
@@ -208,7 +210,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
             if (asset.kind !== "audio") return [];
             const resourceId = resourceIdFromStorageKey(asset.data.storageKey);
             if (!resourceId) return [];
-            return [{ id: asset.id, title: asset.title, category: "audio", kindLabel: `${characterVoiceFormatName(asset.data.mimeType)} 音频`, asset, description: asset.note || "素材库音频", searchText: (asset.tags || []).join(" ") }];
+            return [{ id: asset.id, title: asset.title, category: "audio", folderId: asset.folderId, kindLabel: `${characterVoiceFormatName(asset.data.mimeType)} 音频`, asset, description: asset.note || "素材库音频", searchText: (asset.tags || []).join(" ") }];
         });
         const projectItems = assets.flatMap((asset) => {
             if (asset.mediaType !== "audio") return [];
@@ -340,14 +342,12 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
     const bindImagesMutation = useMutation({
         mutationFn: async ({ selectedAssetId, selectedItem }: { selectedAssetId: string; selectedItem?: AssetLibraryPickerItem }) => {
             if (!imageAsset) throw new Error("未选择角色");
-            if (hasRemoteUserDataSyncSession()) await saveRemoteUserDataNow();
             const latest = useAssetStore.getState().assets;
             const pickerItem = selectedItem || imagePickerItems.find((item) => item.id === selectedAssetId);
             const selected = pickerItem?.asset || latest.find((asset) => asset.id === selectedAssetId) || (pickerItem?.external ? await externalAssetSources.importExternalAsset(pickerItem.external) : undefined);
             if (selected?.kind !== "image") throw new Error("请选择一张包含正面、侧面和背面的三视图设定图");
             const resourceId = resourceIdFromStorageKey((selected as ImageAsset).data.storageKey);
-            if (!resourceId) throw new Error(localMode ? "浏览器本地素材尚未写入桌面资源目录，请在 MindVerseTV APP 中完成绑定" : "所选图片尚未同步到后端资源库");
-            return replaceProjectCharacterRepresentations(detail.project.id, imageAsset.id, [{ role: "turnaround_sheet", resourceId, metadata: { sourceAssetId: selected.id } }, { role: "primary", resourceId, metadata: { source: "turnaround_sheet", sourceAssetId: selected.id } }]);
+            if (!resourceId) throw new Error(localMode ? "浏览器本地素材尚未写入桌面资源目录，请在 MindVerseTV APP 中完成绑定" : "所选图片尚未同步到后端资源库");            return replaceProjectCharacterRepresentations(detail.project.id, imageAsset.id, [{ role: "turnaround_sheet", resourceId, metadata: { sourceAssetId: selected.id } }, { role: "primary", resourceId, metadata: { source: "turnaround_sheet", sourceAssetId: selected.id } }]);
         },
         onSuccess: (result) => {
             syncPersonalCharacterProjection(result.asset);
@@ -562,8 +562,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                         if (!isSupportedCharacterVoiceFile(file)) throw new Error(`声音素材支持 ${CHARACTER_VOICE_FORMAT_LABEL}`);
                         const uploaded = await uploadMediaFile(file, "character-voice");
                         const resourceId = resourceIdFromStorageKey(uploaded.storageKey);
-                        if (!resourceId) throw new Error(localMode ? "浏览器本地声音已保存，但角色绑定需要 MindVerseTV APP 的本地资源目录" : "声音上传未同步到服务端资源库，请检查后端连接");
-                        ids.push(addAsset({ kind: "audio", title: characterVoiceTitleFromFileName(file.name), coverUrl: "", tags: ["角色声音"], status: "confirmed", source: "角色卡", data: { url: uploaded.url, storageKey: uploaded.storageKey, durationMs: uploaded.durationMs, bytes: uploaded.bytes, mimeType: uploaded.mimeType || file.type || "application/octet-stream" } }));
+                        if (!resourceId) throw new Error(localMode ? "浏览器本地声音已保存，但角色绑定需要 MindVerseTV APP 的本地资源目录" : "声音上传未同步到服务端资源库，请检查后端连接");                        ids.push(addAsset({ kind: "audio", title: characterVoiceTitleFromFileName(file.name), coverUrl: "", tags: ["角色声音"], status: "confirmed", source: "角色卡", data: { url: uploaded.url, storageKey: uploaded.storageKey, durationMs: uploaded.durationMs, bytes: uploaded.bytes, mimeType: uploaded.mimeType || file.type || "application/octet-stream" } }));
                     }
                     return ids;
                 } }}
@@ -573,8 +572,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                     const selectedItem = selectedItems[0];
                     const remoteResourceId = selectedItem?.asset?.kind === "audio" ? resourceIdFromStorageKey(selectedItem.asset.data.storageKey) : "";
                     const resourceId = (id ? audioResourceByItemId.get(id) : "") || remoteResourceId;
-                    if (!resourceId) throw new Error(localMode ? "浏览器本地声音已保存，但角色绑定需要 MindVerseTV APP 的本地资源目录" : "所选声音素材尚未同步到服务端资源库");
-                    const item = selectedItem || audioPickerItems.find((entry) => entry.id === id);
+                    if (!resourceId) throw new Error(localMode ? "浏览器本地声音已保存，但角色绑定需要 MindVerseTV APP 的本地资源目录" : "所选声音素材尚未同步到服务端资源库");                    const item = selectedItem || audioPickerItems.find((entry) => entry.id === id);
                     setVoiceSample({ resourceId, name: item?.title || "角色声音", url: resourceFileUrl(resourceId) });
                     setVoicePickerOpen(false);
                 }}
@@ -742,6 +740,13 @@ function ProjectAssetMedia({ asset, personalAsset }: { asset: ProjectAsset; pers
     return <div className="grid h-full place-items-center text-foreground/25"><MediaIcon kind={asset.mediaType} /></div>;
 }
 
+export function ProjectAssetVideoPlayer({ storageKey, url, className }: { storageKey?: string; url: string; className: string }) {
+    const playback = useResourceVideoPlayback(storageKey || "", url, Boolean(storageKey || url));
+    if (playback.error) return <div role="status" className="grid min-h-48 place-items-center gap-2 text-sm text-foreground/60"><span>{playback.error}</span><Button size="small" onClick={playback.retry}>重新加载</Button></div>;
+    if (!playback.url) return <div role="status" className="grid min-h-48 place-items-center text-sm text-foreground/45">正在准备视频预览…</div>;
+    return <video key={playback.url} src={playback.url} controls playsInline preload="metadata" className={className} {...playback.videoFallbackProps} />;
+}
+
 function ProjectAssetPreviewModal({ asset, personalAsset, onClose, onDownload, onReplaceImage }: { asset: ProjectAsset | null; personalAsset?: Asset; onClose: () => void; onDownload: () => void; onReplaceImage: () => void }) {
     const characterCover = asset?.character?.representations.find((item) => item.role === "turnaround_sheet") || asset?.character?.representations.find((item) => item.role === "primary") || asset?.character?.representations[0];
     const remoteUrl = asset ? projectAssetRemoteUrl(asset) : "";
@@ -752,7 +757,7 @@ function ProjectAssetPreviewModal({ asset, personalAsset, onClose, onDownload, o
         <Modal className="workspace-modal workspace-modal-wide library-modal project-asset-preview-modal" title={asset?.category === "character" ? "角色卡预览" : "资产预览"} open={Boolean(asset)} onCancel={onClose} footer={<div className="flex justify-end gap-2"><Button onClick={onClose}>关闭</Button>{asset?.category === "character" ? <Button onClick={onReplaceImage}>替换图片</Button> : null}{canDownload ? <Button type="primary" icon={<Download className="size-3.5" />} onClick={onDownload}>下载</Button> : null}</div>}>
             {asset ? <div className="project-asset-preview-layout">
                 <div className={`project-asset-preview-stage ${previewClass}`}>
-                    {asset.category === "character" ? characterCover ? <CachedResourceImage storageKey={`resource:${characterCover.resourceId}`} src={resourceFileUrl(characterCover.resourceId)} alt={asset.title} className="project-asset-preview-media" fallback={<div className="grid min-h-48 place-items-center text-foreground/35"><UserRound className="size-12" /></div>} /> : <div className="grid min-h-48 place-items-center text-foreground/35"><UserRound className="size-12" /></div> : personalAsset?.kind === "video" ? <video src={personalAsset.data.url} controls className="project-asset-preview-media" /> : personalAsset?.kind === "audio" ? <audio src={personalAsset.data.url} controls className="project-asset-preview-audio" /> : personalAsset?.kind === "image" ? <AssetMediaPreview asset={personalAsset} alt={asset.title} className="project-asset-preview-media" /> : personalAsset?.kind === "text" ? <p className="project-asset-preview-text">{personalAsset.data.content}</p> : asset.mediaType === "video" && remoteUrl ? <video src={remoteUrl} controls className="project-asset-preview-media" /> : asset.mediaType === "audio" && remoteUrl ? <audio src={remoteUrl} controls className="project-asset-preview-audio" /> : asset.mediaType === "image" && remoteUrl ? <img src={remoteUrl} alt={asset.title} className="project-asset-preview-media" /> : asset.mediaType === "text" && asset.previewText ? <p className="project-asset-preview-text">{asset.previewText}</p> : <div className="grid min-h-48 place-items-center text-foreground/35"><MediaIcon kind={asset.mediaType} /></div>}
+                    {asset.category === "character" ? characterCover ? <CachedResourceImage storageKey={`resource:${characterCover.resourceId}`} src={resourceFileUrl(characterCover.resourceId)} alt={asset.title} className="project-asset-preview-media" fallback={<div className="grid min-h-48 place-items-center text-foreground/35"><UserRound className="size-12" /></div>} /> : <div className="grid min-h-48 place-items-center text-foreground/35"><UserRound className="size-12" /></div> : personalAsset?.kind === "video" ? <ProjectAssetVideoPlayer storageKey={personalAsset.data.storageKey} url={personalAsset.data.url} className="project-asset-preview-media" /> : personalAsset?.kind === "audio" ? <audio src={personalAsset.data.url} controls className="project-asset-preview-audio" /> : personalAsset?.kind === "image" ? <AssetMediaPreview asset={personalAsset} alt={asset.title} className="project-asset-preview-media" /> : personalAsset?.kind === "text" ? <p className="project-asset-preview-text">{personalAsset.data.content}</p> : asset.mediaType === "video" && remoteUrl ? <ProjectAssetVideoPlayer url={remoteUrl} className="project-asset-preview-media" /> : asset.mediaType === "audio" && remoteUrl ? <audio src={remoteUrl} controls className="project-asset-preview-audio" /> : asset.mediaType === "image" && remoteUrl ? <img src={remoteUrl} alt={asset.title} className="project-asset-preview-media" /> : asset.mediaType === "text" && asset.previewText ? <p className="project-asset-preview-text">{asset.previewText}</p> : <div className="grid min-h-48 place-items-center text-foreground/35"><MediaIcon kind={asset.mediaType} /></div>}
                 </div>
                 <aside className="project-asset-preview-details">
                     <div className="project-asset-preview-eyebrow">{asset.category === "character" ? "角色卡" : mediaLabel(asset.mediaType)}</div>

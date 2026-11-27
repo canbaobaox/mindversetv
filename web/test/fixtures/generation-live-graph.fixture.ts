@@ -9,7 +9,7 @@ const confirmations: { onOk: () => void }[] = [];
 const dispatched: any[] = [];
 const react = await import("react");
 const clientDiagnostics = await import("@/services/diagnostics/client-diagnostics");
-mock.module("@/lib/canvas/canvas-generation-config", () => ({ resolvedCanvasGenerationRequirements: (config: any, node: any, capability: string, input: any) => ({ capability, input, videoSeconds: config.videoSeconds, videoOperation: node?.metadata?.videoEditOperation }) }));
+mock.module("@/lib/canvas/canvas-generation-config", () => ({ canvasVideoOperationPreference: () => undefined, supportsCanvasVideoReferenceModes: () => false, resolvedCanvasGenerationRequirements: (config: any, node: any, capability: string, input: any) => ({ capability, input, videoSeconds: config.videoSeconds, videoOperation: node?.metadata?.videoEditOperation }) }));
 mock.module("react", () => ({ ...react, default: react.default, useCallback: (fn: any) => fn, useRef: (value: any) => ({ current: value }) }));
 mock.module("antd", () => ({ App: { useApp: () => ({ modal: { confirm: (input: any) => { confirmations.push(input); return { destroy() {} }; } }, message: { loading: () => {}, destroy: () => {}, error: (x: string) => { throw Error(x); }, info: () => {}, warning: () => {} } }) } }));
 // Only suppress event recording; task/operation dependencies retain real trace helpers.
@@ -23,7 +23,7 @@ mock.module("@/pages/canvas/canvas-assistant-proposal-execution", () => ({ build
 const submission = await import("@/lib/canvas/canvas-generation-submission");
 mock.module("@/lib/canvas/canvas-generation-submission", () => ({ ...submission, canvasGenerationRequestFingerprint: () => "repeat" }));
 mock.module("@/lib/canvas/canvas-project-generation", () => ({ MISSING_GENERATION_TASK_IDENTITY_DETAILS: "missing task identity", isGenerationCanceled: () => false, buildVideoGenerationMetadata: () => ({ videoEditOperation: "text_to_video" }) }));
-mock.module("@/lib/model-selection", () => ({ modelCompatibilityError: () => "", modelGroupReferenceLimits: () => undefined, modelRequestOptions: () => ({}) }));
+mock.module("@/lib/model-selection", () => ({ audioSubmissionCompatibilityError: () => "", modelCompatibilityError: () => "", modelGroupReferenceLimits: () => undefined, modelRequestOptions: () => ({}) }));
 mock.module("@/services/skill-runtime", () => ({ skillRuntime: { prepare: async ({ prompt }: any) => ({ prompt, metadata: {} }) } }));
 mock.module("@/lib/canvas/canvas-style-execution", () => ({ resolveCanvasStyleExecution: () => undefined }));
 mock.module("@/pages/canvas/canvas-generation-failure", () => ({ canvasImagePendingResultMessage: () => "", canvasGenerationFailureMetadata: () => ({}) }));

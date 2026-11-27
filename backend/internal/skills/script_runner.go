@@ -69,8 +69,32 @@ type ValidatedScriptRun struct {
 }
 
 type ScriptOutputFile struct {
-	Path string `json:"path"`
-	Size int64  `json:"size"`
+	Path       string `json:"path"`
+	Size       int64  `json:"size"`
+	ResourceID string `json:"resourceId,omitempty"`
+	MimeType   string `json:"mimeType,omitempty"`
+}
+
+func (s *Service) DataDir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dataDir
+}
+
+func OutputDirForRun(dataDir, canvasID, proposalID string) string {
+	if strings.TrimSpace(dataDir) == "" {
+		return ""
+	}
+	runKey := sanitizePathSegment(proposalID)
+	if runKey == "" {
+		return ""
+	}
+	canvasKey := sanitizePathSegment(canvasID)
+	if canvasKey == "" {
+		canvasKey = "workspace"
+	}
+	return filepath.Join(dataDir, "workspace-outputs", canvasKey, runKey)
 }
 
 type ScriptRunResult struct {
@@ -123,10 +147,6 @@ func BundledNodePath() string {
 		return ""
 	}
 	return assistantruntime.BundledConfig(exe, runtime.GOOS).HostCommand
-}
-
-func ResolveScriptInterpreter(kind, bundledNodePath, goos string) (string, []string, error) {
-	return resolveScriptInterpreterWithLookPath(kind, bundledNodePath, goos, exec.LookPath)
 }
 
 func resolveScriptInterpreterWithLookPath(kind, bundledNodePath, goos string, lookPath func(string) (string, error)) (string, []string, error) {

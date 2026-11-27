@@ -3,6 +3,7 @@ package assistantruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -39,6 +40,10 @@ func runProcessFixture(mode string) int {
 	case "sleep":
 		waitForStopSignal()
 		return 0
+	case "ignore-sigterm-sleep":
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(30 * time.Second)
+		return 0
 	case "exit0":
 		return 0
 	case "crash":
@@ -63,6 +68,10 @@ func runHTTPFixture() int {
 	if dataDir := os.Getenv("BEEFTV_AGENT_DATA_DIR"); dataDir != "" {
 		_ = os.WriteFile(filepath.Join(dataDir, "child-env.txt"), []byte(strings.Join(os.Environ(), "\n")), 0o600)
 		_ = os.WriteFile(filepath.Join(dataDir, "child-pid.txt"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+		if f, err := os.OpenFile(filepath.Join(dataDir, "child-launches.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+		}
 	}
 	go func() {
 		buf := make([]byte, 1)
@@ -81,7 +90,7 @@ func runHTTPFixture() int {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		busy := os.Getenv("BEEFTV_AGENT_BUSY") == "1"
+		busy := os.Getenv("BEEFTV_AGENT_BUSY") == "1" || os.Getenv("BEEFTV_ASSISTANT_RUNTIME_BUSY") == "1"
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true, "busy": busy, "model": os.Getenv("BEEFTV_AGENT_MODEL"),
 			"instance": InstanceProof(nonce),
@@ -596,5 +605,547 @@ func TestOwnedHealthJSONOmitsNonce(t *testing.T) {
 	}
 	if health.Instance == nonce {
 		t.Fatal("公开 instance 字段必须是证明而不是 nonce")
+	}
+}
+
+func TestStopCancelsInFlightAndQueuedStartContext(t *testing.T) {
+	host := fixtureHost(t, "sleep")
+	host.opts.ReadyTimeout = 10 * time.Second
+	host.opts.ResolveProvider = func() (assistant.Provider, string) { return fixtureProvider(), "" }
+
+	// 1. In-flight StartContext must be aborted promptly by Host.Stop().
+	startErrCh := make(chan error, 1)
+	go func() {
+		startErrCh <- host.StartContext(context.Background(), "http://127.0.0.1:18090/api", "")
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if host.State().Starting {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !host.State().Starting {
+		t.Fatal("expected Host.State().Starting while slow child boots")
+	}
+	stopBegin := time.Now()
+	if err := host.Stop(); err != nil {
+		t.Fatalf("Host.Stop failed: %v", err)
+	}
+	if elapsed := time.Since(stopBegin); elapsed > 2*time.Second {
+		t.Fatalf("Host.Stop took %v waiting on in-flight StartContext", elapsed)
+	}
+	select {
+	case err := <-startErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("in-flight StartContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight StartContext did not return after Host.Stop")
+	}
+	if host.Running() {
+		t.Fatal("host must not be running after Stop")
+	}
+
+	// 2. A queued StartContext waiting on lifecycle lock must not relaunch after Stop.
+	genCaptured := make(chan struct{}, 1)
+	host.startControlMu.Lock()
+	host.onStartGenCaptured = func() {
+		select {
+		case genCaptured <- struct{}{}:
+		default:
+		}
+	}
+	host.startControlMu.Unlock()
+	t.Cleanup(func() {
+		host.startControlMu.Lock()
+		host.onStartGenCaptured = nil
+		host.startControlMu.Unlock()
+	})
+
+	if err := host.lockLifecycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	queuedErrCh := make(chan error, 1)
+	go func() {
+		queuedErrCh <- host.StartContext(context.Background(), "http://127.0.0.1:18090/api", "")
+	}()
+	select {
+	case <-genCaptured:
+	case <-time.After(2 * time.Second):
+		host.unlockLifecycle()
+		t.Fatal("queued StartContext did not capture generation before unlock")
+	}
+	host.cancelInFlightStart()
+	host.unlockLifecycle()
+
+	select {
+	case err := <-queuedErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued StartContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued StartContext did not abort after generation bump")
+	}
+	if host.Running() {
+		t.Fatal("queued StartContext must not launch child after Stop")
+	}
+
+	// 3. StopContext must also cancel an in-flight Ensure promptly without waiting 10s.
+	ensureErrCh := make(chan error, 1)
+	go func() {
+		_, err := host.Ensure(fixtureProvider(), "http://127.0.0.1:18090/api", "", true)
+		ensureErrCh <- err
+	}()
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if host.State().Starting {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !host.State().Starting {
+		t.Fatal("expected Host.State().Starting while Ensure boots slow child")
+	}
+	stopCtxBegin := time.Now()
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelClose()
+	if err := host.StopContext(closeCtx); err != nil {
+		t.Fatalf("Host.StopContext failed: %v", err)
+	}
+	if elapsed := time.Since(stopCtxBegin); elapsed > 2*time.Second {
+		t.Fatalf("Host.StopContext took %v waiting on in-flight Ensure", elapsed)
+	}
+	select {
+	case err := <-ensureErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("in-flight Ensure error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight Ensure did not return after StopContext")
+	}
+	if host.Running() {
+		t.Fatal("host must not be running after StopContext")
+	}
+}
+
+func TestStopContextRespectsDeadlineOnSIGTERMResistantChildAndNonBlockingEnsure(t *testing.T) {
+	dataDir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: exe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "agent_config.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := New(Options{
+		DataDir:      dataDir,
+		ReadyTimeout: 10 * time.Second,
+		ResolveProvider: func() (assistant.Provider, string) {
+			return fixtureProvider(), ""
+		},
+		Environ: func() []string {
+			return append(os.Environ(), fixtureEnv+"=ignore-sigterm-sleep")
+		},
+	})
+
+	startErrCh := make(chan error, 1)
+	go func() {
+		startErrCh <- host.StartContext(context.Background(), "http://127.0.0.1:18090/api", "")
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if host.State().Starting {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !host.State().Starting {
+		t.Fatal("expected Host.State().Starting while SIGTERM-resistant child boots")
+	}
+
+	// Ensure while startup is already in flight must return (true, nil)
+	// immediately rather than blocking behind the 10s readiness wait.
+	ensureBegin := time.Now()
+	launched, ensureErr := host.Ensure(fixtureProvider(), "http://127.0.0.1:18090/api", "", true)
+	if ensureErr != nil || !launched {
+		t.Fatalf("Ensure during in-flight start = (%v, %v), want (true, nil)", launched, ensureErr)
+	}
+	if elapsed := time.Since(ensureBegin); elapsed > 500*time.Millisecond {
+		t.Fatalf("Ensure blocked for %v while startup already in flight", elapsed)
+	}
+
+	// StopContext with a short deadline must escalate to SIGKILL quickly rather
+	// than stalling 5-8s on a child that ignores SIGTERM.
+	stopBegin := time.Now()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = host.StopContext(stopCtx)
+	if elapsed := time.Since(stopBegin); elapsed > 2*time.Second {
+		t.Fatalf("StopContext on SIGTERM-resistant child took %v, want <= 2s", elapsed)
+	}
+	select {
+	case err := <-startErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("in-flight StartContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight StartContext did not return after StopContext")
+	}
+	if host.Running() {
+		t.Fatal("SIGTERM-resistant child still running after StopContext")
+	}
+}
+
+func TestEnsureAsyncReturnsImmediatelyAndRespectsFailureCooldown(t *testing.T) {
+	dir := t.TempDir()
+	cfg := HostConfig{HostCommand: filepath.Join(dir, "definitely-missing-agent-host-binary")}
+	raw, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := New(Options{
+		DataDir:      dir,
+		ReadyTimeout: 1 * time.Second,
+		HostToken:    func() string { return "tok" },
+		ResolveProvider: func() (assistant.Provider, string) {
+			return fixtureProvider(), ""
+		},
+	})
+	t.Cleanup(func() { _ = host.Stop() })
+
+	launched, err := host.EnsureAsync(fixtureProvider(), "http://127.0.0.1:18090/api", "")
+	if err != nil || !launched {
+		t.Fatalf("first EnsureAsync = (%v, %v), want (true, nil)", launched, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && host.State().Starting {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if host.State().LastError == nil {
+		t.Fatal("expected missing binary async launch to record LastError")
+	}
+	// Second EnsureAsync with the same provider fingerprint during cooldown must
+	// immediately return the recorded error instead of looping host_starting forever.
+	launched2, err2 := host.EnsureAsync(fixtureProvider(), "http://127.0.0.1:18090/api", "")
+	if err2 == nil || launched2 {
+		t.Fatalf("second EnsureAsync during failure cooldown = (%v, %v), want (false, err)", launched2, err2)
+	}
+}
+
+func TestStopDoesNotRespawnConcurrentAsyncLaunch(t *testing.T) {
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: exe})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := New(Options{
+		DataDir:      dir,
+		ReadyTimeout: 5 * time.Second,
+		HostToken:    func() string { return "tok" },
+		ResolveProvider: func() (assistant.Provider, string) {
+			return fixtureProvider(), ""
+		},
+		Environ: func() []string {
+			return append(os.Environ(), fixtureEnv+"=http")
+		},
+	})
+	t.Cleanup(func() { _ = host.StopContext(context.Background()) })
+
+	// Hammer Stop() concurrently with EnsureAsync/RestartAsync; once Stop returns
+	// after callers settle, no stale launch may leave a running child behind.
+	var wg sync.WaitGroup
+	stopCh := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					if idx%2 == 0 {
+						_, _ = host.EnsureAsync(fixtureProvider(), "http://127.0.0.1:18090/api", "")
+					} else {
+						_ = host.RestartAsync(fixtureProvider(), "http://127.0.0.1:18090/api", "")
+					}
+					time.Sleep(2 * time.Millisecond)
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < 5; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if err := host.Stop(); err != nil {
+			t.Fatalf("Stop #%d failed: %v", i, err)
+		}
+	}
+	close(stopCh)
+	wg.Wait()
+	if err := host.Stop(); err != nil {
+		t.Fatalf("final Stop failed: %v", err)
+	}
+	if host.Running() || host.PID() != 0 {
+		t.Fatalf("host still running after Stop: running=%v pid=%d", host.Running(), host.PID())
+	}
+}
+
+func TestRestartAsyncSkipsStopWhenHostBecomesBusy(t *testing.T) {
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: exe})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := New(Options{
+		DataDir:      dir,
+		ReadyTimeout: 5 * time.Second,
+		HostToken:    func() string { return "tok" },
+		ResolveProvider: func() (assistant.Provider, string) {
+			return fixtureProvider(), ""
+		},
+		Environ: func() []string {
+			return append(os.Environ(), fixtureEnv+"=http", "BEEFTV_ASSISTANT_RUNTIME_BUSY=1")
+		},
+	})
+	t.Cleanup(func() { _ = host.StopContext(context.Background()) })
+
+	if err := host.Launch(fixtureProvider(), "http://127.0.0.1:18090/api", ""); err != nil {
+		t.Fatalf("Launch failed: %v", err)
+	}
+	pidBefore := host.PID()
+	if pidBefore == 0 {
+		t.Fatal("expected running fixture child PID")
+	}
+	nextProvider := fixtureProvider()
+	nextProvider.Model = "fixture-model-next"
+	if err := host.RestartAsync(nextProvider, "http://127.0.0.1:18090/api", ""); err != nil {
+		t.Fatalf("RestartAsync failed: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && host.State().Starting {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !host.Running() || host.PID() != pidBefore {
+		t.Fatalf("RestartAsync stopped a busy host: running=%v pid=%d want %d", host.Running(), host.PID(), pidBefore)
+	}
+}
+
+func TestEnsureAsyncReturnsTrueWhenAnotherAsyncLaunchIsAlreadyRegistered(t *testing.T) {
+	dir := t.TempDir()
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: "/bin/echo"})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := New(Options{
+		DataDir: dir,
+		ResolveProvider: func() (assistant.Provider, string) {
+			return fixtureProvider(), ""
+		},
+	})
+	// Simulate another async launch occupying asyncDone at tryBeginAsyncLaunch
+	// (even if State().Starting were read right after it completes).
+	_, done, outcome := host.tryBeginAsyncLaunch(false)
+	if outcome != asyncLaunchAdmitted {
+		t.Fatalf("first tryBeginAsyncLaunch outcome = %v, want admitted", outcome)
+	}
+	defer host.finishAsyncLaunch(done)
+	if _, _, outcome2 := host.tryBeginAsyncLaunch(false); outcome2 != asyncLaunchAlreadyActive {
+		t.Fatalf("second tryBeginAsyncLaunch outcome = %v, want alreadyActive", outcome2)
+	}
+	launched, err := host.EnsureAsync(fixtureProvider(), "http://127.0.0.1:18090/api", "")
+	if err != nil || !launched {
+		t.Fatalf("EnsureAsync while another async launch active = (%v, %v), want (true, nil)", launched, err)
+	}
+}
+
+func TestEnsureAsyncFastReturnsStartingBeforeFailureCooldown(t *testing.T) {
+	dir := t.TempDir()
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: "/bin/echo"})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := fixtureProvider()
+	host := New(Options{
+		DataDir: dir,
+		ResolveProvider: func() (assistant.Provider, string) {
+			return provider, ""
+		},
+	})
+	host.proc.mu.Lock()
+	host.proc.starting = true
+	host.proc.lastErr = errors.New("stale start failure")
+	host.proc.failedFingerprint = provider.Fingerprint()
+	host.proc.failedAt = time.Now()
+	host.proc.mu.Unlock()
+
+	launched, err := host.EnsureAsync(provider, "http://127.0.0.1:18090/api", "")
+	if err != nil || !launched {
+		t.Fatalf("EnsureAsync while Starting during cooldown = (%v, %v), want (true, nil)", launched, err)
+	}
+}
+
+func TestUnexpectedHostExitRecordsLastErrorWithoutCooldown(t *testing.T) {
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: exe})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := fixtureProvider()
+	host := New(Options{
+		DataDir:      dir,
+		ReadyTimeout: 5 * time.Second,
+		HostToken:    func() string { return "tok" },
+		ResolveProvider: func() (assistant.Provider, string) {
+			return provider, ""
+		},
+		Environ: func() []string {
+			return append(os.Environ(), fixtureEnv+"=http")
+		},
+	})
+	t.Cleanup(func() { _ = host.Stop() })
+
+	if err := host.Launch(provider, "http://127.0.0.1:18090/api", ""); err != nil {
+		t.Fatalf("Launch failed: %v", err)
+	}
+	pid := host.PID()
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && host.Running() {
+		time.Sleep(15 * time.Millisecond)
+	}
+	state := host.State()
+	if state.Running {
+		t.Fatal("host still reported running after kill")
+	}
+	if state.LastError == nil {
+		t.Fatal("expected unexpected crash to record State.LastError")
+	}
+	if !state.FailedAt.IsZero() {
+		t.Fatalf("unexpected post-ready crash should not enter startup cooldown: FailedAt=%v", state.FailedAt)
+	}
+	launched, err := host.EnsureAsync(provider, "http://127.0.0.1:18090/api", "")
+	if err != nil || !launched {
+		t.Fatalf("EnsureAsync after unexpected crash = (%v, %v), want (true, nil)", launched, err)
+	}
+}
+
+func TestIntentionalStopAndRestartLeavesLastErrorClear(t *testing.T) {
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: exe})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := fixtureProvider()
+	host := New(Options{
+		DataDir:      dir,
+		ReadyTimeout: 5 * time.Second,
+		HostToken:    func() string { return "tok" },
+		ResolveProvider: func() (assistant.Provider, string) {
+			return provider, ""
+		},
+		Environ: func() []string {
+			return append(os.Environ(), fixtureEnv+"=http")
+		},
+	})
+	t.Cleanup(func() { _ = host.Stop() })
+
+	for i := 0; i < 2; i++ {
+		if err := host.Launch(provider, "http://127.0.0.1:18090/api", ""); err != nil {
+			t.Fatalf("Launch #%d failed: %v", i+1, err)
+		}
+		if err := host.Stop(); err != nil {
+			t.Fatalf("Stop #%d failed: %v", i+1, err)
+		}
+		state := host.State()
+		if state.Running || state.LastError != nil {
+			t.Fatalf("intentional Stop #%d left unexpected state: running=%v lastErr=%v", i+1, state.Running, state.LastError)
+		}
+	}
+}
+
+func TestStopClearsPriorCrashErrorAndLateExitOfStoppedChildDoesNotCorruptNewActive(t *testing.T) {
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(HostConfig{Model: "fixture-model", HostCommand: exe})
+	if err := os.WriteFile(filepath.Join(dir, hostConfigFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := fixtureProvider()
+	host := New(Options{
+		DataDir:      dir,
+		ReadyTimeout: 5 * time.Second,
+		HostToken:    func() string { return "tok" },
+		ResolveProvider: func() (assistant.Provider, string) {
+			return provider, ""
+		},
+		Environ: func() []string {
+			return append(os.Environ(), fixtureEnv+"=http")
+		},
+	})
+	t.Cleanup(func() { _ = host.Stop() })
+
+	// 1) Even if a process crashes right before Host.Stop() runs, Stop clears LastError.
+	if err := host.Launch(provider, "http://127.0.0.1:18090/api", ""); err != nil {
+		t.Fatalf("Launch #1 failed: %v", err)
+	}
+	if proc, err := os.FindProcess(host.PID()); err == nil {
+		_ = proc.Kill()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && host.Running() {
+		time.Sleep(15 * time.Millisecond)
+	}
+	if host.State().LastError == nil {
+		t.Fatal("expected crash before Stop to record LastError")
+	}
+	if err := host.Stop(); err != nil {
+		t.Fatalf("Stop after crash failed: %v", err)
+	}
+	if got := host.State().LastError; got != nil {
+		t.Fatalf("Host.Stop did not clear prior crash LastError: %v", got)
+	}
+
+	// 2) Launch a fresh process; invoke the real finishChildExit bookkeeping for a stale
+	//    child (both stopping and non-stopping) and confirm the active child remains healthy
+	//    and State.LastError stays nil (fails if s.active == owned guard is removed).
+	if err := host.Launch(provider, "http://127.0.0.1:18090/api", ""); err != nil {
+		t.Fatalf("Launch #2 failed: %v", err)
+	}
+	newPID := host.PID()
+	stale := &childProcess{done: make(chan struct{}), ready: true}
+	host.proc.finishChildExit(stale, errors.New("late exit after timeout"))
+	close(stale.done)
+	if !host.Running() || host.PID() != newPID || host.State().LastError != nil {
+		t.Fatalf("stale child finishChildExit corrupted active state: running=%v pid=%d want=%d lastErr=%v", host.Running(), host.PID(), newPID, host.State().LastError)
 	}
 }

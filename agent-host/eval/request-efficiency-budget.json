@@ -1,55 +1,87 @@
 {
   "minAdjacentPrefixCoverageRatio": 0.95,
-  "maxHeaderChars": 2968,
-  "maxToolsChars": 19585,
-  "maxHeaderPlusToolsChars": 22553,
+  "maxHeaderChars": 3139,
+  "maxToolsChars": 25148,
+  "maxHeaderPlusToolsChars": 28287,
   "toolChars": {
     "asset_get": 176,
+    "asset_list": 377,
     "canvas_edge_create": 283,
     "canvas_edge_delete": 235,
-    "canvas_generation_propose": 557,
-    "canvas_generation_submit": 475,
+    "canvas_generation_propose": 599,
+    "canvas_generation_regenerate": 474,
+    "canvas_generation_submit": 470,
     "canvas_get": 653,
     "canvas_node_bind_asset": 357,
     "canvas_node_configure": 1700,
     "canvas_node_delete": 238,
     "canvas_node_move": 353,
     "canvas_node_update": 423,
+    "canvas_nodes_configure": 1845,
     "canvas_nodes_create": 382,
+    "canvas_nodes_get": 281,
     "canvas_project_export": 221,
-    "canvas_script_prepare": 1422,
+    "canvas_script_prepare": 1383,
     "canvas_script_row_remove": 312,
     "canvas_script_row_update": 699,
     "canvas_script_rows_append": 528,
+    "canvas_search": 309,
     "canvas_task_bind": 252,
     "canvas_timeline_render": 412,
     "canvas_timeline_update": 477,
+    "file_export": 433,
+    "file_read": 555,
+    "generation_estimate": 690,
     "media_check": 486,
     "media_inspect": 706,
-    "media_overview": 764,
+    "media_overview": 714,
     "media_review": 491,
     "model_catalog": 304,
     "project_canvas_search": 292,
     "project_media_search": 291,
     "skill_catalog": 340,
-    "skill_draft": 295,
     "skill_file": 378,
-    "skill_market_file": 315,
-    "skill_market_get": 226,
-    "skill_market_search": 210,
-    "skill_publish_prepare": 668,
-    "skill_publish_status": 211,
     "skill_script_run": 677,
+    "task_cancel": 258,
     "task_get": 171,
     "canvas_timeline_deliver": 1848,
     "plan_update": 487,
-    "skill_load": 229
+    "skill_load": 229,
+    "tool_search": 646,
+    "codemode": 1667
   },
   "raises": [
     {
       "reason": "#453 节点配置参数改为从能力目录生成，补上此前漏掉的音高、音量、数量、质量等字段（#457 调整）",
       "maxToolsChars": 19918,
       "maxHeaderPlusToolsChars": 22894
+    },
+    {
+      "reason": "开放 canvas_nodes_configure 与 canvas_nodes_get 给内置助手，取消单轮及批量人为上限",
+      "maxToolsChars": 21588,
+      "maxHeaderPlusToolsChars": 24532
+    },
+    {
+      "reason": "开放文档分页读取 file_read（含超长单行 byteOffset 续读）、原地重做 canvas_generation_regenerate、任务取消 task_cancel 及 propose regenerate 参数",
+      "maxHeaderChars": 2972,
+      "maxToolsChars": 22938,
+      "maxHeaderPlusToolsChars": 25910
+    },
+    {
+      "reason": "Phase 2.1 在当前画布模式开放 asset.list、canvas.search、generation.estimate 只读查询工具，对齐外部 MCP 能力",
+      "maxToolsChars": 24317,
+      "maxHeaderPlusToolsChars": 27289
+    },
+    {
+      "reason": "Phase 2.2: enable pi-durable tool_search + codemode and add file.export",
+      "maxHeaderChars": 3139,
+      "maxToolsChars": 25135,
+      "maxHeaderPlusToolsChars": 28274
+    },
+    {
+      "reason": "Phase 2.3: allow mixed kind in canvas.generation.propose/submit/regenerate for unified multi-model confirmation cards",
+      "maxToolsChars": 25148,
+      "maxHeaderPlusToolsChars": 28287
     }
   ]
 }

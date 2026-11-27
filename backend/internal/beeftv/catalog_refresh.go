@@ -3,6 +3,7 @@ package beeftv
 import (
 	"context"
 	"errors"
+	"net/http"
 )
 
 // RefreshCatalog fetches and persists prices through the saved connection. A
@@ -71,4 +72,27 @@ func (s *Service) RefreshCatalog(ctx context.Context) ([]CatalogModel, error) {
 		return nil, errStore
 	}
 	return models, nil
+}
+
+func (s *Service) verifyRemote() {
+	seq := s.currentBalanceSeq()
+	cred, err := s.Resolve()
+	if err != nil {
+		return
+	}
+	view, status, err := s.remoteConnection(cred.APIKey)
+	if s.lifecycle.Err() != nil {
+		return
+	}
+	if err != nil {
+		return
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		s.MarkRevoked()
+		return
+	}
+	if status >= 200 && status < 300 {
+		s.applyRemoteConnectionViewIfCurrent(seq, view)
+		_, _ = s.RefreshCatalog(s.lifecycle)
+	}
 }

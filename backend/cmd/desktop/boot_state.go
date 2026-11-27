@@ -15,16 +15,19 @@ import (
 )
 
 type DesktopStartupState struct {
-	State            string `json:"state"`
-	Phase            string `json:"phase,omitempty"`
-	Detail           string `json:"detail,omitempty"`
-	DataDir          string `json:"dataDir,omitempty"`
-	Reason           string `json:"reason,omitempty"`
-	Error            string `json:"error,omitempty"`
-	DiagnosticPath   string `json:"diagnosticPath,omitempty"`
-	BaseURL          string `json:"baseURL,omitempty"`
-	LaunchToken      string `json:"launchToken,omitempty"`
-	UIBootstrapToken string `json:"uiBootstrapToken,omitempty"`
+	State                   string `json:"state"`
+	Phase                   string `json:"phase,omitempty"`
+	Detail                  string `json:"detail,omitempty"`
+	DataDir                 string `json:"dataDir,omitempty"`
+	Reason                  string `json:"reason,omitempty"`
+	Error                   string `json:"error,omitempty"`
+	DiagnosticPath          string `json:"diagnosticPath,omitempty"`
+	UncleanPreviousShutdown bool   `json:"uncleanPreviousShutdown,omitempty"`
+	LastCrashDiagnosticPath string `json:"lastCrashDiagnosticPath,omitempty"`
+	SafeModeRequested       bool   `json:"safeModeRequested,omitempty"`
+	BaseURL                 string `json:"baseURL,omitempty"`
+	LaunchToken             string `json:"launchToken,omitempty"`
+	UIBootstrapToken        string `json:"uiBootstrapToken,omitempty"`
 }
 
 type desktopBootAttempt struct {
@@ -38,17 +41,28 @@ type desktopBootAttempt struct {
 }
 
 func (a *DesktopApp) StartupState() DesktopStartupState {
+	return a.startupStateSnapshot(true)
+}
+
+func (a *DesktopApp) startupStateSnapshot(consumeSafeMode bool) DesktopStartupState {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if rt := a.runtime(); rt != nil {
+		safeMode := rt.SafeModeRequested()
+		if consumeSafeMode {
+			safeMode = rt.ConsumeSafeMode()
+		}
 		return DesktopStartupState{
-			State:            "ready",
-			Phase:            "ready",
-			Detail:           "本地工作区已就绪",
-			DataDir:          a.dataDir,
-			BaseURL:          rt.BaseURL(),
-			LaunchToken:      rt.LaunchToken(),
-			UIBootstrapToken: rt.UIBootstrapToken(),
+			State:                   "ready",
+			Phase:                   "ready",
+			Detail:                  "本地工作区已就绪",
+			DataDir:                 a.dataDir,
+			UncleanPreviousShutdown: a.uncleanPreviousSession,
+			LastCrashDiagnosticPath: a.lastCrashDiagnosticPath,
+			SafeModeRequested:       safeMode,
+			BaseURL:                 rt.BaseURL(),
+			LaunchToken:             rt.LaunchToken(),
+			UIBootstrapToken:        rt.UIBootstrapToken(),
 		}
 	}
 	if a.boot.state.State != "" {
@@ -257,6 +271,7 @@ func (a *DesktopApp) startSingleflight(ctx context.Context) error {
 	}
 
 	clearStartupErrorFiles(dataDir, fallbackTemp)
+	a.checkAndArmCrashSentinel(dataDir, fallbackTemp, launchID, rt)
 	_ = diagnostics.AppendBootLogEntry(dataDir, diagnostics.BootLogEntry{
 		ID:         newDesktopBootID("boot"),
 		LaunchID:   launchID,

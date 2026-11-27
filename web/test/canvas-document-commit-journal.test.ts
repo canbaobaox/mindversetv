@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { applyMockCanvasPatch, type MockCanvasPatchParams } from "./helpers/mock-canvas-patch";
 
 type Stored = Map<string, string>;
 const stored: Stored = new Map();
@@ -99,7 +100,7 @@ mock.module("@/services/api/request", () => ({
             if (server.missingCreateReceipt) return {};
             return { project: { id: "c1", revision: 1 } };
         },
-        post: async (_path: string, body: { opId: string; params: { expectedRevision: number; document: { title: string; nodes?: Array<{ id: string }> } } }) => {
+        post: async (path: string, body: { opId: string; params: MockCanvasPatchParams & { expectedRevision?: number; document?: { title: string; nodes?: Array<{ id: string }> } } }) => {
             if (server.holdDispatch) {
                 server.dispatchWaiting = true;
                 await server.holdDispatch;
@@ -118,10 +119,11 @@ mock.module("@/services/api/request", () => ({
                 if (failure.retryable !== undefined) options.retryable = failure.retryable;
                 throw new ApiError("保存失败", options);
             }
+            const isPatch = path === "/ops/canvas.document.patch";
             const existing = server.receipts.get(body.opId);
             if (existing) {
                 return {
-                    op: "canvas.document.commit",
+                    op: isPatch ? "canvas.document.patch" : "canvas.document.commit",
                     opId: body.opId,
                     replayed: true,
                     caller: "manual",
@@ -129,14 +131,48 @@ mock.module("@/services/api/request", () => ({
                     result: { canvasId: "c1", revision: existing.revision, updatedAt: "2026-01-01T00:00:00.000Z" },
                 };
             }
-            if (server.enforceRevision && body.params.expectedRevision !== server.revision) {
+            if (isPatch) {
+                const baseRevision = body.params.baseRevision ?? 0;
+                server.revision += 1;
+                const { document, serverAdvanced, mediaPreserved } = applyMockCanvasPatch(server.document, body.params, server.revision);
+                const docTyped = document as { title?: string; nodes?: Array<{ id: string }> };
+                server.commits.push({
+                    opId: body.opId,
+                    expectedRevision: baseRevision,
+                    title: String(docTyped.title ?? ""),
+                    nodeIds: (docTyped.nodes ?? []).map((node) => node.id),
+                });
+                server.receipts.set(body.opId, { revision: server.revision, title: String(docTyped.title ?? "") });
+                server.document = document;
+                if (server.abortAfterCommit) {
+                    server.abortAfterCommit = false;
+                    throw new DOMException("The operation was aborted", "AbortError");
+                }
+                return {
+                    op: "canvas.document.patch",
+                    opId: body.opId,
+                    replayed: false,
+                    caller: "manual",
+                    revision: server.revision,
+                    result: {
+                        canvasId: "c1",
+                        revision: server.revision,
+                        updatedAt: "2026-01-01T00:00:00.000Z",
+                        serverAdvanced,
+                        mediaPreserved,
+                        ...(serverAdvanced || mediaPreserved ? { document: structuredClone(document) } : {}),
+                    },
+                };
+            }
+            const expectedRevision = body.params.expectedRevision ?? 0;
+            if (server.enforceRevision && expectedRevision !== server.revision) {
                 throw new ApiError("画布已被其他入口修改", { status: 409, reason: "stale_revision" });
             }
             server.revision += 1;
-            const document = body.params.document as { title: string; nodes?: Array<{ id: string }> };
+            const document = (body.params.document ?? { title: "" }) as { title: string; nodes?: Array<{ id: string }> };
             server.commits.push({
                 opId: body.opId,
-                expectedRevision: body.params.expectedRevision,
+                expectedRevision,
                 title: document.title,
                 nodeIds: (document.nodes ?? []).map((node) => node.id),
             });
@@ -176,11 +212,10 @@ mock.module("@/services/workspace-mode", () => ({ isLocalWorkspaceMode: () => tr
 mock.module("@/services/api/resources", () => ({ resourceIdFromStorageKey: () => "" }));
 
 const { persistCanvasDocument, refreshLocalCanvasProjectIfChanged, resetLocalCanvasBackendSaveState, syncLocalCanvasProjectToBackend, hasUnconfirmedCanvasEdits, selectPreferredCanvasProject, adoptServerConfirmedGenerationPatch, openLocalCanvasProjectFromBackend, setCanvasProjectionStoreFlushForTest, CanvasBackendSubmitPausedError, CanvasProjectionError } = await import("@/services/local-workspace-repository");
-const { useCanvasStore, canvasDocumentBase, canvasExternalRevisionConflict, clearCanvasDocumentBase, clearCanvasExternalRevisionConflict, recordCanvasDocumentBase, CANVAS_STORE_KEY } = await import("@/stores/canvas/use-canvas-store");
+const { useCanvasStore, canvasDocumentBase, clearCanvasDocumentBase, recordCanvasDocumentBase, CANVAS_STORE_KEY } = await import("@/stores/canvas/use-canvas-store");
 const { CanvasJournalError, clearCanvasPendingProjection, loadCanvasOperationJournal, peekCanvasOperationJournal, recordConfirmedCanvasCommit, resetCanvasOperationJournalMemory, saveCanvasOperationJournal, setCanvasJournalStorageDelay, updateCanvasOperationJournal } = await import("@/services/canvas-operation-journal");
-const { canvasBackendSubmitPaused, pauseCanvasBackendSubmit } = await import("@/services/canvas-revision-conflict");
 const { projectSyncProgress, useSyncProgressStore } = await import("@/stores/use-sync-progress-store");
-const { flushCanvasStorePersistence, canvasDurableSnapshot, registerCanvasGenerationPersistenceAttempt, withCanvasStorePersistenceSuppressed } = await import("@/stores/canvas/use-canvas-store");
+const { flushCanvasStorePersistence, canvasDurableSnapshot, withCanvasStorePersistenceSuppressed } = await import("@/stores/canvas/use-canvas-store");
 
 function canvas(title: string, revision = 1, patch: Record<string, unknown> = {}) {
     return {
@@ -310,9 +345,6 @@ beforeEach(() => {
     server.deleteHold = null;
     server.enforceRevision = false;
     useSyncProgressStore.getState().clearAll();
-    clearCanvasExternalRevisionConflict("guest", "c1");
-    clearCanvasExternalRevisionConflict("user-a", "c1");
-    clearCanvasExternalRevisionConflict("user-b", "c1");
     useCanvasStore.setState({ projects: [canvas("基线", 1)] });
     recordCanvasDocumentBase(canvas("基线", 1));
 });
@@ -349,46 +381,88 @@ describe("画布文档提交日记", () => {
         expect(peekCanvasOperationJournal("c1")?.confirmedRevision).toBe(77);
     });
 
-    test("unconfirmed generation rolls back only its edges and nodes while keeping manual edits and deletions", async () => {
+    test("unconfirmed generationEffectKeys do not survive crash/reload to block post-reload recovery, while confirmed node/session keys and manual deletions survive", async () => {
+        const { applyGenerationConsumerEffect, generationEffectApplied } = await import("@/services/generation-consumer-dedupe");
         await useCanvasStore.persist.rehydrate();
-        const nodes = [node("n1", "One"), node("n2", "Two")];
-        const removed = connection("manual-delete", "n1", "n2");
-        const modified = connection("manual-edit", "n1", "n2");
-        await seedConfirmed(canvas("基线", 1, { nodes, connections: [removed, modified] }));
+        const nodes = [
+            node("n1", "One", { metadata: { generationEffectKeys: ["confirmed-node-key"] } }),
+            node("n2", "Two"),
+        ];
+        const sessions = [{ id: "s1", title: "会话", messages: [], generationEffectKeys: ["confirmed-session-key"] }];
+        await seedConfirmed(canvas("基线", 1, { nodes, connections: [connection("e", "n1", "n2")], chatSessions: sessions }));
         await flushCanvasStorePersistence();
-        const generated = node("generated", "Unconfirmed", { metadata: { generationEffectKeys: ["pending"] } });
-        const genEdge = connection("generation-existing-endpoints", "n1", "n2");
-        const unregister = registerCanvasGenerationPersistenceAttempt(activeScope, "c1", "pending", {
-            previousNodes: nodes as never, nodes: [...nodes, generated] as never,
-            previousConnections: [removed, modified], connections: [removed, modified, genEdge],
-        });
-        try {
-            const manual = { ...modified, toNodeId: "n1" };
-            const added = connection("manual-add", "n2", "n1");
-            useCanvasStore.getState().updateProject("c1", {
-                nodes: [{ ...nodes[0]!, title: "Manual title" }, nodes[1]!, generated] as never,
-                connections: [manual, added, genEdge, connection("rolled-back-endpoint", "n1", "generated"), connection("invalid", "missing", "n2")],
-            });
-            await flushCanvasStorePersistence();
-            const saved = canvasDurableSnapshot(activeScope, "c1")!;
-            expect(saved.connections).toEqual([manual, added]);
-            expect(saved.nodes.map((item) => item.id)).toEqual(["n1", "n2"]);
-            expect(saved.nodes[0]!.title).toBe("Manual title");
-        } finally { unregister(); }
-    });
 
-    test("an unrelated unconfirmed stamp cannot restore a manually deleted confirmed edge", async () => {
-        await useCanvasStore.persist.rehydrate();
-        const nodes = [node("n1", "One"), node("n2", "Two")];
-        await seedConfirmed(canvas("基线", 1, { nodes, connections: [connection("e", "n1", "n2")] }));
-        await flushCanvasStorePersistence();
+        // Optimistically stamp unconfirmed node & session keys before server ack, alongside a manual edge deletion.
         useCanvasStore.getState().updateProject("c1", {
-            nodes: [{ ...nodes[0]!, metadata: { generationEffectKeys: ["not-confirmed"] } }, nodes[1]!] as never,
+            nodes: [
+                { ...nodes[0]!, metadata: { generationEffectKeys: ["confirmed-node-key", "unacked-node-effect"] } },
+                { ...nodes[1]!, metadata: { generationEffectKeys: ["unacked-n2-effect"] } },
+            ] as never,
+            chatSessions: [
+                { ...sessions[0]!, generationEffectKeys: ["confirmed-session-key", "unacked-session-effect"] },
+            ] as never,
             connections: [],
         });
         await flushCanvasStorePersistence();
-        expect(canvasDurableSnapshot(activeScope, "c1")?.connections).toEqual([]);
-        expect(canvasDurableSnapshot(activeScope, "c1")?.nodes[0]?.metadata?.generationEffectKeys).toBeUndefined();
+
+        // Simulate crash + reload before server ack: clear memory and rehydrate from browser cache.
+        withCanvasStorePersistenceSuppressed(() => useCanvasStore.setState({ projects: [] }));
+        resetCanvasOperationJournalMemory();
+        resetLocalCanvasBackendSaveState();
+        await useCanvasStore.persist.rehydrate();
+
+        const rehydrated = useCanvasStore.getState().openProject("c1")!;
+        expect(rehydrated.connections).toEqual([]);
+        expect(generationEffectApplied(rehydrated.nodes[0]!.metadata || {}, "confirmed-node-key")).toBe(true);
+        expect(generationEffectApplied(rehydrated.nodes[0]!.metadata || {}, "unacked-node-effect")).toBe(false);
+        expect(rehydrated.nodes[1]!.metadata?.generationEffectKeys).toBeUndefined();
+        expect(generationEffectApplied(rehydrated.chatSessions[0]!, "confirmed-session-key")).toBe(true);
+        expect(generationEffectApplied(rehydrated.chatSessions[0]!, "unacked-session-effect")).toBe(false);
+
+        // Post-reload task recovery must still apply the unacked effect onto n2 instead of deduping it away.
+        const recovered = applyGenerationConsumerEffect(
+            rehydrated.nodes[1]!.metadata || {},
+            "unacked-n2-effect",
+            (meta) => ({ ...meta, status: "success", content: "https://media/recovered.png" }),
+        );
+        expect(recovered.applied).toBe(true);
+        expect(recovered.value.content).toBe("https://media/recovered.png");
+    });
+
+    test("non-desktop browser cache writes preserve concurrent tab edits and deletions without resurrecting deleted canvases", async () => {
+        await useCanvasStore.persist.rehydrate();
+        const c1 = canvas("画布 1", 1);
+        const c2 = { ...canvas("画布 2", 1), id: "c2" };
+        const c3 = { ...canvas("画布 3", 1), id: "c3" };
+        useCanvasStore.setState({ projects: [c1, c2, c3] });
+        await flushCanvasStorePersistence();
+
+        // Simulate Tab B directly updating IndexedDB: edits c2, deletes c3, adds c4.
+        const storageKey = `${activeScope}:${CANVAS_STORE_KEY}`;
+        const raw = stored.get(storageKey);
+        expect(raw).toBeTruthy();
+        const tabBDoc = JSON.parse(raw!);
+        tabBDoc.storageRevision = (tabBDoc.storageRevision ?? 0) + 1;
+        tabBDoc.deletedProjectIds = { ...(tabBDoc.deletedProjectIds ?? {}), c3: tabBDoc.storageRevision };
+        tabBDoc.state.projects = [
+            c1,
+            { ...c2, title: "Tab B 改过的画布 2" },
+            { ...canvas("Tab B 新建的画布 4", 1), id: "c4" },
+        ];
+        stored.set(storageKey, JSON.stringify(tabBDoc));
+
+        // Stale Tab A edits c1 twice while still holding c3 in React memory.
+        useCanvasStore.getState().updateProject("c1", { title: "Tab A 改名 1" });
+        await flushCanvasStorePersistence();
+        useCanvasStore.getState().updateProject("c1", { title: "Tab A 改名 2" });
+        await flushCanvasStorePersistence();
+
+        const finalDoc = JSON.parse(stored.get(storageKey)!);
+        expect(finalDoc.state.projects.map((p: { id: string; title: string }) => `${p.id}:${p.title}`)).toEqual([
+            "c1:Tab A 改名 2",
+            "c2:Tab B 改过的画布 2",
+            "c4:Tab B 新建的画布 4",
+        ]);
     });
 
     test("首次保存 200 但缺少画布回执不能确认成功，草稿保留可重试", async () => {
@@ -725,7 +799,7 @@ describe("画布文档提交日记", () => {
         expect(journal.confirmedRevision).toBe(6);
     });
 
-    test("丢失响应后外部写入再回放：原操作按回执确认，后来的编辑与远端同字段冲突时保留本地并暂停", async () => {
+    test("丢失响应后外部写入再回放：原操作按回执确认，后来的编辑以增量 patch 收敛保存且不暂停", async () => {
         server.enforceRevision = true;
         await saveCanvasOperationJournal({
             userScope: "guest",
@@ -748,23 +822,20 @@ describe("画布文档提交日记", () => {
         expect(useCanvasStore.getState().projects[0].title).toBe("后来的编辑");
         expect((await loadCanvasOperationJournal("c1")).inFlight?.operationId).toBe(firstId);
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(1);
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
-        expect(canvasExternalRevisionConflict("guest", "c1")).toBeUndefined();
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
 
-        // 重放拿到原回执；后来的编辑按 revision 2 提交被拒，读回 revision 5 后标题两边都改过：保留本地并暂停。
-        await expect(syncLocalCanvasProjectToBackend("c1")).rejects.toThrow();
+        // 重放拿到原回执；后来的编辑通过增量 patch 在服务端原子合并成功，不锁死自动保存。
+        await syncLocalCanvasProjectToBackend("c1");
         const journal = await loadCanvasOperationJournal("c1");
         expect(journal.inFlight).toBeNull();
-        expect(journal.confirmedRevision).toBe(2);
-        expect(journal.confirmedSnapshot?.title).toBe("第一次");
+        expect(journal.confirmedRevision).toBe(6);
         expect(useCanvasStore.getState().projects[0].title).toBe("后来的编辑");
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
-        expect(canvasExternalRevisionConflict("guest", "c1")?.remoteRevision).toBe(5);
-        await expect(syncLocalCanvasProjectToBackend("c1")).rejects.toBeInstanceOf(CanvasBackendSubmitPausedError);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect(server.commits).toEqual([
             expect.objectContaining({ opId: firstId, title: "第一次" }),
+            expect.objectContaining({ title: "后来的编辑" }),
         ]);
-        expect((server.document as { title: string }).title).toBe("助手改过");
+        expect((server.document as { title: string }).title).toBe("后来的编辑");
     });
 
     test("外部新增节点时本地改了另一节点：刷新三路合并两边都保留，并按最新 revision 提交", async () => {
@@ -793,8 +864,7 @@ describe("画布文档提交日记", () => {
         expect(live.title).toBe("助手加了节点");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(5);
         expect(canvasDocumentBase("c1")?.snapshot.title).toBe("助手加了节点");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
-        expect(canvasExternalRevisionConflict("guest", "c1")).toBeUndefined();
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect(projectSyncProgress("c1")?.phase).toBe("pending");
 
         await syncLocalCanvasProjectToBackend("c1");
@@ -921,18 +991,16 @@ describe("画布文档提交日记", () => {
         expect((server.document as { nodes: Array<{ metadata: Record<string, unknown> }> }).nodes[0].metadata.status).toBe("success");
     });
 
-    test("同版本绑定回执不解除已有冲突，也不覆盖新任务或人类换图", async () => {
+    test("同版本绑定回执结算同任务结果，不覆盖新任务或人类换图", async () => {
         const completed = node("image-result", "图片", {
             metadata: { taskId: "task-result", status: "success", content: "/api/resources/result/file", storageKey: "resource:result" },
         });
         const confirmed = canvas("已确认", 329, { nodes: [completed] });
         await seedConfirmed(confirmed);
-        pauseCanvasBackendSubmit("c1");
         useCanvasStore.getState().updateProject("c1", {
             nodes: [{ ...completed, metadata: { taskId: "task-result", status: "loading", content: "" } }] as never,
         });
         expect((await adoptServerConfirmedGenerationPatch(confirmed)).nodes[0].metadata?.status).toBe("success");
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
         for (const metadata of [
             { taskId: "task-new", status: "loading", content: "" },
             { taskId: "task-result", status: "loading", content: "用户换的图" },
@@ -941,7 +1009,6 @@ describe("画布文档提交日记", () => {
             useCanvasStore.getState().updateProject("c1", { nodes: [{ ...completed, metadata }] as never });
             const adopted = await adoptServerConfirmedGenerationPatch(confirmed);
             expect(adopted.nodes[0].metadata).toEqual(metadata);
-            expect(canvasBackendSubmitPaused("c1")).toBe(true);
         }
         useCanvasStore.getState().updateProject("c1", { nodes: [] });
         expect((await adoptServerConfirmedGenerationPatch(confirmed)).nodes).toEqual([]);
@@ -984,7 +1051,7 @@ describe("画布文档提交日记", () => {
         const live = useCanvasStore.getState().projects[0];
         expect(live.nodes.map((item) => item.id)).toEqual(["n1", "n-gen"]);
         expect(live.connections.map((item) => item.id)).toEqual([]);
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(4);
     });
 
@@ -1004,7 +1071,7 @@ describe("画布文档提交日记", () => {
         expect(liveNode.metadata?.prompt).toBe("本地提示");
         expect(liveNode.metadata?.storageKey).toBe("res-gen");
         expect(liveNode.metadata?.content).toBe("https://media/gen");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
     });
 
     test("本地清空的数组不会被基线填回，服务端新增实体仍采纳", async () => {
@@ -1033,7 +1100,7 @@ describe("画布文档提交日记", () => {
         await adoptServerConfirmedGenerationPatch(canvas("生成", 4, { nodes: [n1] }));
 
         expect(useCanvasStore.getState().projects[0].nodes.map((item) => item.id)).toEqual(["n1"]);
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
     });
 
     test("同一节点本地位移与服务端生成结果一并保留", async () => {
@@ -1051,7 +1118,7 @@ describe("画布文档提交日记", () => {
         expect(liveNode.position).toEqual({ x: 40, y: 80 });
         expect(liveNode.metadata?.storageKey).toBe("res-gen");
         expect(liveNode.title).toBe("镜头1");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
     });
 
     test("任务进行中 Agent 加了其它节点并加载最新后，成功结果绑定且新节点保留", async () => {
@@ -1066,7 +1133,6 @@ describe("画布文档提交日记", () => {
                 lake,
             ] as never,
         });
-        pauseCanvasBackendSubmit("c1");
 
         const adopted = await adoptServerConfirmedGenerationPatch(canvas("生成", 14, {
             nodes: [
@@ -1085,12 +1151,11 @@ describe("画布文档提交日记", () => {
         expect(origin?.title).toBe("原图");
         expect(live.nodes.find((item) => item.id === "node-camp")?.title).toBe("秋日旅行·露营桌");
         expect(live.nodes.find((item) => item.id === "node-lake")?.title).toBe("秋日旅行·湖畔横移");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
-        expect(canvasExternalRevisionConflict("guest", "c1")).toBeUndefined();
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(14);
     });
 
-    test("同一节点人类改过生成内容时保留本地值并说明冲突，不伪装成功", async () => {
+    test("同一节点人类改过生成内容时保留本地值，且不锁死自动保存", async () => {
         const original = node("image-origin", "原图", { metadata: { taskId: "task-1", status: "idle", content: "旧图" } });
         await seedConfirmed(canvas("基线", 10, { nodes: [original] }));
         useCanvasStore.getState().updateProject("c1", {
@@ -1104,9 +1169,7 @@ describe("画布文档提交日记", () => {
         const live = useCanvasStore.getState().projects[0];
         expect(live.nodes[0].metadata?.content).toBe("人类改过的内容");
         expect(live.nodes[0].metadata?.status).not.toBe("success");
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
-        expect(canvasExternalRevisionConflict("guest", "c1")?.candidate.nodes[0].metadata?.content).toBe("https://media/gen");
-        expect(canvasExternalRevisionConflict("guest", "c1")?.candidate.nodes[0].metadata?.storageKey).toBe("res-gen");
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(14);
     });
 
@@ -1126,7 +1189,7 @@ describe("画布文档提交日记", () => {
         expect(adopted.nodes[0].metadata?.content).toBe("https://media/new");
         expect(live.nodes).toEqual(adopted.nodes);
         expect(live.nodes[0].metadata?.storageKey).toBe("res-new");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(14);
     });
 
@@ -1146,8 +1209,7 @@ describe("画布文档提交日记", () => {
         expect(live.nodes[0].metadata?.status).toBe("success");
         expect(live.nodes[0].metadata?.content).toBe("https://media/gen");
         expect(live.nodes[0].metadata?.storageKey).toBe("res-gen");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
-        expect(canvasExternalRevisionConflict("guest", "c1")).toBeUndefined();
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(14);
     });
 
@@ -1186,11 +1248,11 @@ describe("画布文档提交日记", () => {
         expect(live.nodes[0].metadata?.prompt).toBe("人类改了提示");
         expect(live.nodes[0].metadata?.content).toBe("https://media/gen");
         expect(live.nodes[0].metadata?.status).toBe("success");
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(14);
     });
 
-    test("人类已把节点改成 success 时 settle 不覆盖，本地媒体保留", async () => {
+    test("人类已把节点改成 success 时 settle 不覆盖，本地媒体保留且不暂停自动保存", async () => {
         const original = node("image-origin", "原图", { metadata: { taskId: "task-1", status: "idle", content: "旧图" } });
         await seedConfirmed(canvas("基线", 10, { nodes: [original] }));
         useCanvasStore.getState().updateProject("c1", {
@@ -1204,12 +1266,11 @@ describe("画布文档提交日记", () => {
         const live = useCanvasStore.getState().projects[0];
         expect(live.nodes).toEqual(adopted.nodes);
         expect(live.nodes[0].metadata?.content).toBe("人类留下的图");
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
-        expect(canvasExternalRevisionConflict("guest", "c1")?.candidate.nodes[0].metadata?.content).toBe("https://media/gen");
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(14);
     });
 
-    test("同一字段本地元数据与服务端元数据冲突时暂停，不猜胜者", async () => {
+    test("同一字段本地元数据与服务端元数据重叠时确定性保留本地值且不暂停", async () => {
         const baseNode = node("n1", "镜头1", { metadata: { prompt: "基线提示" } });
         await seedConfirmed(canvas("基线", 1, { nodes: [baseNode] }));
         useCanvasStore.getState().updateProject("c1", {
@@ -1222,13 +1283,11 @@ describe("画布文档提交日记", () => {
 
         const live = useCanvasStore.getState().projects[0];
         expect(live.nodes[0].metadata?.prompt).toBe("本地提示");
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
-        expect(canvasExternalRevisionConflict("guest", "c1")?.remoteRevision).toBe(4);
-        expect(canvasExternalRevisionConflict("guest", "c1")?.candidate.nodes[0].metadata?.prompt).toBe("服务端提示");
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(4);
     });
 
-    test("无已确认快照时不把生成结果静默并进草稿", async () => {
+    test("无已确认快照时确定性合并生成结果与本地节点，不丢任何一方且不暂停", async () => {
         resetCanvasOperationJournalMemory();
         clearCanvasDocumentBase("c1");
         const localOnly = node("n-local", "本地节点");
@@ -1236,11 +1295,11 @@ describe("画布文档提交日记", () => {
 
         const adopted = await adoptServerConfirmedGenerationPatch(canvas("生成", 4, { nodes: [node("n-gen", "生成结果")] }));
 
-        expect(adopted.nodes.map((item) => item.id)).toEqual(["n-local"]);
-        expect(useCanvasStore.getState().projects[0].nodes.map((item) => item.id)).toEqual(["n-local"]);
-        expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(0);
-        expect(canvasDocumentBase("c1")).toBeUndefined();
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
+        expect(adopted?.nodes.map((item) => item.id).sort()).toEqual(["n-gen", "n-local"]);
+        expect(useCanvasStore.getState().projects[0].nodes.map((item) => item.id).sort()).toEqual(["n-gen", "n-local"]);
+        expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(4);
+        expect(canvasDocumentBase("c1")?.revision).toBe(4);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
     });
 
     test("日记写入等待期间的手工编辑在生成回写后仍在", async () => {
@@ -1257,7 +1316,7 @@ describe("画布文档提交日记", () => {
         expect(live.nodes.map((item) => item.id)).toEqual(["n-gen"]);
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(4);
         expect(canvasDocumentBase("c1")?.revision).toBe(4);
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
     });
 
     test("生成回写日记失败时不发布基线，等待期间的编辑仍在", async () => {
@@ -1345,8 +1404,7 @@ describe("画布文档提交日记", () => {
 
         await refreshLocalCanvasProjectIfChanged("c1");
 
-        expect(canvasExternalRevisionConflict("guest", "c1")).toBeUndefined();
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
         expect(useCanvasStore.getState().projects[0].title).toBe("尚未自动保存的编辑");
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(9);
     });
@@ -1366,7 +1424,7 @@ describe("画布文档提交日记", () => {
         expect(useCanvasStore.getState().projects[0].nodes.map((item) => item.id)).toEqual(["n-ext"]);
         expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(5);
         expect(canvasDocumentBase("c1")?.revision).toBe(5);
-        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
     });
 
     test("刷新日记写入失败时不发布基线", async () => {
@@ -1425,6 +1483,8 @@ describe("画布文档提交日记", () => {
         resetCanvasOperationJournalMemory();
         resetLocalCanvasBackendSaveState();
         clearCanvasDocumentBase("c1");
+        server.revision = 4;
+        server.document = structuredClone(remote) as never;
         useCanvasStore.setState({ projects: [draft as never] });
 
         await loadCanvasOperationJournal("c1");
@@ -1495,6 +1555,8 @@ describe("画布文档提交日记", () => {
         resetCanvasOperationJournalMemory();
         resetLocalCanvasBackendSaveState();
         clearCanvasDocumentBase("c1");
+        server.revision = 5;
+        server.document = structuredClone(remote5) as never;
         useCanvasStore.setState({ projects: [draft as never] });
         await loadCanvasOperationJournal("c1");
         await syncLocalCanvasProjectToBackend("c1");

@@ -32,7 +32,6 @@ type customRelays interface {
 	ResolveCustomRelayAPIKey(targetURL, incoming string) (string, error)
 	UserFacingProviderHTTPError(status int, statusText string, body string) string
 	UserFacingErrorMessage(err error) string
-	InterceptResponseText(raw string) string
 }
 
 func RegisterCustomRelayRoutes(r *gin.RouterGroup, relays customRelays) {
@@ -47,7 +46,7 @@ func RegisterCustomRelayRoutes(r *gin.RouterGroup, relays customRelays) {
 			return
 		}
 		policy, available := loadRuntimePolicy(c, relays)
-		if !available || !enforceRateLimit(c, "custom-relay:"+user.ID, policy.Request.CustomRelayPerMinute, time.Minute) {
+		if !available || !enforcePolicyRateLimit(c, policy, "custom-relay:"+user.ID, policy.Request.CustomRelayPerMinute, time.Minute) {
 			return
 		}
 		ttl := time.Duration(policy.Request.CustomRelayTimeoutMinutes+1) * time.Minute
@@ -213,11 +212,6 @@ func writeCustomRelayError(c *gin.Context, relays customRelays, resp *http.Respo
 		return
 	}
 	body = redactRelaySecret(body, apiKey)
-	rawMessage := strings.TrimSpace(string(body))
-	if intercepted := interceptedRelayText(relays, rawMessage); intercepted != rawMessage {
-		fail(c, resp.StatusCode, errors.New(intercepted))
-		return
-	}
 	if (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")) && json.Valid(body) {
 		if category := string(generation.ClassifyHTTP(resp.StatusCode, resp.Status, string(body)).Category); category != "" {
 			c.Header("X-Canvas-Failure-Category", category)
@@ -233,13 +227,6 @@ func userFacingRelayError(relays customRelays, err error) string {
 		return err.Error()
 	}
 	return relays.UserFacingErrorMessage(err)
-}
-
-func interceptedRelayText(relays customRelays, raw string) string {
-	if relays == nil {
-		return raw
-	}
-	return relays.InterceptResponseText(raw)
 }
 
 func copyCustomRelayStream(c *gin.Context, source io.Reader, apiKey string, maxBytes int64) {

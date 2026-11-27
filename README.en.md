@@ -49,6 +49,11 @@
 - **[v2.2.3](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.3)** — Add Seedream 5.5 image generation and fine-grained layer splitting, improve automatic first/last frame assignment and reference checks, fix upscale and subtitle-removal retry states and diagnostics, and add Yinsheng Yunshu Yisuan branding.
 - **[v2.2.2](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.2)** — Add live balances and online top-ups, refine generation cost estimates, and upgrade DeepSeek Harness collaboration and canvas video processing.
 - **[v2.2.1](https://github.com/canbaobaox/mindversetv/releases/tag/v2.2.1)** — Add the Yinsheng Yunshu Yisuan provider plugin, redesign plugin and account settings, and improve canvas previews, generation errors, and retries.
+- **[v2.5.0](https://github.com/glanderness/BeefTV/releases/tag/v2.5.0)** — Redesigned built-in assistant with document/scanned PDF reading, file export, Creative Bible, session fork, multi-model confirm, and external MCP; added auto local project downloads, in-app proxy, and new model protocols.
+- **[v2.4.5](https://github.com/glanderness/BeefTV/releases/tag/v2.4.5)** — Improved built-in assistant reliability, reference audio connections and direct upload, and automatic fallback playback for videos with sound but no picture.
+- **[v2.4.4](https://github.com/glanderness/BeefTV/releases/tag/v2.4.4)** — Fixed slow startup on large local workspaces, sped up large video uploads with support for saving files up to 2 GB, and made video upscale cost estimates faster.
+- **[v2.4.3](https://github.com/glanderness/BeefTV/releases/tag/v2.4.3)** — Kept your selected image model for inpainting, expression, and angle edits, added right-click Copy Image and Copy Video on the canvas, and fixed startup issues on older macOS versions.
+- **[v2.4.2](https://github.com/glanderness/BeefTV/releases/tag/v2.4.2)** — Fixed a canvas error after opening assistant production proposals without reference images, and prevented long canvas names from overlapping top-bar controls.
 
 [All releases and detailed notes](https://github.com/canbaobaox/mindversetv/releases)
 

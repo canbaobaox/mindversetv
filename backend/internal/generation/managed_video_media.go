@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"infinite-canvas/backend/internal/beeftv"
+	"infinite-canvas/backend/internal/modelcatalog"
+	"infinite-canvas/backend/internal/protocol"
 )
 
 type managedClientContextKey struct{}
@@ -101,24 +103,23 @@ func runManagedVideoTask(ctx context.Context, client *beeftv.MediaClient, input 
 		}
 		refs = append(refs, ref)
 	}
-	operation := metadataString(input.Metadata, "videoEditOperation")
-	if operation == "" {
-		operation = "text_to_video"
-		if len(refs) > 0 {
-			operation = "reference_to_video"
-		}
-		for _, ref := range refs {
-			if ref.Role == "first_frame" || ref.Role == "last_frame" || ref.Role == "middle_frame" {
-				operation = "image_to_video"
-				break
-			}
-		}
+	operation, err := resolveManagedVideoOperation(input, refs)
+	if err != nil {
+		return nil, RequestPreparationError{Cause: err}
+	}
+	if operation == "image_to_video" {
+		assignManagedVideoDefaultFrameRoles(refs, input.VideoCapability)
 	}
 	options := map[string]any{}
 	if intent.Seconds != "" {
 		value, err := strconv.ParseFloat(intent.Seconds, 64)
 		if err != nil {
-			return nil, RequestPreparationError{Cause: errors.New("视频时长无效")}
+			return nil, RequestPreparationError{Cause: PreparationUserError{
+				Category: CategoryInvalidParams,
+				Reason:   "视频时长无效",
+				Action:   "请选择当前模型支持的视频时长后重试",
+				Cause:    err,
+			}}
 		}
 		options["seconds"] = value
 	}
@@ -158,7 +159,125 @@ func runManagedVideoTask(ctx context.Context, client *beeftv.MediaClient, input 
 	if value, exists := input.Metadata["videoMiddleFrameTime"]; exists {
 		options["middle_frame_time"] = value
 	}
+	applyManagedVideoTaskTypeConstraints(input.VideoCapability, operation, refs, options)
 	request := beeftv.MediaRequest{TaskRef: SubmissionKeyFromContext(ctx), MediaType: "video", Model: input.Config.Model, Operation: operation, Options: options}
 	request.Input.Prompt = intent.Prompt
 	return executeManagedMedia(ctx, client, request, refs)
+}
+
+func applyManagedVideoTaskTypeConstraints(profile *modelcatalog.VideoCapabilityConfig, operation string, refs []beeftv.LocalMediaReference, options map[string]any) {
+	if profile == nil || !profile.TaskTypeConstraints || operation == "draft_to_final" {
+		return
+	}
+	hasVideo := false
+	hasFrameRole := false
+	for _, ref := range refs {
+		if ref.Kind == "video" {
+			hasVideo = true
+		}
+		if ref.Kind == "image" && (ref.Role == "first_frame" || ref.Role == "last_frame") {
+			hasFrameRole = true
+		}
+	}
+	lockAdaptiveRatio, forceAutoDuration := protocol.ResolveVideoTaskTypeConstraints(operation, hasVideo, hasFrameRole)
+	if forceAutoDuration {
+		options["seconds"] = float64(-1)
+	}
+	if lockAdaptiveRatio {
+		options["aspect_ratio"] = "adaptive"
+	}
+}
+
+func resolveManagedVideoOperation(input Input, refs []beeftv.LocalMediaReference) (string, error) {
+	storedOp := metadataString(input.Metadata, "videoEditOperation")
+	var imageRefs, videoRefs, audioRefs int
+	var hasExplicitFrame, hasMiddleFrame bool
+	for _, ref := range refs {
+		if ref.Role == "first_frame" || ref.Role == "last_frame" || ref.Role == "middle_frame" {
+			hasExplicitFrame = true
+			if ref.Role == "middle_frame" {
+				hasMiddleFrame = true
+			}
+		}
+		switch ref.Kind {
+		case "image":
+			imageRefs++
+		case "video":
+			videoRefs++
+		case "audio":
+			audioRefs++
+		}
+	}
+	profile := input.VideoCapability
+	if profile != nil {
+		if profile.MiddleFrame == nil || !*profile.MiddleFrame {
+			hasMiddleFrame = false
+		}
+		resolved := modelcatalog.ResolveVideoOperation(profile, modelcatalog.VideoOperationInput{
+			StoredOperation:  storedOp,
+			ImageCount:       imageRefs,
+			VideoCount:       videoRefs,
+			AudioCount:       audioRefs,
+			HasExplicitFrame: hasExplicitFrame,
+			HasMiddleFrame:   hasMiddleFrame,
+			HasDraftTask:     metadataString(input.Metadata, "videoDraftTaskId") != "",
+			Declared:         true,
+		})
+		if resolved != "" {
+			if len(profile.Operations) > 0 && !slices.Contains(profile.Operations, resolved) {
+				return "", errors.New("当前视频模型不支持该生成模式")
+			}
+			return resolved, nil
+		}
+		if len(refs) == 0 {
+			defaultOp := profile.DefaultOperation
+			if defaultOp == "" {
+				defaultOp = "text_to_video"
+			}
+			if len(profile.Operations) > 0 && !slices.Contains(profile.Operations, defaultOp) {
+				return "", errors.New("当前视频模型不支持该生成模式")
+			}
+			return defaultOp, nil
+		}
+		if hasExplicitFrame && slices.Contains(profile.Operations, "image_to_video") {
+			return "image_to_video", nil
+		}
+		if slices.Contains(profile.Operations, "reference_to_video") {
+			return "reference_to_video", nil
+		}
+		return "", errors.New("当前视频模型不支持当前参考素材组合")
+	}
+	if storedOp != "" {
+		return storedOp, nil
+	}
+	if len(refs) == 0 {
+		return "text_to_video", nil
+	}
+	if hasExplicitFrame {
+		return "image_to_video", nil
+	}
+	return "reference_to_video", nil
+}
+
+func assignManagedVideoDefaultFrameRoles(refs []beeftv.LocalMediaReference, profile *modelcatalog.VideoCapabilityConfig) {
+	var imageIndices []int
+	for i, ref := range refs {
+		if ref.Role == "first_frame" || ref.Role == "last_frame" || ref.Role == "middle_frame" {
+			return
+		}
+		switch ref.Kind {
+		case "video":
+			return
+		case "image":
+			imageIndices = append(imageIndices, i)
+		}
+	}
+	frameMaxImages, _ := modelcatalog.VideoFrameLimits(profile, profile != nil)
+	if len(imageIndices) == 0 || len(imageIndices) > frameMaxImages {
+		return
+	}
+	refs[imageIndices[0]].Role = "first_frame"
+	if len(imageIndices) == 2 && frameMaxImages >= 2 {
+		refs[imageIndices[1]].Role = "last_frame"
+	}
 }

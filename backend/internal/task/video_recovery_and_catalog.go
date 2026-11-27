@@ -282,7 +282,7 @@ func RecoverFailedImageForUser(
 	if !needsPoll(*task) && !needsRecheck(*task) {
 		return task, nil
 	}
-	_ = recoverImg(ctx, *task)
+	recoverErr := recoverImg(ctx, *task)
 	updated, err := repo.TaskForUser(userID, taskID)
 	if err != nil {
 		return nil, err
@@ -290,6 +290,9 @@ func RecoverFailedImageForUser(
 	if updated.Status == model.TaskStatusSucceeded {
 		_ = deliver(*updated)
 		return repo.TaskForUser(userID, taskID)
+	}
+	if recoverErr != nil && !errors.Is(recoverErr, repository.ErrTaskProviderRecoveryConflict) {
+		updated.RecoveryLastError = RecoveryAttemptError(recoverErr)
 	}
 	return updated, nil
 }
@@ -312,8 +315,15 @@ func RecoverFailedVideoOrUpscaleForUser(
 	if !VideoRecoveryNeedsPolling(*task) {
 		return task, nil
 	}
-	_ = recoverVid(ctx, *task)
-	return repo.TaskForUser(userID, taskID)
+	recoverErr := recoverVid(ctx, *task)
+	updated, err := repo.TaskForUser(userID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if updated.Status != model.TaskStatusSucceeded && recoverErr != nil && !errors.Is(recoverErr, repository.ErrTaskProviderRecoveryConflict) {
+		updated.RecoveryLastError = RecoveryAttemptError(recoverErr)
+	}
+	return updated, nil
 }
 
 type ManagedToolRecoveryDeps struct {
@@ -644,7 +654,6 @@ func SelectCatalogTask(
 func ValidateCatalogCapability(
 	input map[string]any,
 	validateCapability func(map[string]any) error,
-	validatePortraitQuote func(map[string]any) error,
 ) error {
 	config, _ := input["config"].(map[string]any)
 	if input["upscale"] != nil || generation.UpscaleMediaType(kernel.StringValue(config["model"])) != "" {
@@ -675,10 +684,7 @@ func ValidateCatalogCapability(
 		}
 		return generation.ValidateSubtitleEraseInput(prepared)
 	}
-	if err := validateCapability(input); err != nil {
-		return err
-	}
-	return validatePortraitQuote(input)
+	return validateCapability(input)
 }
 
 func ValidateTaskMediaTransport(

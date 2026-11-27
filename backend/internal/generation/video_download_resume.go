@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"infinite-canvas/backend/internal/outbound"
@@ -23,48 +24,143 @@ func withVideoDownloadPartial(ctx context.Context) (context.Context, func(), err
 			return context.WithValue(ctx, videoDownloadPartialContext{}, path), func() {}, nil
 		}
 	}
-	directory, err := os.MkdirTemp("", "beeftv-video-download-")
+	f, err := os.CreateTemp("", "beeftv-video-download-*.part")
 	if err != nil {
 		return ctx, nil, err
 	}
-	return context.WithValue(ctx, videoDownloadPartialContext{}, filepath.Join(directory, "video.part")), func() { _ = os.RemoveAll(directory) }, nil
+	path := f.Name()
+	_ = f.Close()
+	_ = os.Remove(path)
+	return context.WithValue(ctx, videoDownloadPartialContext{}, path), func() {
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".json")
+	}, nil
 }
 
-func getResumableVideoBinary(req *http.Request, partial string) ([]byte, string, error) {
+// executeVideoRequestToFile streams a video result HTTP request directly to a
+// file on disk. GET requests without a body use outbound.DownloadResumableToFile
+// for Range-resumable transfer; non-GET protocol result requests stream via
+// outbound.StreamResponseToFile with the same size cap and idle watchdog.
+func executeVideoRequestToFile(req *http.Request) (string, string, error) {
 	ctx := req.Context()
-	var err error
+	partial, _ := ctx.Value(videoDownloadPartialContext{}).(string)
+	if partial == "" {
+		var cleanup func()
+		var err error
+		ctx, cleanup, err = withVideoDownloadPartial(ctx)
+		if err != nil {
+			return "", "", err
+		}
+		defer cleanup()
+		partial, _ = ctx.Value(videoDownloadPartialContext{}).(string)
+		req = req.WithContext(ctx)
+	}
+	if req.Method == http.MethodGet && req.Body == nil {
+		return getResumableVideoFile(req, partial, 0)
+	}
+	ctx, req, limit, release, err := prepareVideoDownloadSlot(ctx, req, 0)
+	if err != nil {
+		return "", "", err
+	}
+	defer release()
+	headerTimeout, idleTimeout := videoDownloadTimeouts(ctx)
+	reqCtx, stopHeader, reqCancel := outbound.WithHeaderTimeout(ctx, headerTimeout)
+	defer reqCancel(nil)
+	defer stopHeader()
+	resp, err := openVideoDownloadResponse(req.WithContext(reqCtx), limit)
+	stopHeader()
+	if err != nil {
+		if cause := context.Cause(reqCtx); cause != nil && ctx.Err() == nil {
+			return "", "", cause
+		}
+		return "", "", err
+	}
+	var streamErr error
+	if obs, ok := resp.Body.(*videoObservedBody); ok {
+		obs.observeOnEnd = true
+		defer func() {
+			_ = resp.Body.Close()
+			obs.observe(streamErr)
+		}()
+	} else {
+		defer resp.Body.Close()
+	}
+	res, err := outbound.StreamResponseToFile(ctx, resp, outbound.StreamFileOptions{
+		Dir:         filepath.Dir(partial),
+		MaxBytes:    outbound.ExclusiveByteLimit(limit),
+		IdleTimeout: idleTimeout,
+		Cancel:      func() { reqCancel(context.DeadlineExceeded) },
+	})
+	if err != nil {
+		streamErr = err
+		return "", "", err
+	}
+	return res.Path, res.MimeType, nil
+}
+
+type videoDownloadHeaderTimeoutContext struct{}
+
+func videoDownloadTimeouts(ctx context.Context) (headerTimeout, idleTimeout time.Duration) {
+	headerTimeout = 45 * time.Second
+	if customHeader, _ := ctx.Value(videoDownloadHeaderTimeoutContext{}).(time.Duration); customHeader > 0 {
+		headerTimeout = customHeader
+	}
+	idleTimeout = videoDeliveryIdleTimeout
+	if customIdle, _ := ctx.Value(videoDeliveryRequestContext{}).(time.Duration); customIdle > 0 {
+		idleTimeout = customIdle
+	}
+	return headerTimeout, idleTimeout
+}
+
+func prepareVideoDownloadSlot(ctx context.Context, req *http.Request, maxCap int64) (context.Context, *http.Request, int64, func(), error) {
 	limit := MaxResponseBytes
 	runtime, _ := RuntimeFromContext(ctx)
 	if runtime.Limits != nil {
+		var err error
 		limit, err = runtime.Limits.GeneratedFileBytes(ctx)
 		if err != nil {
-			return nil, "", err
+			return ctx, req, 0, nil, err
 		}
 	}
-	if limit <= 0 {
-		return nil, "", outbound.ErrResourceTooLarge
+	if maxCap > 0 && limit > maxCap {
+		limit = maxCap
 	}
+	if limit <= 0 {
+		return ctx, req, 0, nil, outbound.ErrResourceTooLarge
+	}
+	release := func() {}
 	if runtime.Limits != nil {
 		slot := runtime.Call.ChannelID
 		if slot == "" {
 			slot = "custom:" + strings.ToLower(req.URL.Host)
 		}
-		release, concurrencyLimit, err := runtime.Limits.AcquireChannelSlot(ctx, runtime.Call.ChannelID, slot, time.Until(PollingDeadline(ctx))+time.Minute)
+		var concurrencyLimit int
+		var err error
+		release, concurrencyLimit, err = runtime.Limits.AcquireChannelSlot(ctx, runtime.Call.ChannelID, slot, time.Until(PollingDeadline(ctx))+time.Minute)
 		if err != nil {
-			return nil, "", err
+			return ctx, req, 0, nil, err
 		}
-		defer release()
 		runtime.Call.ConcurrencyLimit = concurrencyLimit
 		ctx = WithRuntime(ctx, runtime)
 		req = req.WithContext(ctx)
 	}
+	return ctx, req, limit, release, nil
+}
+
+func getResumableVideoFile(req *http.Request, partial string, maxCap int64) (string, string, error) {
+	ctx, req, limit, release, err := prepareVideoDownloadSlot(req.Context(), req, maxCap)
+	if err != nil {
+		return "", "", err
+	}
+	defer release()
 	headers := req.Header.Clone()
 	headers.Del("Range")
 	headers.Del("If-Range")
+	headerTimeout, idleTimeout := videoDownloadTimeouts(ctx)
 	total := int64(-1)
-	result, err := outbound.DownloadResumable(ctx, req.URL.String(), outbound.ResumableOptions{
-		PartialPath: partial, Headers: headers, MaxBytes: limit + 1,
-		Attempts: 1, HeaderTimeout: 45 * time.Second, IdleTimeout: videoDeliveryIdleTimeout,
+	result, err := outbound.DownloadResumableToFile(ctx, req.URL.String(), outbound.ResumableOptions{
+		PartialPath: partial, Headers: headers, MaxBytes: outbound.ExclusiveByteLimit(limit),
+		Attempts: 1, HeaderTimeout: headerTimeout, IdleTimeout: idleTimeout,
 		OpenResponse: func(request *http.Request) (*http.Response, error) { return openVideoDownloadResponse(request, limit) },
 		OnProgress: func(update outbound.ResumableProgress) {
 			total = update.TotalBytes
@@ -76,7 +172,7 @@ func getResumableVideoBinary(req *http.Request, partial string) ([]byte, string,
 	// The shared downloader throttles body progress. Report the final retained
 	// count here too, including a short read that ended inside that interval.
 	if observe := downloadObserverFrom(ctx); observe != nil {
-		downloaded := int64(len(result.Data))
+		downloaded := result.Size
 		if err != nil {
 			if info, statErr := os.Stat(partial); statErr == nil {
 				downloaded = info.Size()
@@ -89,7 +185,7 @@ func getResumableVideoBinary(req *http.Request, partial string) ([]byte, string,
 	if errors.Is(err, context.Canceled) && ctx.Err() == nil {
 		err = context.DeadlineExceeded
 	}
-	return result.Data, result.MimeType, err
+	return result.Path, result.MimeType, err
 }
 
 // Preserve the generation transport's credentials policy while keeping range
@@ -155,14 +251,7 @@ func openVideoDownloadResponse(req *http.Request, limit int64) (*http.Response, 
 	observation.StatusCode, observation.HTTPStatus = response.StatusCode, response.StatusCode
 	observation.DeclaredResponseBytes = response.ContentLength
 	observation.RequestID = firstNonEmpty(response.Header.Get("X-Request-Id"), response.Header.Get("Request-Id"))
-	if transport, ok := outbound.OutboundHTTPClient(0).Transport.(*http.Transport); ok {
-		observation.TransportRoute = "direct"
-		if transport.Proxy != nil {
-			if proxy, proxyErr := transport.Proxy(response.Request); proxyErr == nil && proxy != nil {
-				observation.TransportRoute = "proxy"
-			}
-		}
-	}
+	observation.TransportRoute = outbound.RequestNetworkRoute(response.Request, outbound.OutboundHTTPClient(0).Transport)
 	body := &videoObservedBody{ReadCloser: response.Body, observation: observation, receipts: runtime.Receipts}
 	response.Body = body
 	if (response.StatusCode < 200 || response.StatusCode >= 300) && response.StatusCode != http.StatusRequestedRangeNotSatisfiable {
@@ -184,7 +273,7 @@ func openVideoDownloadResponse(req *http.Request, limit int64) (*http.Response, 
 				resultErr = fmt.Errorf("%w: %w", outbound.ErrResumeRestart, resultErr)
 			}
 		}
-		body.observation.Err = resultErr
+		body.setErr(resultErr)
 		_ = body.Close()
 		return nil, resultErr
 	}
@@ -193,23 +282,49 @@ func openVideoDownloadResponse(req *http.Request, limit int64) (*http.Response, 
 
 type videoObservedBody struct {
 	io.ReadCloser
-	observation TransportObservation
-	receipts    ReceiptPort
+	mu           sync.Mutex
+	observation  TransportObservation
+	receipts     ReceiptPort
+	observeOnEnd bool
+	observeOnce  sync.Once
 }
 
 func (b *videoObservedBody) Read(data []byte) (int, error) {
 	n, err := b.ReadCloser.Read(data)
+	b.mu.Lock()
 	b.observation.ReceivedBytes += int64(n)
 	if err != nil && !errors.Is(err, io.EOF) {
 		b.observation.Err = err
 	}
+	b.mu.Unlock()
 	return n, err
+}
+
+func (b *videoObservedBody) setErr(err error) {
+	b.mu.Lock()
+	b.observation.Err = err
+	b.mu.Unlock()
+}
+
+func (b *videoObservedBody) observe(finalErr error) {
+	b.observeOnce.Do(func() {
+		if b.receipts == nil {
+			return
+		}
+		b.mu.Lock()
+		if b.observation.Err == nil && finalErr != nil {
+			b.observation.Err = finalErr
+		}
+		obs := b.observation
+		b.mu.Unlock()
+		b.receipts.Observe(obs)
+	})
 }
 
 func (b *videoObservedBody) Close() error {
 	err := b.ReadCloser.Close()
-	if b.receipts != nil {
-		b.receipts.Observe(b.observation)
+	if !b.observeOnEnd {
+		b.observe(nil)
 	}
 	return err
 }

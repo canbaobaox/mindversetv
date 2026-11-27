@@ -1,7 +1,6 @@
 // 助手面板里所有用户可见文案的唯一来源：机器可读原因、操作名和改动摘要都在这里
 // 翻译成用户语。组件只负责排版，不自己拼文案，避免同一种状态在两处写出两句话。
 import type { AgentLifecycleEvent, AgentToolCall, AssistantGenerationProposal, AssistantScriptProposal, AssistantSkillSelection, AssistantTurnChange, AssistantUndoFailure } from "@/services/api/agent-assistant";
-import { seedancePortraitLabel } from "@/lib/seedance-portrait";
 import type { CanvasNodeData } from "@/types/canvas";
 import { authoritativeNodeOutcome } from "@/lib/canvas/canvas-node-failure-state";
 
@@ -27,6 +26,8 @@ export function assistantStatusNotice(reason: string | undefined): AssistantStat
             return { text: "MindVerseTV 还没连接好", actionLabel: "去连接", action: "model-settings" };
         case "host_starting":
             return { text: "助手正在启动…", starting: true };
+        case "host_busy":
+            return { text: "配置已更新，当前任务完成后会自动切换", starting: true };
         case "host_start_failed":
         case "host_unreachable":
             return { text: "助手没有启动成功", actionLabel: "重试", action: "retry" };
@@ -64,6 +65,29 @@ export function assistantActionLabel(tool: string | undefined): string {
             return "准备生成";
         case "canvas.generation.submit":
             return "生成素材";
+        case "canvas.generation.regenerate":
+            return "原地重做素材";
+        case "canvas.create":
+            return "新建画布";
+        case "task.cancel":
+            return "取消任务";
+        case "file.read":
+        case "file_read":
+            return "读取文件";
+        case "file.export":
+        case "file_export":
+            return "导出交付文件";
+        case "project.bible.get":
+        case "project_bible_get":
+            return "读取创作设定集";
+        case "project.bible.update":
+        case "project_bible_update":
+            return "更新创作设定集";
+        case "business.list":
+        case "business_list":
+        case "business.call":
+        case "business_call":
+            return "调用工作区接口";
         case "canvas.project.export":
             return "导出工程";
         case "skill.script.run":
@@ -127,8 +151,12 @@ export function assistantUndoFailureText(failure: AssistantUndoFailure): string 
     }
 }
 
+export type AssistantProductionScope = "full-production" | "staged-plan" | "single-step";
+
 export type AssistantProductionProposalParts = {
+    scope: AssistantProductionScope;
     header: string;
+    summaryLabel: string;
     targetLines: string[];
     footer: string;
 };
@@ -150,56 +178,126 @@ const PROPOSAL_PARAMETER_LABELS: Record<string, string> = {
     seedreamWatermark: "图片水印",
 };
 
+type ProposalTargetLike = {
+    nodeId: string;
+    title?: string;
+    kind: "image" | "video" | "audio";
+    model?: string;
+    modelKey?: string;
+    prompt: string;
+    parameters?: Record<string, string> | null;
+    referenceNodeIds?: string[] | null;
+    estimate?: { text?: string };
+};
+
+function formatProposalTargetLine(
+    target: ProposalTargetLike,
+    allTargets: readonly ProposalTargetLike[],
+    fallbackModel: string,
+    awaitingConfirmation: boolean,
+): string {
+    const parameters = target.parameters || {};
+    const params = Object.entries(parameters).filter(([key]) => PROPOSAL_PARAMETER_LABELS[key]).map(([key, value]) => {
+        const display = key === "seedreamOptimize" ? (value === "standard" ? "标准" : value === "fast" ? "快速" : value)
+            : key === "seedreamWatermark" ? (value === "true" ? "开启" : "关闭")
+            : key === "seedreamOutputFormat" ? value.toUpperCase() : value;
+        return `${PROPOSAL_PARAMETER_LABELS[key]}：${display}`;
+    }).join(" · ");
+    const refs = (Array.isArray(target.referenceNodeIds) ? target.referenceNodeIds : [])
+        .map((id) => allTargets.find((item) => item.nodeId === id)?.title || "已有参考素材");
+    const modelLabel = target.model || target.modelKey?.split("::").pop() || fallbackModel;
+    return [
+        `${target.title || target.nodeId} · ${modelLabel} · ${parameters.count || "1"} 个`,
+        ...(params ? [params] : []),
+        ...(refs.length ? [`参考：${refs.join("、")}`] : []),
+        ...(awaitingConfirmation && target.estimate?.text ? [`费用：${target.estimate.text}`] : []),
+        `${target.kind === "audio" ? "台词" : "提示词"}：${target.prompt}`,
+    ].join("\n");
+}
+
 /** 拆出普通生成单的逐项明细（提示词、模型、参数、参考与报价状态），供卡片折叠展开。 */
 export function assistantOrderTargetLines(proposal: AssistantGenerationProposal, awaitingConfirmation = true): string[] {
     if (proposal.production) return [];
     const targets = proposal.targets?.length ? proposal.targets : proposal.order?.targetViews || [];
     if (!targets.length) return [];
-    return targets.map((t) => {
-        const params = Object.entries(t.parameters || {}).filter(([key]) => PROPOSAL_PARAMETER_LABELS[key]).map(([key, value]) => {
-            const display = key === "seedreamOptimize" ? (value === "standard" ? "标准" : value === "fast" ? "快速" : value)
-                : key === "seedreamWatermark" ? (value === "true" ? "开启" : "关闭")
-                : key === "seedreamOutputFormat" ? value.toUpperCase() : value;
-            return `${PROPOSAL_PARAMETER_LABELS[key]}：${display}`;
-        }).join(" · ");
-        const refs = (t.referenceNodeIds || []).map((id) => targets.find((item) => item.nodeId === id)?.title || "已有参考素材");
-        const modelLabel = t.model || t.modelKey?.split("::").pop() || proposal.model;
-        return [
-            `${t.title || t.nodeId} · ${modelLabel} · ${t.parameters?.count || "1"} 个`,
-            ...(params ? [params] : []),
-            ...(refs.length ? [`参考：${refs.join("、")}`] : []),
-            ...(awaitingConfirmation && t.estimate?.text ? [`费用：${t.estimate.text}`] : []),
-            `${t.kind === "audio" ? "台词" : "提示词"}：${t.prompt}`,
-        ].join("\n");
-    });
+    return targets.map((t) => formatProposalTargetLine(t, targets, proposal.model, awaitingConfirmation));
 }
 
-/** 拆出整片方案的概览、逐项明细与确认提示，供卡片默认收起明细、按需展开。 */
+/** 区分整片制作（多模态或带后续依赖的视频管线）、单类型分步方案与单步生成，避免单图生成误显「制作整片」。 */
+export function assistantProductionScope(proposal: AssistantGenerationProposal): AssistantProductionScope | null {
+    if (!proposal.production) return null;
+    const targets = Array.isArray(proposal.production.targets) ? proposal.production.targets : [];
+    const distinctKinds = new Set(targets.map((target) => target.kind));
+    const hasVideo = distinctKinds.has("video");
+    const initialNodeIds = new Set(Array.isArray(proposal.nodeIds) ? proposal.nodeIds : []);
+    const targetNodeIds = new Set(targets.map((target) => target.nodeId));
+    const hasChainedStages = targets.some(
+        (target) =>
+            !initialNodeIds.has(target.nodeId) ||
+            (Array.isArray(target.referenceNodeIds) && target.referenceNodeIds.some((refId) => targetNodeIds.has(refId))),
+    );
+    if (distinctKinds.size > 1 || (hasVideo && hasChainedStages)) return "full-production";
+    if (hasChainedStages) return "staged-plan";
+    return "single-step";
+}
+
+export function isMergedMultiModelProposal(proposal: AssistantGenerationProposal): boolean {
+    if (proposal.kind === "mixed") return true;
+    const orderTargets = proposal.targets?.length ? proposal.targets : proposal.order?.targetViews || [];
+    if (orderTargets.length > 1) {
+        const distinctModels = new Set(orderTargets.map((item) => item.modelKey || item.model).filter(Boolean));
+        if (distinctModels.size > 1 || !proposal.modelKey) return true;
+    }
+    return false;
+}
+
+export function assistantProposalConfirmLabel(proposal: AssistantGenerationProposal): string {
+    if (proposal.regenerate) return "确认并原地重做";
+    const scope = assistantProductionScope(proposal);
+    if (scope === "full-production") return "确认并制作整片";
+    if (scope === "staged-plan") return "确认制作方案";
+    if (scope === "single-step") return "确认并生成";
+    if (isMergedMultiModelProposal(proposal)) return "一键确认生成";
+    return "生成";
+}
+
+function formatPresentKindCounts(images: number, videos: number, audio: number): string {
+    const parts: string[] = [];
+    if (images > 0) parts.push(`${images} 张图片`);
+    if (videos > 0) parts.push(`${videos} 段视频`);
+    if (audio > 0) parts.push(`${audio} 段配音`);
+    return parts.join("、") || "0 项素材";
+}
+
+/** 拆出制作/生成方案的概览、逐项明细与确认提示，供卡片默认收起明细、按需展开。 */
 export function assistantProductionProposalParts(
     proposal: AssistantGenerationProposal,
     awaitingConfirmation = true,
 ): AssistantProductionProposalParts | null {
-    if (!proposal.production) return null;
-    const targets = proposal.production.targets;
+    const scope = assistantProductionScope(proposal);
+    if (!scope || !proposal.production) return null;
+    const targets = Array.isArray(proposal.production.targets) ? proposal.production.targets : [];
     const images = targets.filter(t => t.kind === "image").length;
     const videos = targets.filter(t => t.kind === "video");
     const audio = targets.filter(t => t.kind === "audio");
-    const labels = PROPOSAL_PARAMETER_LABELS;
     const priceSummary = awaitingConfirmation ? proposal.production.estimate?.text : "";
-    const header = `整片制作方案：${images} 张图片、${videos.length} 段视频、${audio.length} 段配音${priceSummary ? `\n${priceSummary}` : ""}`;
-    const targetLines = targets.map((t) => {
-        const params = Object.entries(t.parameters).filter(([key]) => labels[key]).map(([key,value]) => {
-            const display = key === "seedreamOptimize" ? (value === "standard" ? "标准" : value === "fast" ? "快速" : value)
-                : key === "seedreamWatermark" ? (value === "true" ? "开启" : "关闭")
-                : key === "seedreamOutputFormat" ? value.toUpperCase() : value;
-            return `${labels[key]}：${display}`;
-        }).join(" · ");
-        const refs = t.referenceNodeIds.map(id => targets.find(item => item.nodeId === id)?.title || "已有参考素材");
-        const estimate = awaitingConfirmation ? t.estimate?.text : "";
-        return `${t.title} · ${t.modelKey.split("::").pop()} · ${t.parameters.count || "1"} 个\n${params}${refs.length ? `\n参考：${refs.join("、")}` : ""}${estimate ? `\n费用：${estimate}` : ""}\n${t.kind === "audio" ? "台词" : "提示词"}：${t.prompt}`;
-    });
-    const footer = awaitingConfirmation ? "确认后按此方案生成素材，并自动完成声音、字幕和剪辑（可点击下方按钮或直接发送「确认」开始）。素材按所选渠道计费；失败后确认新方案重新生成也会重新计费，新增或修改生成内容时会重新确认。" : "";
-    return { header, targetLines, footer };
+    const targetLines = targets.map((t) => formatProposalTargetLine(t, targets, proposal.model, awaitingConfirmation));
+    if (scope === "full-production") {
+        const header = `整片制作方案：${images} 张图片、${videos.length} 段视频、${audio.length} 段配音${priceSummary ? `\n${priceSummary}` : ""}`;
+        const footer = awaitingConfirmation ? "确认后按此方案生成素材，并自动完成声音、字幕和剪辑（请点击下方按钮确认开始）。素材按所选渠道计费；失败后确认新方案重新生成也会重新计费，新增或修改生成内容时会重新确认。" : "";
+        return { scope, header, summaryLabel: `查看 ${targetLines.length} 项镜头与提示词明细`, targetLines, footer };
+    }
+    const countSummary = formatPresentKindCounts(images, videos.length, audio.length);
+    const titlePrefix = proposal.regenerate
+        ? "原地重做方案"
+        : scope === "staged-plan"
+            ? "分步生成方案"
+            : "生成方案";
+    const header = `${titlePrefix}：${countSummary}${priceSummary ? `\n${priceSummary}` : ""}`;
+    const footer = awaitingConfirmation
+        ? `${proposal.regenerate ? "确认后将在原节点重新生成上述素材（原有结果会保留在素材库，" : scope === "staged-plan" ? "确认后按依赖顺序依次生成素材（" : "确认后按此方案生成素材（"}请点击下方按钮确认开始）。素材按所选渠道计费；失败后确认新方案重新生成也会重新计费，新增或修改生成内容时会重新确认。`
+        : "";
+    return { scope, header, summaryLabel: `查看 ${targetLines.length} 项生成明细`, targetLines, footer };
 }
 
 /** 提议可能来自自建渠道，不能把所有费用都归到 BeefTV 官方算力。没有后端估算的旧提议仍显示渠道单价。 */
@@ -207,16 +305,40 @@ export function assistantProposalText(
     proposal: AssistantGenerationProposal,
     priceLines: string[] = [],
     awaitingConfirmation = true,
+    modelDisplayLabel?: string,
 ): string {
     const count = proposal.nodeIds?.length ?? 0;
     const productionParts = assistantProductionProposalParts(proposal, awaitingConfirmation);
     if (productionParts) {
         return [productionParts.header, ...productionParts.targetLines, ...(productionParts.footer ? [productionParts.footer] : [])].join("\n\n");
     }
+    if (isMergedMultiModelProposal(proposal)) {
+        const orderTargets = proposal.targets?.length ? proposal.targets : proposal.order?.targetViews || [];
+        const images = orderTargets.filter((item) => item.kind === "image").length;
+        const videos = orderTargets.filter((item) => item.kind === "video").length;
+        const audio = orderTargets.filter((item) => item.kind === "audio").length;
+        const summaryLabel = orderTargets.length ? formatPresentKindCounts(images, videos, audio) : `${count} 项素材`;
+        const distinctModels = [...new Set(orderTargets.map((item) => item.model || item.modelKey?.split("::").pop()).filter(Boolean))];
+        const modelSuffix = distinctModels.length > 1 ? ` · ${distinctModels.length} 个模型合并确认` : distinctModels.length === 1 ? ` · ${distinctModels[0]}` : "";
+        const title = proposal.regenerate
+            ? `合并原地重做：${summaryLabel}${modelSuffix}`
+            : `合并生成方案：${summaryLabel}${modelSuffix}`;
+        const prices = proposal.estimate?.text ? [proposal.estimate.text] : priceLines;
+        const confirmNote = proposal.regenerate
+            ? "确认后一次提交全部重做任务，按所选渠道计费；原有结果保留在素材库。"
+            : "确认后一次提交全部就绪任务，按所选渠道计费。";
+        return awaitingConfirmation ? `${title}\n${prices.length ? prices.join("\n") + "\n" : ""}${confirmNote}` : title;
+    }
     const target = proposal.kind === "video" ? "视频" : proposal.kind === "audio" ? "音频" : "图片";
-    const title = `为 ${count} 个节点生成${target} · ${seedancePortraitLabel(proposal.model) || proposal.model}`;
+    const modelLabel = modelDisplayLabel?.trim() || proposal.model;
+    const title = proposal.regenerate
+        ? `在原节点重新生成 ${count} 个${target} · ${modelLabel}`
+        : `为 ${count} 个节点生成${target} · ${modelLabel}`;
     const prices = proposal.estimate?.text ? [proposal.estimate.text] : priceLines;
-    return awaitingConfirmation ? `${title}\n${prices.length ? prices.join("\n") + "\n" : ""}确认后开始，按所选渠道计费。` : title;
+    const confirmNote = proposal.regenerate
+        ? "确认后开始，按所选渠道计费；原有结果会保留在素材库。"
+        : "确认后开始，按所选渠道计费。";
+    return awaitingConfirmation ? `${title}\n${prices.length ? prices.join("\n") + "\n" : ""}${confirmNote}` : title;
 }
 
 /** Match the submitted proposal, including fan-out images; old results on the source node are not receipts. */
@@ -224,7 +346,8 @@ export function assistantProposalProgress(proposal: AssistantGenerationProposal,
     const byId = new Map(nodes.map(node => [node.id, node]));
     const outputs = new Map<string, CanvasNodeData>();
     let unknown = false, batchUnverified = false, planned = 0;
-    for (const sourceId of new Set(proposal.production?.targets.map(t => t.nodeId) || proposal.nodeIds)) {
+    const productionTargets = Array.isArray(proposal.production?.targets) ? proposal.production.targets : null;
+    for (const sourceId of new Set(productionTargets?.map(t => t.nodeId) || proposal.nodeIds || [])) {
         const operationId = `proposal:${proposal.proposalId}:${sourceId}`;
         const matches = (node: CanvasNodeData) => {
             const actual = node.metadata?.taskClientOperationId || "";
@@ -283,7 +406,8 @@ export function assistantProposalProgress(proposal: AssistantGenerationProposal,
         : pending ? `生成中，${complete}/${outputs.size + planned} 个结果已就绪。`
         : retrieving ? `${complete}/${outputs.size} 个结果已就绪，其余结果还不可用。请查看节点上的取回提示。`
         : failed ? `${complete} 个结果已就绪，${failed} 个结果因任务失败或取消而未生成。`
-        : proposal.production ? `${complete} 个素材已保存，后续制作与交付进度见助手消息。` : `${complete} 个结果已就绪，可以请助手检查。`;
+        : assistantProductionScope(proposal) === "full-production" ? `${complete} 个素材已保存，后续制作与交付进度见助手消息。`
+        : proposal.production ? `${complete} 个素材已保存，后续进度见助手消息。` : `${complete} 个结果已就绪，可以请助手检查。`;
     return { ready, text, nodeIds: [...outputs.keys()] };
 }
 
@@ -361,7 +485,7 @@ export function assistantLifecycleText(event: Pick<AgentLifecycleEvent, "phase" 
 
 /** 这里只提供继续对话入口，不重发原请求，也不保证后台任务已恢复。 */
 export function assistantTurnCanContinue(reason: string | null | undefined): boolean {
-    return ["turn_timeout", "turn_interrupted", "turn_request_budget_exhausted", "turn_tool_step_budget_exhausted", "model_request_failed", "model_error", "provider_error"].includes(reason || "");
+    return ["turn_timeout", "turn_interrupted", "turn_request_budget_exhausted", "turn_tool_step_budget_exhausted", "model_request_failed", "model_error", "model_network_error", "provider_error"].includes(reason || "");
 }
 
 export const ASSISTANT_CONTINUE_PROMPT = "继续完成上一条要求。先检查当前画布和已经完成的操作，保留已有结果；不要重复创建节点或重新提交已开始的生成任务。";

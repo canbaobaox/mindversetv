@@ -28,7 +28,6 @@ import type { CanvasPageUiStoreHook } from "@/stores/canvas/use-canvas-page-ui-s
 type UseCanvasNodeEditorOptions = {
     pageUi: CanvasPageUiStoreHook;
     canvasId: string;
-    canvasTitle: string;
     domainProjectId?: string;
     readOnly?: boolean;
     nodesRef: { current: CanvasNodeData[] };
@@ -40,7 +39,6 @@ type UseCanvasNodeEditorOptions = {
 export function useCanvasNodeEditor({
     pageUi,
     canvasId,
-    canvasTitle,
     domainProjectId,
     readOnly = false,
     nodesRef,
@@ -171,7 +169,8 @@ export function useCanvasNodeEditor({
             current.map((node) => {
                 if (node.id !== nodeId) return node;
                 const freeResize = !node.metadata?.freeResize;
-                if (freeResize || node.type !== CanvasNodeType.Image) return { ...node, metadata: { ...node.metadata, freeResize } };
+                if ((node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video) && node.metadata?.locked) return node;
+                if (freeResize || (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video)) return { ...node, metadata: { ...node.metadata, freeResize } };
                 const ratio = (node.metadata?.naturalWidth || node.width) / (node.metadata?.naturalHeight || node.height || 1);
                 const height = node.width / ratio;
                 return { ...node, height, position: { x: node.position.x, y: node.position.y + node.height / 2 - height / 2 }, metadata: { ...node.metadata, freeResize } };
@@ -289,11 +288,11 @@ export function useCanvasNodeEditor({
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
         void reportOwnedMediaSave(message, downloadOwnedOrBrowserMedia({
-            fileName: buildCanvasMediaDownloadFileName(canvasTitle, node),
+            fileName: buildCanvasMediaDownloadFileName(node),
             resourceId: ownedResourceIdFromMediaRef(node.metadata?.storageKey, node.metadata?.content),
             browserUrl: node.metadata.content,
         }));
-    }, [canvasTitle, message]);
+    }, [message]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return message.error("当前节点类型不能保存为素材");

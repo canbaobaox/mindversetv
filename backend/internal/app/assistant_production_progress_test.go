@@ -580,3 +580,75 @@ func TestProductionProgressObservationErrorPreservesWaitingReceiptAndIdentities(
 		t.Fatalf("observation error mutated continuation receipt state to %s", state)
 	}
 }
+
+func TestLegacyNullReferenceTargetsConfirmAndContinueWithoutConflict(t *testing.T) {
+	svc, canvasID, _ := newAssistantTurnService(t)
+	if err := svc.SaveLocalModelConfig([]byte(`{"imageModel":"custom::image","videoModel":"custom::video","audioModel":"custom::speech","channels":[{"id":"custom","enabled":true,"baseUrl":"https://example.invalid/v1","apiKey":"test-only","models":["image","video","speech"],"modelProfiles":[{"model":"image","capability":"image","protocol":"openai-image"},{"model":"video","capability":"video","protocol":"video-generations-json"},{"model":"speech","capability":"audio","protocol":"openai-audio"}]}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := svc.UserCanvasProject("local", canvasID)
+	var doc map[string]any
+	_ = json.Unmarshal(raw, &doc)
+	doc["nodes"] = []any{
+		map[string]any{"id": "image", "type": "image", "title": "首帧", "metadata": map[string]any{"prompt": "茶杯", "size": "9:16", "count": 1}},
+		map[string]any{"id": "video", "type": "video", "title": "镜头", "metadata": map[string]any{"prompt": "注入热茶", "size": "9:16", "seconds": 4, "generateAudio": false}},
+	}
+	doc["connections"] = []any{map[string]any{"id": "reference", "fromNodeId": "image", "toNodeId": "video"}}
+	raw, _ = json.Marshal(doc)
+	if _, err := svc.UpsertUserCanvasProject("local", raw); err != nil {
+		t.Fatal(err)
+	}
+	const source = "aabbccdd11223344"
+	if _, err := svc.BeginAssistantTurn("local", canvasID, source, AssistantTurnInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AssistantTurns().BindDurableSession("local", source, backgroundContinuationSession, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.FinalizeAssistantTurn(source); err != nil {
+		t.Fatal(err)
+	}
+	freshTargets, err := operations.GenerationTargets(svc.BindDomain(nil), doc, []string{"image", "video"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate legacy v2.4.0/v2.4.1 proposal payload where zero-reference target had `"referenceNodeIds": null`.
+	legacyTargets := append([]operations.GenerationTarget(nil), freshTargets...)
+	legacyTargets[0].ReferenceNodeIDs = nil
+
+	result, err := svc.ConfirmAssistantProduction("local", source, AssistantProductionConfirmation{
+		CanvasID: canvasID, ProposalID: "gp-legacy-null", Kind: "image", NodeIDs: []string{"image"}, Targets: legacyTargets,
+	})
+	if err != nil {
+		t.Fatalf("ConfirmAssistantProduction with legacy nil ReferenceNodeIDs failed: %v", err)
+	}
+	contID := result.(map[string]any)["continuationId"].(string)
+
+	// Ensure the canonical GenerationOrder row itself stores `"referenceNodeIds": null`.
+	var rec model.AgentOpRecord
+	if err := svc.Database().First(&rec, "user_id = ? AND op = ? AND op_id = ?", "local", "canvas.generation.order", "generation-order:gp-legacy-null").Error; err != nil {
+		t.Fatalf("canonical order row missing: %v", err)
+	}
+	var storedOrder operations.GenerationOrder
+	if err := json.Unmarshal([]byte(rec.ResultJSON), &storedOrder); err != nil {
+		t.Fatal(err)
+	}
+	storedOrder.Targets = legacyTargets
+	if err := operations.UpsertGenerationOrderInTx(svc.Database(), "local", storedOrder); err != nil {
+		t.Fatal(err)
+	}
+
+	// Continuation progress must recognize legacy persisted plan as unchanged (continuation_waiting, not continuation_intent_changed).
+	_, contErr := svc.ClaimAssistantContinuation("local", contID)
+	var expected *assistantturns.Error
+	if !errors.As(contErr, &expected) || expected.Reason != "continuation_waiting" {
+		t.Fatalf("ClaimAssistantContinuation against legacy null-ref plan = %v, want continuation_waiting", contErr)
+	}
+
+	// Idempotent re-confirmation with fresh `[]` targets against legacy stored `"referenceNodeIds": null` must also succeed.
+	if _, err := svc.ConfirmAssistantProduction("local", source, AssistantProductionConfirmation{
+		CanvasID: canvasID, ProposalID: "gp-legacy-null", Kind: "image", NodeIDs: []string{"image"}, Targets: freshTargets,
+	}); err != nil {
+		t.Fatalf("idempotent re-confirm against legacy null-ref authorization failed: %v", err)
+	}
+}

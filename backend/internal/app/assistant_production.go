@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 
 	"gorm.io/gorm"
@@ -21,6 +20,8 @@ type AssistantProductionConfirmation struct {
 	NodeIDs      []string                      `json:"nodeIds"`
 	Targets      []operations.GenerationTarget `json:"targets"`
 	ContinuePlan bool                          `json:"continuePlan,omitempty"`
+	Regenerate   bool                          `json:"regenerate,omitempty"`
+	AutoBudget   bool                          `json:"-"`
 }
 
 func (s *Service) ConfirmAssistantProduction(userID, turnID string, input AssistantProductionConfirmation) (any, error) {
@@ -46,15 +47,9 @@ func (s *Service) confirmAssistantProductionWithApprover(userID, turnID string, 
 		if err = tx.First(&source, "turn_id = ? AND user_id = ? AND canvas_id = ?", turnID, userID, input.CanvasID).Error; err != nil {
 			return err
 		}
-		expectedTargets := input.Targets
-		if len(expectedTargets) == 0 && source.GenerationAuthorizationJSON != "" {
-			var existing operations.GenerationAuthorization
-			if json.Unmarshal([]byte(source.GenerationAuthorizationJSON), &existing) == nil {
-				if existing.ProposalID != "" && existing.ProposalID != input.ProposalID {
-					return operations.Conflict("production_changed", "这一轮已确认了不同的制作方案", nil)
-				}
-				expectedTargets = existing.Targets
-			}
+		expectedTargets, err := operations.ResolveProposalTargetsForConfirmInTx(tx, userID, input.CanvasID, turnID, input.ProposalID, input.Targets)
+		if err != nil {
+			return err
 		}
 		ids := input.NodeIDs
 		if len(expectedTargets) > 0 {
@@ -67,22 +62,27 @@ func (s *Service) confirmAssistantProductionWithApprover(userID, turnID string, 
 		if err != nil {
 			return err
 		}
-		if len(expectedTargets) > 0 && !reflect.DeepEqual(current, expectedTargets) {
+		if len(expectedTargets) > 0 && !operations.GenerationTargetsEqual(current, expectedTargets) {
 			return operations.Conflict("production_changed", "制作方案已变化，请重新确认", nil)
 		}
 		isMultiStage := len(input.Targets) > 0 || input.ContinuePlan || len(current) > len(input.NodeIDs)
 		if source.Undone || source.ContinuationInvalidated || (isMultiStage && source.DurableSessionID == "") {
 			return operations.PreconditionFailed("production_revoked", "这次制作授权已停止，请重新确认", nil)
 		}
-		plan := operations.GenerationAuthorization{SourceTurnID: turnID, ProposalID: input.ProposalID, Targets: current}
-		encoded, _ := json.Marshal(plan)
-		if source.GenerationAuthorizationJSON != "" && source.GenerationAuthorizationJSON != string(encoded) {
-			var existing operations.GenerationAuthorization
-			if json.Unmarshal([]byte(source.GenerationAuthorizationJSON), &existing) != nil || existing.SourceTurnID != "" {
-				return operations.Conflict("production_changed", "这一轮已确认了不同的制作方案", nil)
-			}
+		shouldRegenerate, err := operations.ResolveProposalRegenerateInTx(tx, userID, input.ProposalID, input.Regenerate)
+		if err != nil {
+			return err
 		}
-		if err = tx.Model(&source).Update("generation_authorization_json", string(encoded)).Error; err != nil {
+		var autoEval *operations.AutoConfirmEvaluation
+		if input.AutoBudget {
+			autoEval, err = operations.EvaluateAssistantAutoConfirm(tx, domain, userID, input.CanvasID, turnID, input.ProposalID, input.NodeIDs, input.Targets, shouldRegenerate)
+			if err != nil {
+				return err
+			}
+			approvedBy = operations.ApprovedByAutoBudget
+		}
+		plan := operations.GenerationAuthorization{SourceTurnID: turnID, ProposalID: input.ProposalID, Targets: current, Regenerate: shouldRegenerate}
+		if err = operations.ValidateTurnOrderConflictInTx(tx, userID, input.CanvasID, turnID, plan); err != nil {
 			return err
 		}
 		batch := []operations.GenerationTarget{}
@@ -92,7 +92,7 @@ func (s *Service) confirmAssistantProductionWithApprover(userID, turnID string, 
 		}
 		for _, target := range current {
 			if wanted[target.NodeID] {
-				if target.Kind != input.Kind {
+				if input.Kind != "" && input.Kind != "mixed" && target.Kind != input.Kind {
 					return operations.InvalidArg("invalid_kind", "首批素材类型不一致")
 				}
 				batch = append(batch, target)
@@ -101,10 +101,16 @@ func (s *Service) confirmAssistantProductionWithApprover(userID, turnID string, 
 		if len(batch) == 0 || len(batch) != len(wanted) {
 			return operations.InvalidArg("invalid_batch", "首批素材不在制作计划内")
 		}
+		if shouldRegenerate {
+			if err = domain.releaseUnadmittedEndedTargets(userID, input.CanvasID, plan, batch); err != nil {
+				return err
+			}
+		}
 		result, err = domain.admitProductionTargets(userID, input.CanvasID, plan, batch)
 		if err != nil {
 			return err
 		}
+		operations.AttachAutoConfirmResult(result, autoEval)
 		var continuationID string
 		if isMultiStage {
 			turns := assistantturns.New(assistantturns.NewStore(domain.repo), assistantCanvasFactory{s}, s.assistantTurnDir())
@@ -120,7 +126,7 @@ func (s *Service) confirmAssistantProductionWithApprover(userID, turnID string, 
 			continuationID = continuation.ID
 			result.(map[string]any)["continuationId"] = continuation.ID
 		}
-		return operations.MarkGenerationOrderSubmittedInTx(tx, domain, userID, input.CanvasID, turnID, input.ProposalID, input.Kind, input.NodeIDs, current, result, continuationID, approvedBy)
+		return operations.MarkGenerationOrderSubmittedInTx(tx, domain, userID, input.CanvasID, turnID, input.ProposalID, input.Kind, input.NodeIDs, current, result, continuationID, approvedBy, shouldRegenerate)
 	})
 	return result, err
 }
@@ -157,7 +163,7 @@ func (s *Service) ApproveGenerationOrder(userID, proposalID, approvedBy string) 
 		if len(existing.ProductionNodeIDs) > 0 {
 			targets = existing.Targets
 		}
-		return s.confirmAssistantProductionWithApprover(userID, existing.SourceTurnID, AssistantProductionConfirmation{CanvasID: existing.CanvasID, ProposalID: existing.ProposalID, Kind: existing.Kind, NodeIDs: existing.NodeIDs, Targets: targets, ContinuePlan: len(existing.ProductionNodeIDs) > 0}, approvedBy)
+		return s.confirmAssistantProductionWithApprover(userID, existing.SourceTurnID, AssistantProductionConfirmation{CanvasID: existing.CanvasID, ProposalID: existing.ProposalID, Kind: existing.Kind, NodeIDs: existing.NodeIDs, Targets: targets, ContinuePlan: len(existing.ProductionNodeIDs) > 0, Regenerate: existing.Regenerate}, approvedBy)
 	}
 	var out any
 	return out, s.repo.DB().Transaction(func(tx *gorm.DB) (approveErr error) {
@@ -166,26 +172,36 @@ func (s *Service) ApproveGenerationOrder(userID, proposalID, approvedBy string) 
 	})
 }
 
-func (s *operationSession) RecordAssistantGenerationProposal(userID, turnID, canvasID string, proposal operations.GenerationAuthorization) error {
-	return operations.RecordAssistantGenerationProposalInTx(s.tx, userID, turnID, canvasID, proposal)
+func (s *operationSession) SubmitAuthorizedGeneration(userID, turnID, canvasID string, targets []operations.GenerationTarget) (any, error) {
+	return s.submitAuthorizedGeneration(userID, turnID, canvasID, targets, false)
 }
 
-func (s *operationSession) SubmitAuthorizedGeneration(userID, turnID, canvasID string, targets []operations.GenerationTarget) (any, error) {
+func (s *operationSession) RegenerateAuthorizedGeneration(userID, turnID, canvasID string, targets []operations.GenerationTarget) (any, error) {
+	return s.submitAuthorizedGeneration(userID, turnID, canvasID, targets, true)
+}
+
+func (s *operationSession) submitAuthorizedGeneration(userID, turnID, canvasID string, targets []operations.GenerationTarget, releaseEnded bool) (any, error) {
 	var source model.AssistantTurn
 	if err := s.tx.First(&source, "turn_id = ? AND user_id = ? AND canvas_id = ?", turnID, userID, canvasID).Error; err != nil {
 		return nil, err
 	}
-	var plan operations.GenerationAuthorization
-	if json.Unmarshal([]byte(source.GenerationAuthorizationJSON), &plan) != nil || plan.SourceTurnID == "" {
+	plan, err := operations.ResolveAuthorizedOrderForTurnInTx(s.tx, userID, canvasID, turnID)
+	if err != nil {
+		return nil, err
+	}
+	if plan == nil || plan.SourceTurnID == "" {
 		// Only the trusted confirmation endpoint can create a spend grant.
 		// A later model call cannot promote a recorded, unconfirmed proposal.
 		return nil, operations.PreconditionFailed("production_authorization_required", "请先在确认卡片中确认本次制作方案", nil)
+	}
+	if releaseEnded && !plan.Regenerate {
+		return nil, operations.PreconditionFailed("production_authorization_required", "该制作方案未授权原地重做，请重新提出原地重做方案并确认", nil)
 	}
 	var owner model.AssistantTurn
 	if err := s.tx.First(&owner, "turn_id = ? AND user_id = ? AND canvas_id = ?", plan.SourceTurnID, userID, canvasID).Error; err != nil {
 		return nil, err
 	}
-	if owner.Undone || owner.ContinuationInvalidated || owner.DurableSessionID != source.DurableSessionID || owner.GenerationAuthorizationJSON != source.GenerationAuthorizationJSON {
+	if source.Undone || source.ContinuationInvalidated || owner.Undone || owner.ContinuationInvalidated || owner.DurableSessionID != source.DurableSessionID {
 		return nil, operations.PreconditionFailed("production_revoked", "本次制作授权已停止", nil)
 	}
 	approved := map[string]operations.GenerationTarget{}
@@ -193,11 +209,37 @@ func (s *operationSession) SubmitAuthorizedGeneration(userID, turnID, canvasID s
 		approved[target.NodeID] = target
 	}
 	for _, target := range targets {
-		if !reflect.DeepEqual(approved[target.NodeID], target) {
+		expected, ok := approved[target.NodeID]
+		if !ok || !operations.GenerationTargetEqual(expected, target) {
 			return nil, operations.PreconditionFailed("production_changed", "素材或参数超出已确认的制作方案，请重新确认", nil)
 		}
 	}
-	return s.admitProductionTargets(userID, canvasID, plan, targets)
+	if releaseEnded {
+		if err := s.releaseUnadmittedEndedTargets(userID, canvasID, *plan, targets); err != nil {
+			return nil, err
+		}
+	}
+	return s.admitProductionTargets(userID, canvasID, *plan, targets)
+}
+
+// releaseUnadmittedEndedTargets skips targets that already have an admitted
+// task under this exact plan so confirmation/regenerate retries stay idempotent
+// and never wipe this plan's own running or succeeded outputs.
+func (s *operationSession) releaseUnadmittedEndedTargets(userID, canvasID string, plan operations.GenerationAuthorization, targets []operations.GenerationTarget) error {
+	pending := make([]operations.GenerationTarget, 0, len(targets))
+	for _, target := range targets {
+		existing, err := s.repo.TaskByClientOperation(userID, productionTaskKey(plan, target.NodeID))
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			pending = append(pending, target)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	return operations.ReleaseEndedGenerationNodes(s, s.tx, userID, canvasID, pending)
 }
 
 func (s *operationSession) admitProductionTargets(userID, canvasID string, plan operations.GenerationAuthorization, targets []operations.GenerationTarget) (any, error) {

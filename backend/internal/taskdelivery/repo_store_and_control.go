@@ -9,6 +9,7 @@ import (
 	"time"
 
 	localasset "infinite-canvas/backend/internal/asset"
+	"infinite-canvas/backend/internal/assets"
 	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/playback"
@@ -19,12 +20,13 @@ import (
 )
 
 const (
-	GenerationDeliveryRecoveryInterval = 5 * time.Second
-	GenerationDownloadTimeout          = 15 * time.Minute
+	ProviderAndContinuationPollInterval = 5 * time.Second
+	GenerationDeliveryRecoveryInterval  = 30 * time.Second
+	GenerationDownloadTimeout           = 15 * time.Minute
 )
 
 func DeliveryPaused(stage string) bool {
-	return stage == "delivery_paused" || stage == "delivery_timed_out"
+	return stage == model.TaskStageDeliveryPaused || stage == model.TaskStageDeliveryTimedOut
 }
 
 func ModelTaskOutputs(outputs []localtask.CanonicalOutput) []model.TaskOutput {
@@ -115,7 +117,7 @@ func (s RepoStore) CommitOwned(item OwnedDelivery) error {
 		return err
 	}
 	task, err := s.Repo.Task(item.Result.TaskID)
-	if err != nil || (!DeliveryPaused(task.Stage) && task.Stage != "正在取回结果" && !strings.Contains(task.InputJSON, `"imageDeliveryCipher"`)) {
+	if err != nil || (!DeliveryPaused(task.Stage) && task.Stage != model.TaskStageFetchingResult && !strings.Contains(task.InputJSON, `"imageDeliveryCipher"`)) {
 		return err
 	}
 	rows, err := s.Repo.GenerationOutputResults(task.ID)
@@ -137,7 +139,23 @@ func (s RepoStore) CommitOwned(item OwnedDelivery) error {
 }
 
 func (s RepoStore) SucceededTasksForDelivery(afterID string, limit int) ([]model.Task, error) {
-	return s.Repo.SucceededTasksForDelivery(afterID, limit)
+	return s.Repo.PendingDeliveryTasks(afterID, limit)
+}
+
+func (s RepoStore) MarkDeliverySettled(userID, taskID string) error {
+	if s.Repo == nil {
+		return nil
+	}
+	// Clear any pending bind backoff so newly materialized outputs bind immediately.
+	_ = s.Repo.ClearPendingTaskEffectsByKind(taskID, model.TaskEffectKindTaskBindSettled)
+	return s.Repo.MarkTaskEffectSettled(userID, taskID, model.TaskEffectKindDeliverySettled, "", "", 0, "", "")
+}
+
+func (s RepoStore) RecordDeliveryAttemptFailure(userID, taskID, errMsg string) error {
+	if s.Repo == nil {
+		return nil
+	}
+	return s.Repo.RecordTaskEffectAttemptFailure(userID, taskID, model.TaskEffectKindDeliverySettled, "", errMsg)
 }
 
 func MapDeliveryStoreErr(err error) error {
@@ -157,20 +175,6 @@ func CanvasBindingIntents(deliverer *Deliverer, task model.Task, blocksRetry boo
 	stored, loadErr := deliverer.LoadedOutputs(task.ID)
 	proj := Project(task, stored, loadErr, blocksRetry)
 	return localtask.CanvasBindingIntents(task.ID, proj.Outputs)
-}
-
-func EnsureSucceededTaskDelivery(deliverer *Deliverer, task *model.Task, deliver func(model.Task) error) error {
-	if task == nil || task.Status != model.TaskStatusSucceeded {
-		return nil
-	}
-	stored, err := deliverer.LoadedOutputs(task.ID)
-	if err != nil {
-		return err
-	}
-	if localtask.DeliveryComplete(task.ResultJSON, stored, task.Type) {
-		return nil
-	}
-	return deliver(*task)
 }
 
 func AttachTaskDelivery(
@@ -231,6 +235,41 @@ func AttachTaskSummaryDeliveries(
 		summaries[index].Outputs = proj.Outputs
 		summaries[index].ResultState = proj.ResultState
 		summaries[index].Stage = proj.Stage
+		if task.Status == model.TaskStatusSucceeded && len(proj.Outputs) > 0 {
+			liveOutput := (*localtask.CanonicalOutput)(nil)
+			allDeleted := true
+			for i := range proj.Outputs {
+				if proj.Outputs[i].MaterializationErrorCode != localtask.MaterializeErrorAssetDeleted {
+					allDeleted = false
+					if liveOutput == nil && strings.TrimSpace(proj.Outputs[i].ResourceID) != "" {
+						liveOutput = &proj.Outputs[i]
+					}
+				}
+			}
+			if allDeleted {
+				summaries[index].PreviewURL = ""
+				summaries[index].PreviewKind = ""
+				summaries[index].PreviewPosterURL = ""
+			} else if liveOutput != nil && strings.TrimSpace(summaries[index].PreviewURL) != "" {
+				deletedReferenced := false
+				for _, out := range proj.Outputs {
+					if out.MaterializationErrorCode == localtask.MaterializeErrorAssetDeleted && strings.TrimSpace(out.ResourceID) == "" {
+						deletedReferenced = true
+						break
+					}
+				}
+				if deletedReferenced {
+					liveURL := assets.FileURL(liveOutput.ResourceID)
+					if !strings.Contains(summaries[index].PreviewURL, liveOutput.ResourceID) {
+						summaries[index].PreviewURL = liveURL
+						if liveOutput.MediaType == "image" {
+							summaries[index].PreviewKind = "image"
+							summaries[index].PreviewPosterURL = liveURL
+						}
+					}
+				}
+			}
+		}
 		if deliveryForTask != nil {
 			summaries[index].Delivery = deliveryForTask(task.ID)
 		}
@@ -312,13 +351,20 @@ func ResumeGenerationDownload(
 	}
 	for identity := range cancels {
 		if strings.HasPrefix(identity, task.ID+":") {
-			return nil, errors.New("正在停止取回，请稍后再试")
+			return nil, &kernel.AppError{
+				Status:    kernel.CodeConflict,
+				Code:      kernel.CodeConflict,
+				Reason:    kernel.ReasonConflict,
+				Message:   "正在停止取回，请稍后再试",
+				Retryable: true,
+			}
 		}
 	}
-	if err := repo.SetGenerationDeliveryStage(task.UserID, task.ID, "正在取回结果"); err != nil {
+	if err := repo.SetGenerationDeliveryStage(task.UserID, task.ID, model.TaskStageFetchingResult); err != nil {
 		return nil, err
 	}
-	task.Stage = "正在取回结果"
+	_ = repo.ClearTaskEffectsByKind(task.ID, model.TaskEffectKindDeliverySettled)
+	task.Stage = model.TaskStageFetchingResult
 	if attach != nil {
 		attach(&task)
 	}

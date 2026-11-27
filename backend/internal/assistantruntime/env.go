@@ -1,6 +1,7 @@
 package assistantruntime
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -21,8 +22,13 @@ type childPin struct {
 	DesktopTok string
 }
 
-func (h *Host) buildEnv(provider assistant.Provider, pin childPin) []string {
+func (h *Host) proxyFingerprint(provider assistant.Provider) string {
+	return desktopnet.NodeProxyFingerprint(filterInheritedEnv(h.environ()), channelurl.CleanBase(provider.BaseURL))
+}
+
+func (h *Host) buildEnvWithProxyFingerprint(provider assistant.Provider, pin childPin) ([]string, string) {
 	env := desktopnet.NodeProxyEnvironment(filterInheritedEnv(h.environ()), channelurl.CleanBase(provider.BaseURL))
+	proxyFingerprint := desktopnet.NodeProxyFingerprintFromEnv(env)
 	set := func(key, value string) {
 		env = setEnvValue(env, key, value)
 	}
@@ -34,6 +40,15 @@ func (h *Host) buildEnv(provider assistant.Provider, pin childPin) []string {
 	set("BEEFTV_AGENT_HOST_TOKEN", h.hostToken())
 	set("BEEFTV_AGENT_DESKTOP_TOKEN", pin.DesktopTok)
 	set("BEEFTV_AGENT_API_KEY", provider.APIKey)
+	if len(provider.Headers) > 0 {
+		if encoded, err := json.Marshal(provider.Headers); err == nil {
+			set("BEEFTV_AGENT_HEADERS", string(encoded))
+		} else {
+			set("BEEFTV_AGENT_HEADERS", "")
+		}
+	} else {
+		set("BEEFTV_AGENT_HEADERS", "")
+	}
 	if provider.ContextWindow > 0 {
 		set("BEEFTV_AGENT_CONTEXT_WINDOW", strconv.Itoa(provider.ContextWindow))
 	}
@@ -56,7 +71,7 @@ func (h *Host) buildEnv(provider assistant.Provider, pin childPin) []string {
 	}
 	set("BEEFTV_OWNER_TOKEN", "")
 	set("BEEFTV_AGENT_HOST_URL", "")
-	return env
+	return env, proxyFingerprint
 }
 
 func filterInheritedEnv(inherited []string) []string {
@@ -108,7 +123,8 @@ func agentTunableKey(upper string) bool {
 		"BEEFTV_AGENT_TURN_TIMEOUT_MS", "BEEFTV_AGENT_MAX_REQUESTS_PER_TURN",
 		"BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN", "BEEFTV_AGENT_TOTAL_REQUEST_BUDGET",
 		"BEEFTV_AGENT_ALLOWED_ORIGIN", "BEEFTV_AGENT_READ_ONLY",
-		"BEEFTV_AGENT_MAX_REQUESTS", "BEEFTV_AGENT_THINKING":
+		"BEEFTV_AGENT_MAX_REQUESTS", "BEEFTV_AGENT_THINKING",
+		"BEEFTV_AGENT_CACHE_RETENTION":
 		return true
 	}
 	return false
@@ -129,9 +145,9 @@ func setEnvValue(env []string, key, value string) []string {
 // hostAPI 把渠道协议映射成 pi-ai 的 API 适配器名；宿主按它构造模型定义。
 func hostAPI(protocol string) string {
 	switch protocol {
-	case "claude-api":
+	case "claude-api", "anthropic-messages", "claude-messages":
 		return "anthropic-messages"
-	case "responses":
+	case "responses", "openai-response", "openai-responses":
 		return "openai-responses"
 	case "gemini-generate-content", "google-gemini-generate-content":
 		return "google-generative-ai"
@@ -160,7 +176,7 @@ func hostBaseURL(baseURL, protocol string) string {
 		return strings.TrimSuffix(channelurl.Join(channelurl.NormalizeBase(baseURL), "/v1beta/models", "/v1beta"), "/models")
 	}
 	endpoint := "/chat/completions"
-	if protocol == "responses" {
+	if hostAPI(protocol) == "openai-responses" {
 		endpoint = "/responses"
 	}
 	return strings.TrimSuffix(channelurl.Join(channelurl.NormalizeBase(baseURL), endpoint, "/v1"), endpoint)

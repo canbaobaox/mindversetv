@@ -1,7 +1,7 @@
-import { saveAs } from "file-saver";
 import { mediaFileExtension, sanitizeDownloadFileName } from "@/lib/canvas/canvas-media-download";
 import { scopedLocalStorage } from "@/lib/user-scope";
 import { ownedResourceIdFromMediaRef } from "@/services/api/resources";
+import { saveAutoDownloadedMedia } from "@/services/desktop-media-save";
 
 export const AUTO_DOWNLOAD_GENERATED_MEDIA_KEY = "beeftv.autoDownloadGeneratedMedia";
 export const AUTO_DOWNLOADED_TASK_IDS_SESSION_KEY = "beeftv.autoDownloadedTaskIds";
@@ -111,21 +111,16 @@ function unmarkTaskAutoDownloaded(taskId: string): void {
     writeSessionDownloadedTaskIds(ids);
 }
 
-async function silentBrowserAutoDownload(options: { fileName: string; resourceId?: string; browserUrl?: string }): Promise<"saved"> {
-    const browserUrl = options.browserUrl?.trim();
-    if (!browserUrl) throw new Error("没有可自动下载的文件地址");
-    saveAs(browserUrl, sanitizeDownloadFileName(options.fileName));
-    return "saved";
-}
-
 export async function triggerAutoDownloadForCompletedTask(input: {
     taskId: string;
     url: string;
     storageKey?: string;
     title?: string;
+    projectName?: string;
     mediaType?: "image" | "video" | "audio";
     mimeType?: string;
-    download?: (options: { fileName: string; resourceId?: string; browserUrl?: string }) => Promise<unknown>;
+    onError?: (error: unknown) => void;
+    download?: (options: { fileName: string; resourceId?: string; browserUrl?: string; projectName?: string }) => Promise<unknown>;
 }): Promise<boolean> {
     if (!getAutoDownloadGeneratedMedia()) return false;
     const taskId = String(input.taskId || "").trim();
@@ -138,21 +133,24 @@ export async function triggerAutoDownloadForCompletedTask(input: {
 
     const fileName = buildAutoDownloadFileName(input);
     const resourceId = ownedResourceIdFromMediaRef(input.storageKey, url);
-    const downloader = input.download ?? silentBrowserAutoDownload;
+    const projectName = input.projectName?.trim() || undefined;
+    const downloader = input.download ?? saveAutoDownloadedMedia;
 
     try {
         const result = await downloader({
             fileName,
             resourceId,
             browserUrl: url,
+            ...(projectName ? { projectName } : {}),
         });
         if (result === "cancelled" || result === false) {
             unmarkTaskAutoDownloaded(taskId);
             return false;
         }
         return true;
-    } catch {
+    } catch (error) {
         unmarkTaskAutoDownloaded(taskId);
+        input.onError?.(error);
         return false;
     }
 }

@@ -31,6 +31,20 @@ describe("本轮画布变更", () => {
         expect(turnChange(turn)).toEqual({ revisionBefore: 7, revisionAfter: 8,
             createdNodeIds: [], updatedNodeIds: ["video-draft"], createdEdgeIds: [], operationIds: ["configure-op"] });
     });
+    test("批量参数配置记录全部改动节点与单次操作回执", () => {
+        const turn = resetTurnAccumulator(newTurnAccumulator(), 7);
+        collectTurnEffects(turn, "canvas.nodes.configure", {
+            canvasId: "c1",
+            revision: 8,
+            nodes: [
+                { nodeId: "img-1", draftConfigured: true },
+                { nodeId: "img-2", draftConfigured: true },
+                { nodeId: "img-1", draftConfigured: true },
+            ],
+        }, "batch-configure-op");
+        expect(turnChange(turn)).toEqual({ revisionBefore: 7, revisionAfter: 8,
+            createdNodeIds: [], updatedNodeIds: ["img-1", "img-2"], createdEdgeIds: [], operationIds: ["batch-configure-op"] });
+    });
     test("从成功的工具结果累计新建节点、改动节点与新建连线", () => {
         const turn = resetTurnAccumulator(newTurnAccumulator(), 7);
 
@@ -181,6 +195,16 @@ describe("付费生成提议", () => {
             model: "wan3.0-video", modelKey: "beeftv::wan3.0-video", note: "两段镜头" }]);
     });
 
+    test("原地重做提议透传 regenerate: true，确保确认卡片向用户说明将原地替换", () => {
+        const turn = resetTurnAccumulator(newTurnAccumulator(), 4);
+        collectTurnEffects(turn, "canvas.generation.propose", {
+            proposalId: "gp-regen", kind: "image", nodeIds: ["n1"],
+            model: "seedream-4", modelKey: "beeftv::seedream-4", regenerate: true,
+        });
+        expect(turn.proposals[0].regenerate).toBe(true);
+        expect(turnChange(turn)).toBeNull();
+    });
+
     test("技能脚本提议在需确认与本对话始终允许自动完成时均记入 turn.scriptProposals 且按 proposalId 去重", () => {
         const turn = resetTurnAccumulator(newTurnAccumulator(), 4);
         const pendingProposal = { proposalId: "sp-1", status: "pending", scriptPath: "scripts/a.js" };
@@ -262,9 +286,106 @@ describe("供应商定义", () => {
         for (const api of ["openai-completions", "openai-responses"]) {
             const unknown = providerRegistration({ api, baseUrl: "https://relay.example.com/v1", modelId: "m", maxTokens: 16384, contextWindow: 200000 }).models[0];
             expect(unknown.reasoning).toBe(false);
+            expect(unknown.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
             if (api === "openai-completions") {
                 expect(unknown.compat).toEqual({ promptCacheKeyMode: "enabled" });
             }
+        }
+    });
+
+    test("Qwen 模型在 openai-completions 下解析 thinkingFormat=qwen，关闭/开启思考时分别发送 enable_thinking=false/true", async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "beeftv-qwen-thinking-"));
+        const payloads = [];
+        const server = createServer(async (req, res) => {
+            let raw = "";
+            for await (const chunk of req) raw += chunk;
+            payloads.push(JSON.parse(raw));
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.write("data: " + JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] }) + "\n\n");
+            res.write("data: " + JSON.stringify({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) + "\n\n");
+            res.end("data: [DONE]\n\n");
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = server.address().port;
+        const prevKey = process.env.BEEFTV_AGENT_API_KEY;
+        process.env.BEEFTV_AGENT_API_KEY = "sk-test-qwen-thinking";
+        try {
+            // 1. 静态注册校验：catalog 内的 qwen3.6-plus / qwen3.8-max、未收录的 qwen3.5-plus、以及 DashScope 托管的第三方模型都解析为 qwen thinkingFormat
+            const qwen36 = providerRegistration({ api: "openai-completions", baseUrl: "https://relay.example.com/v1", modelId: "qwen3.6-plus", maxTokens: 16384, contextWindow: 200000 }).models[0];
+            expect(qwen36.reasoning).toBe(true);
+            expect(qwen36.compat).toMatchObject({ thinkingFormat: "qwen", promptCacheKeyMode: "enabled" });
+
+            const qwen38 = providerRegistration({ api: "openai-completions", baseUrl: "https://relay.example.com/v1", modelId: "qwen3.8-max", maxTokens: 16384, contextWindow: 200000 }).models[0];
+            expect(qwen38.reasoning).toBe(true);
+            expect(qwen38.compat).toMatchObject({ thinkingFormat: "qwen", supportsReasoningEffort: true, promptCacheKeyMode: "enabled" });
+
+            const qwen35 = providerRegistration({ api: "openai-completions", baseUrl: "https://relay.example.com/v1", modelId: "qwen3.5-plus", maxTokens: 16384, contextWindow: 200000 }).models[0];
+            expect(qwen35.reasoning).toBe(true);
+            expect(qwen35.compat).toMatchObject({ thinkingFormat: "qwen", supportsReasoningEffort: false, promptCacheKeyMode: "enabled" });
+
+            const dashscopeDeepSeek = providerRegistration({ api: "openai-completions", baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1", modelId: "deepseek-v4.1-flash", maxTokens: 16384, contextWindow: 200000 }).models[0];
+            expect(dashscopeDeepSeek.compat).toMatchObject({ thinkingFormat: "qwen", promptCacheKeyMode: "enabled" });
+
+            // 2. 真实经由 Durable 会话宿主（与 BEEFTV_AGENT_THINKING=off/low 同路径）发送 HTTP 请求：
+            //    thinkingLevel=off 发出 enable_thinking=false，thinkingLevel=low 发出 enable_thinking=true
+            const runtime = await ModelRuntime.create({
+                authPath: path.join(directory, "auth.json"),
+                modelsPath: null,
+                refreshOnCreate: false,
+            });
+            for (const modelId of ["qwen3.6-plus", "qwen3.8-max", "qwen3.5-plus"]) {
+                runtime.registerProvider("beeftv", providerRegistration({
+                    api: "openai-completions",
+                    baseUrl: `http://127.0.0.1:${port}/v1`,
+                    modelId,
+                    maxTokens: 4096,
+                    contextWindow: 200000,
+                }));
+                const models = createModels();
+                models.setProvider(runtime.getProvider("beeftv"));
+                for (const thinkingLevel of ["off", "low"]) {
+                    const tag = `${modelId}-${thinkingLevel}`;
+                    const store = createDurableSessionStore({
+                        sessionRoot: path.join(directory, `${tag}-sessions`),
+                        workspaceRoot: path.join(directory, `${tag}-workspace`),
+                        getModels: () => models,
+                        getModelRef: () => ({ provider: "beeftv", modelId }),
+                        buildTools: () => [],
+                        authorizeTurn: async () => ({ open: true, canvasId: "c1", permissionMode: "canvas" }),
+                        settings: { retry: { maxRetries: 0 } },
+                        thinkingLevel,
+                    });
+                    try {
+                        const entry = await store.ensureSession("c1");
+                        const sub = await store.submit(entry, { turnId: `t-${tag}`, requestId: `r-${tag}`, content: "hi", userText: "hi", revisionBefore: 1 });
+                        await store.wait(entry, sub);
+                    } finally {
+                        await store.disposeAll();
+                    }
+                }
+            }
+            expect(payloads).toHaveLength(6);
+            // qwen3.6-plus: off -> enable_thinking=false, low -> enable_thinking=true (no reasoning_effort)
+            expect(payloads[0].enable_thinking).toBe(false);
+            expect(payloads[0].reasoning_effort).toBeUndefined();
+            expect(payloads[1].enable_thinking).toBe(true);
+            expect(payloads[1].reasoning_effort).toBeUndefined();
+            // qwen3.8-max: off -> enable_thinking=false, low -> enable_thinking=true + reasoning_effort=low
+            expect(payloads[2].enable_thinking).toBe(false);
+            expect(payloads[2].reasoning_effort).toBeUndefined();
+            expect(payloads[3].enable_thinking).toBe(true);
+            expect(payloads[3].reasoning_effort).toBe("low");
+            // qwen3.5-plus: off -> enable_thinking=false, low -> enable_thinking=true
+            expect(payloads[4].enable_thinking).toBe(false);
+            expect(payloads[4].reasoning_effort).toBeUndefined();
+            expect(payloads[5].enable_thinking).toBe(true);
+            expect(payloads[5].reasoning_effort).toBeUndefined();
+        } finally {
+            if (prevKey === undefined) delete process.env.BEEFTV_AGENT_API_KEY;
+            else process.env.BEEFTV_AGENT_API_KEY = prevKey;
+            server.closeAllConnections();
+            await new Promise((resolve) => server.close(resolve));
+            fs.rmSync(directory, { recursive: true, force: true });
         }
     });
 
@@ -383,7 +504,11 @@ describe("供应商定义", () => {
                 } catch { /* wait for listen */ }
                 await new Promise((resolve) => setTimeout(resolve, 40));
             }
-            expect(health).toMatchObject({ ok: false, reason: "model_not_configured" });
+            expect(health).toMatchObject({
+                ok: false,
+                reason: "model_not_configured",
+                requests: { perTurnRequests: 0, perTurnToolSteps: 0 },
+            });
         } finally {
             child.kill("SIGTERM");
             await new Promise((resolve) => child.once("close", resolve));

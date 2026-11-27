@@ -39,10 +39,6 @@ type userDataWorkflows interface {
 	localapp.AssetPort
 }
 
-func RegisterUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasData *canvas.Service, promptsDomain *prompts.Service, library *asset.Library, resources *asset.Service, playbackRuntime *localplayback.Service, usage userDataUsage, canvasWrites canvasLibraryWrites, workflows userDataWorkflows) {
-	registerUserDataRoutes(r, owners, canvasData, promptsDomain, library, resources, playbackRuntime, usage, canvasWrites, workflows)
-}
-
 // RegisterDesktopUserDataRoutes keeps hosted object-storage controls out of
 // the native app while retaining local resource and workspace CRUD.
 func RegisterDesktopUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasData *canvas.Service, promptsDomain *prompts.Service, library *asset.Library, resources *asset.Service, playbackRuntime *localplayback.Service, usage userDataUsage, canvasWrites canvasLibraryWrites, workflows userDataWorkflows) {
@@ -189,7 +185,7 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 			return
 		}
 		policy, available := loadRuntimePolicy(c, usage)
-		if !available || !enforceRateLimit(c, "resources-upload:"+user.ID, policy.Request.ResourceUploadPerMinute, time.Minute) {
+		if !available || !enforcePolicyRateLimit(c, policy, "resources-upload:"+user.ID, policy.Request.ResourceUploadPerMinute, time.Minute) {
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (policy.Resource.ResourceUploadMB<<20)+(1<<20))
@@ -256,6 +252,7 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 		ok(c, gin.H{"resource": resource})
 	})
 	registerResourceDeriveRoutes(r, owners, resources, usage)
+	registerResourceAssetRoutes(r, owners, resources, playback)
 	r.GET("/resources/:id/file", func(c *gin.Context) {
 		user, err := currentUser(c, owners)
 		if err != nil {
@@ -497,7 +494,7 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 			return
 		}
 		policy, available := loadRuntimePolicy(c, usage)
-		if !available || !enforceRateLimit(c, "assets-write:"+user.ID, policy.Request.AssetWritePerMinute, time.Minute) {
+		if !available || !enforcePolicyRateLimit(c, policy, "assets-write:"+user.ID, policy.Request.AssetWritePerMinute, time.Minute) {
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20)
@@ -580,15 +577,11 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 			failService(c, err)
 			return
 		}
-		project, err := canvasData.UserCanvasProject(user.ID, c.Param("id"))
+		revision, err := canvasData.UserCanvasProjectRevision(user.ID, c.Param("id"))
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		var initial struct {
-			Revision int64 `json:"revision"`
-		}
-		_ = json.Unmarshal(project, &initial)
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
@@ -597,27 +590,29 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 		if !ok {
 			return
 		}
-		_, _ = fmt.Fprintf(c.Writer, "event: ready\ndata: {\"revision\":%d}\n\n", initial.Revision)
+		_, _ = fmt.Fprintf(c.Writer, "event: ready\ndata: {\"revision\":%d}\n\n", revision)
 		flusher.Flush()
-		last := initial.Revision
-		ticker := time.NewTicker(250 * time.Millisecond)
+		last := revision
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
+		heartbeat := time.NewTicker(15 * time.Second)
+		defer heartbeat.Stop()
 		for {
 			select {
 			case <-c.Request.Context().Done():
 				return
+			case <-heartbeat.C:
+				_, _ = fmt.Fprint(c.Writer, ": keepalive\n\n")
+				flusher.Flush()
 			case <-ticker.C:
-				latest, readErr := canvasData.UserCanvasProject(user.ID, c.Param("id"))
+				latest, readErr := canvasData.UserCanvasProjectRevision(user.ID, c.Param("id"))
 				if readErr != nil {
 					return
 				}
-				var state struct {
-					Revision int64 `json:"revision"`
-				}
-				if json.Unmarshal(latest, &state) != nil || state.Revision <= last {
+				if latest <= last {
 					continue
 				}
-				last = state.Revision
+				last = latest
 				_, _ = fmt.Fprintf(c.Writer, "event: canvas.updated\ndata: {\"revision\":%d}\n\n", last)
 				flusher.Flush()
 			}
@@ -656,7 +651,7 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 			return
 		}
 		policy, available := loadRuntimePolicy(c, usage)
-		if !available || !enforceRateLimit(c, "canvas-write:"+user.ID, policy.Request.CanvasWritePerMinute, time.Minute) {
+		if !available || !enforcePolicyRateLimit(c, policy, "canvas-write:"+user.ID, policy.Request.CanvasWritePerMinute, time.Minute) {
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
@@ -682,7 +677,7 @@ func registerUserDataRoutes(r *gin.RouterGroup, owners workspaceOwners, canvasDa
 			return
 		}
 		policy, available := loadRuntimePolicy(c, usage)
-		if !available || !enforceRateLimit(c, "canvas-write:"+user.ID, policy.Request.CanvasWritePerMinute, time.Minute) {
+		if !available || !enforcePolicyRateLimit(c, policy, "canvas-write:"+user.ID, policy.Request.CanvasWritePerMinute, time.Minute) {
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, canvasData.RequestMaxBodyBytes())

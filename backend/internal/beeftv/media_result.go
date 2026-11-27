@@ -2,13 +2,19 @@ package beeftv
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"infinite-canvas/backend/internal/outbound"
 )
 
 const historicalReceiptLimit = int64(64 << 20)
@@ -61,7 +67,134 @@ func (c *MediaClient) storageClient(tooMany string) *http.Client {
 	return &client
 }
 
-const storageRedirectLimit = 10
+const (
+	storageRedirectLimit         = 10
+	storageStreamHeaderTimeout   = 45 * time.Second
+	storageStreamIdleReadTimeout = 60 * time.Second
+)
+
+// downloadStorageToFile streams a /content download directly to a file on disk
+// using outbound's shared resumable/streaming primitives so 1-2 GiB tool results
+// never enter Go heap memory or hang indefinitely. When /content redirects to an
+// object-storage URL and destDir is provided, the storage hop runs through
+// outbound.DownloadResumableToFile for full Range resume; direct 200 responses
+// stream through outbound.StreamResponseToFile. The caller owns the returned
+// file path and must remove it when done.
+func (c *MediaClient) downloadStorageToFile(ctx context.Context, path, tooMany, destDir string, limit int64) (filePath, mimeType string, size int64, retErr error) {
+	contentPath := path
+	if !strings.HasSuffix(contentPath, "/content") {
+		contentPath += "/content"
+	}
+	reqCtx, stopHeader, reqCancel := outbound.WithHeaderTimeout(ctx, storageStreamHeaderTimeout)
+	defer reqCancel(nil)
+	defer stopHeader()
+	req, err := c.request(reqCtx, http.MethodGet, contentPath, nil)
+	if err != nil {
+		return "", "", 0, err
+	}
+	req.Header.Del(MediaProtocolHeader)
+
+	client := c.storageClient(tooMany)
+	client.Timeout = 0
+	if strings.TrimSpace(destDir) != "" {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	startedAt := time.Now()
+	var resp *http.Response
+	var errSnippet []byte
+	observe := true
+	defer func() {
+		if observe && c.Observe != nil {
+			c.Observe(req, resp, errSnippet, startedAt, retErr)
+		}
+	}()
+
+	resp, err = client.Do(req)
+	stopHeader()
+	if err != nil {
+		if cause := context.Cause(reqCtx); cause != nil && ctx.Err() == nil {
+			err = cause
+		}
+		return "", "", 0, err
+	}
+	closed := false
+	closeResp := func() {
+		if !closed {
+			closed = true
+			_ = resp.Body.Close()
+		}
+	}
+	defer closeResp()
+
+	if strings.TrimSpace(destDir) != "" && isRedirectStatus(resp.StatusCode) {
+		if loc := strings.TrimSpace(resp.Header.Get("Location")); loc != "" {
+			if resolved, parseErr := req.URL.Parse(loc); parseErr == nil {
+				// Release the 3xx control-plane connection immediately before
+				// starting a potentially multi-minute 1-2 GiB storage download.
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+				closeResp()
+				targetURL := resolved.String()
+				if valErr := c.validURLContext(ctx, targetURL); valErr != nil {
+					observe = false
+					return "", "", 0, valErr
+				}
+				return c.downloadStorageRedirectResumable(ctx, contentPath, targetURL, tooMany, destDir, limit)
+			}
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errSnippet, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		var envelope struct {
+			Error MediaTaskError `json:"error"`
+		}
+		_ = json.Unmarshal(errSnippet, &envelope)
+		if envelope.Error.Message == "" {
+			envelope.Error.Message = fmt.Sprintf("媒体服务请求未能确认（HTTP %d）", resp.StatusCode)
+		}
+		return "", "", 0, &MediaHTTPError{StatusCode: resp.StatusCode, TaskError: envelope.Error, Body: string(errSnippet), RequestID: resp.Header.Get("X-Request-Id")}
+	}
+	res, err := outbound.StreamResponseToFile(ctx, resp, outbound.StreamFileOptions{
+		Dir:         destDir,
+		MaxBytes:    outbound.ExclusiveByteLimit(limit),
+		IdleTimeout: storageStreamIdleReadTimeout,
+		Cancel:      func() { reqCancel(context.DeadlineExceeded) },
+	})
+	if err != nil {
+		if errors.Is(err, outbound.ErrResourceTooLarge) {
+			err = errors.New("媒体服务控制响应过大")
+		}
+		return "", "", 0, err
+	}
+	return res.Path, res.MimeType, res.Size, nil
+}
+
+func (c *MediaClient) downloadStorageRedirectResumable(ctx context.Context, contentPath, targetURL, tooMany, destDir string, limit int64) (string, string, int64, error) {
+	sum := sha256.Sum256([]byte(contentPath))
+	storageHopClient := c.storageClient(tooMany)
+	storageHopClient.Timeout = 0
+	if limit <= 0 {
+		limit = 2 << 30
+	}
+	res, err := outbound.DownloadResumableToFile(c.networkContext(ctx), targetURL, outbound.ResumableOptions{
+		PartialPath:   filepath.Join(destDir, "beeftv-content-"+hex.EncodeToString(sum[:8])+".part"),
+		MaxBytes:      outbound.ExclusiveByteLimit(limit),
+		Attempts:      2,
+		HeaderTimeout: storageStreamHeaderTimeout,
+		IdleTimeout:   storageStreamIdleReadTimeout,
+		OpenResponse:  storageHopClient.Do,
+	})
+	if err != nil {
+		if errors.Is(err, outbound.ErrResourceTooLarge) {
+			err = errors.New("媒体服务控制响应过大")
+		}
+		return "", "", 0, err
+	}
+	return res.Path, res.MimeType, res.Size, nil
+}
+
+func isRedirectStatus(code int) bool {
+	return code == http.StatusMovedPermanently || code == http.StatusFound || code == http.StatusSeeOther || code == http.StatusTemporaryRedirect || code == http.StatusPermanentRedirect
+}
 
 func (c *MediaClient) Result(ctx context.Context, task MediaTask, legacy bool) (map[string]any, error) {
 	if task.MediaType != "image" {

@@ -3,12 +3,14 @@ import {
     type AgentChatReference,
     type AgentHostStatus,
     type AssistantAttachment,
+    type AssistantContextUsage,
     type AssistantHistory,
     type AssistantPermissionMode,
     type AssistantPlan,
     type AssistantReasoningSegment,
     type AssistantSessionSummary,
     type AssistantSkillSelection,
+    type AssistantThinkingLevel,
     type AssistantTurn,
     type AssistantUndoFailure,
 } from "@/services/api/agent-assistant";
@@ -43,6 +45,10 @@ export type CanvasRun = {
     historyRequest: number;
     pausedTurnReason: string | null;
     pausedStatusKey: string | null;
+    thinkingLevel: AssistantThinkingLevel | null;
+    contextUsage: AssistantContextUsage | null;
+    compacting: boolean;
+    compactNotice: string | null;
     sessionBusy: boolean;
     dispatched: boolean;
     backgroundActive: boolean;
@@ -103,6 +109,10 @@ export const createCanvasRun = (): CanvasRun => ({
     historyRequest: 0,
     pausedTurnReason: null,
     pausedStatusKey: null,
+    thinkingLevel: null,
+    contextUsage: null,
+    compacting: false,
+    compactNotice: null,
     sessionBusy: false,
     dispatched: false,
     backgroundActive: false,
@@ -140,13 +150,40 @@ export function isAssistantProviderUnreadyReason(reason: string | undefined): bo
     return reason === "model_not_configured" || reason === "model_protocol_unsupported" || reason === "credential_missing";
 }
 
+export function isAssistantTransientReason(reason: string | undefined): boolean {
+    return reason === "host_starting" || reason === "host_busy";
+}
+
+export function resolveAssistantStatusPollError(
+    prev: AgentHostStatus | null,
+    reason: AgentHostStatus["reason"],
+    consecutiveErrors: number,
+): AgentHostStatus {
+    if (!reason && prev && (prev.available || isAssistantTransientReason(prev.reason)) && consecutiveErrors < 2) {
+        return prev;
+    }
+    return { available: false, ...(reason ? { reason } : {}) };
+}
+
 export function shouldAutoLoadHistory(run: CanvasRun, currentStatus: AgentHostStatus | null): boolean {
     if (run.streaming || run.sessionBusy) return false;
-    const hostCanServeHistory = Boolean(currentStatus?.available) || isAssistantProviderUnreadyReason(currentStatus?.reason);
+    // 宿主还在初始状态探查或启动中时暂不抢发 /history 与 /sessions，避免冷启动期产生 503 host_unreachable 噪音。
+    if (currentStatus === null || currentStatus.reason === "host_starting") return false;
+    const hostCanServeHistory = Boolean(currentStatus.available) || isAssistantProviderUnreadyReason(currentStatus.reason) || currentStatus.reason === "host_busy";
     if (!run.historyLoaded) {
         return !run.historyError || hostCanServeHistory;
     }
     return shouldReloadPausedAssistantTurn(run.pausedTurnReason, run.pausedStatusKey, currentStatus);
+}
+
+export function shouldSuppressAssistantHistoryError(status: AgentHostStatus | null, run: CanvasRun): boolean {
+    return (status === null || isAssistantTransientReason(status.reason) || isAssistantProviderUnreadyReason(status.reason))
+        && run.historyHostUnavailable
+        && !run.turns.length
+        && !run.pendingUserText
+        && !run.pendingAttachments.length
+        && !run.streamed
+        && !run.reasoning.length;
 }
 
 export function applyHistoryActiveTurn(run: CanvasRun, history: AssistantHistory, nextSession: string | null) {

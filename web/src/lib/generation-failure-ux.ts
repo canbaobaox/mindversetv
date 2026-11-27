@@ -3,7 +3,7 @@ import {
     type GenerationErrorCategory,
     type GenerationFailureExplanation,
 } from "@/lib/generation-error";
-import { isRegenerateBlocked, isRegenerateConfirm, taskOutcomeCopy, type TaskOutcome } from "@/lib/task-outcome";
+import { isRegenerateBlocked, taskOutcomeCopy, taskRequiresRegenerateConfirmation, type TaskOutcome } from "@/lib/task-outcome";
 
 export type FailureBillingBadge = {
     label: string;
@@ -37,6 +37,7 @@ const LOCAL_UNSENT_CATEGORIES: ReadonlySet<GenerationErrorCategory> = new Set([
     "local_storage",
     "local_disk_full",
     "local_credential",
+    "reference_upload_failed",
 ]);
 
 export function isCreativeInputFailureCategory(category: GenerationErrorCategory): boolean {
@@ -71,6 +72,7 @@ export function buildUnchangedModerationConfirmDialog({
 type ConfirmCreationRetryOptions = {
     category: GenerationErrorCategory;
     outcome?: TaskOutcome;
+    providerCancelStatus?: string;
     modalConfirm?: (config: {
         title?: string;
         content?: string;
@@ -87,16 +89,17 @@ type ConfirmCreationRetryOptions = {
 export function confirmCreationRetryIfNeeded({
     category,
     outcome,
+    providerCancelStatus,
     modalConfirm,
     onEditDraft,
 }: ConfirmCreationRetryOptions): Promise<boolean> {
     if (isRegenerateBlocked(outcome)) return Promise.resolve(false);
     const unchangedModeration = shouldConfirmUnchangedModerationRetry(category);
-    const needsOutcomeConfirm = isRegenerateConfirm(outcome);
+    const needsOutcomeConfirm = taskRequiresRegenerateConfirmation({ outcome, providerCancelStatus }, outcome);
     if ((!unchangedModeration && !needsOutcomeConfirm) || !modalConfirm) {
         return Promise.resolve(true);
     }
-    const copy = taskOutcomeCopy(outcome);
+    const copy = taskOutcomeCopy(outcome, undefined, { providerCancelStatus });
     const costWarning = needsOutcomeConfirm ? copy.confirmContent || copy.message : undefined;
     return new Promise<boolean>((resolve) => {
         let settled = false;

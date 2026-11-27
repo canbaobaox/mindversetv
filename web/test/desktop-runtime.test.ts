@@ -4,6 +4,7 @@ import { initializeWorkspaceState } from "@/components/workspace/workspace-boots
 import { AgentStreamDetachedError, resetAgentUiSession, streamAgentChat } from "@/services/api/agent-assistant";
 import { requestStreamingChatCompletion } from "@/services/api/image-streaming";
 import { apiBaseURL, apiClient } from "@/services/api/request";
+import { getLocalModelConfig, getWorkspaceBootstrap, WORKSPACE_BOOTSTRAP_TIMEOUT_MS } from "@/services/api/workspace";
 import { shouldUseTaskTextEvents, waitForGenerationTask } from "@/services/api/task-center";
 import { subscribeCanvasEventsStream } from "@/services/canvas-external-writes";
 import { getClientDiagnosticEvents } from "@/services/diagnostics/client-diagnostics";
@@ -14,6 +15,7 @@ import {
     configureSameOriginDesktopFallback,
     DesktopStartupError,
     getDesktopBootSnapshot,
+    registerBeforeReloadFlusher,
     resetDesktopBootSnapshot,
 } from "@/services/desktop-runtime";
 import {
@@ -494,4 +496,179 @@ test("initializeWorkspaceState never fabricates a local session on bootstrap fai
     });
     expect(fallbackPayload.description).toBe("startup_failure:desktop_boot:workspace_locked");
     expect(fallbackPayload.clientEvents).toEqual([]);
+});
+
+test("desktop:request-reload checks in-flight guard before acking via Wails event and resets after cancelled navigation", async () => {
+    const eventHandlers = new Map<string, (...args: unknown[]) => void>();
+    const emittedEvents: string[] = [];
+    let reloadCalls = 0;
+    let releaseFirstFlush!: () => void;
+    let flushCount = 0;
+
+    Object.assign(globalThis, {
+        window: {
+            location: {
+                protocol: "http:",
+                hostname: "wails.localhost",
+                host: "wails.localhost",
+                reload: () => {
+                    reloadCalls += 1;
+                },
+            },
+            runtime: {
+                EventsOn: (name: string, cb: (...args: unknown[]) => void) => {
+                    eventHandlers.set(name, cb);
+                    return () => eventHandlers.delete(name);
+                },
+                EventsEmit: (name: string) => {
+                    emittedEvents.push(name);
+                },
+            },
+            go: {
+                main: {
+                    DesktopApp: {
+                        StartupState: async () => ({
+                            state: "ready" as const,
+                            phase: "ready",
+                            baseURL: "http://127.0.0.1:43131/api",
+                            launchToken: "reload-test-token",
+                            uiBootstrapToken: "reload-ui-token",
+                            safeModeRequested: true,
+                        }),
+                    },
+                },
+            },
+        },
+    });
+
+    const fetchedUrls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        fetchedUrls.push(url);
+        if (url.endsWith("/health/live")) {
+            return new Response(JSON.stringify({ code: 0, data: { status: "ok" }, msg: "ok" }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            });
+        }
+        return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    registerBeforeReloadFlusher(async () => {
+        flushCount += 1;
+        if (flushCount === 1) {
+            await new Promise<void>((resolve) => {
+                releaseFirstFlush = resolve;
+            });
+        }
+    });
+
+    try {
+        expect(await bootstrapDesktopRuntime({ loopbackProbeTimeoutMs: 50, loopbackRetryDelaysMs: [] })).toBe(true);
+        const onReload = eventHandlers.get("desktop:request-reload");
+        expect(typeof onReload).toBe("function");
+        expect(fetchedUrls.some((url) => url.includes("/client-runtime/heartbeat"))).toBe(false);
+
+        // Trigger first reload (slow flush holds reloadFlushInFlight=true)
+        onReload!({ safeMode: true });
+        await new Promise((r) => setTimeout(r, 15));
+        expect(emittedEvents).toEqual(["desktop:reload-ack"]);
+
+        // Duplicate event while first flush is still in flight MUST NOT emit a duplicate ack
+        onReload!({ safeMode: true });
+        await new Promise((r) => setTimeout(r, 15));
+        expect(emittedEvents).toEqual(["desktop:reload-ack"]);
+
+        // Finish first flush; simulate user cancelling beforeunload (page stays alive)
+        releaseFirstFlush();
+        await new Promise((r) => setTimeout(r, 20));
+        expect(reloadCalls).toBe(1);
+
+        // Next user reload attempt MUST succeed (flag was reset)
+        onReload!({ safeMode: true });
+        await new Promise((r) => setTimeout(r, 25));
+        expect(emittedEvents).toEqual(["desktop:reload-ack", "desktop:reload-ack"]);
+        expect(reloadCalls).toBe(2);
+    } finally {
+        registerBeforeReloadFlusher(null);
+    }
+});
+
+test("workspace startup API calls allow 15s timeout beyond the 4s default and surface bounded bootstrap_timeout on timeout", async () => {
+    const previousAdapter = apiClient.defaults.adapter;
+    const observed: Array<{ url?: string; timeout?: number }> = [];
+    try {
+        apiClient.defaults.adapter = async (config) => {
+            observed.push({ url: config.url, timeout: config.timeout });
+            return {
+                data: { code: 0, data: {}, msg: "ok" },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config,
+            };
+        };
+
+        await getWorkspaceBootstrap();
+        await getLocalModelConfig();
+
+        expect(WORKSPACE_BOOTSTRAP_TIMEOUT_MS).toBe(15_000);
+        expect(observed).toEqual([
+            { url: "/workspace/bootstrap", timeout: 15_000 },
+            { url: "/workspace/model-config", timeout: 15_000 },
+        ]);
+
+        // Verify a timed-out bootstrap surfaces a bounded failure without fabricating a session,
+        // and a subsequent retry recovers cleanly once the backend responds.
+        let attempts = 0;
+        apiClient.defaults.adapter = async (config) => {
+            attempts += 1;
+            if (attempts === 1) {
+                const err = Object.assign(new Error("timeout of 15000ms exceeded"), {
+                    code: "ECONNABORTED",
+                    isAxiosError: true,
+                    config,
+                });
+                throw err;
+            }
+            return {
+                data: {
+                    code: 0,
+                    data: {
+                        workspace: { id: "ws-1", name: "本地工作区" },
+                        user: { id: "u-1", nickname: "本地工作区" },
+                    },
+                    msg: "ok",
+                },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config,
+            };
+        };
+
+        const applied: unknown[] = [];
+        await expect(
+            initializeWorkspaceState({
+                loadWorkspace: () => getWorkspaceBootstrap(),
+                applySession: async (payload) => {
+                    applied.push(payload);
+                },
+                restoreModelConfig: async () => {},
+            }),
+        ).rejects.toThrow("timeout of 15000ms exceeded");
+        expect(applied).toEqual([]);
+
+        await initializeWorkspaceState({
+            loadWorkspace: () => getWorkspaceBootstrap(),
+            applySession: async (payload) => {
+                applied.push(payload);
+            },
+            restoreModelConfig: async () => {},
+        });
+        expect(applied).toHaveLength(1);
+        expect(attempts).toBe(2);
+    } finally {
+        apiClient.defaults.adapter = previousAdapter;
+    }
 });

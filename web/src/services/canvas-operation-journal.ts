@@ -2,7 +2,9 @@ import { nanoid } from "nanoid";
 
 import { sameCanvasDocument } from "@/lib/canvas/canvas-content";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
+import { bumpMediaReferenceEpoch } from "@/lib/media-gc-epoch";
 import { getActiveUserScope } from "@/lib/user-scope";
+import type { CanvasDocumentPatchPayload } from "@/services/api/operations";
 import { recordCanvasDocumentBase, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 
 const JOURNAL_PREFIX = "canvas-document-journal";
@@ -11,6 +13,8 @@ export type CanvasCommitPayload = {
     canvasId: string;
     expectedRevision: number;
     document: CanvasProject;
+    patch?: CanvasDocumentPatchPayload;
+    forceHistorySnapshotEpoch?: number;
 };
 
 export type CanvasInFlightCommit = {
@@ -37,6 +41,7 @@ export type CanvasOperationJournal = {
     confirmedSnapshot: CanvasProject | null;
     inFlight: CanvasInFlightCommit | null;
     pendingProjection: CanvasPendingProjection | null;
+    pendingForceHistorySnapshotEpoch?: number;
 };
 
 export class CanvasJournalError extends Error {
@@ -114,6 +119,11 @@ function parseInFlight(value: unknown, canvasId: string): CanvasInFlightCommit |
         throw new CanvasJournalError("画布提交日记 payload revision 不一致");
     }
     if (!isPlainObject(payload.document)) throw new CanvasJournalError("画布提交日记 payload 文档无效");
+    const forceEpoch = typeof payload.forceHistorySnapshotEpoch === "number"
+        && Number.isInteger(payload.forceHistorySnapshotEpoch)
+        && payload.forceHistorySnapshotEpoch > 0
+        ? payload.forceHistorySnapshotEpoch
+        : undefined;
     return {
         operationId,
         expectedRevision,
@@ -121,6 +131,8 @@ function parseInFlight(value: unknown, canvasId: string): CanvasInFlightCommit |
             canvasId,
             expectedRevision: payloadExpected,
             document: payload.document as unknown as CanvasProject,
+            ...(isPlainObject(payload.patch) ? { patch: payload.patch as unknown as CanvasDocumentPatchPayload } : {}),
+            ...(forceEpoch ? { forceHistorySnapshotEpoch: forceEpoch } : {}),
         },
     };
 }
@@ -143,6 +155,13 @@ function parseCanvasOperationJournal(raw: unknown, scope: string, canvasId: stri
     if (raw.userScope !== scope || raw.canvasId !== canvasId) {
         throw new CanvasJournalError("画布提交日记作用域不匹配");
     }
+    const forceEpoch = typeof raw.pendingForceHistorySnapshotEpoch === "number"
+        && Number.isInteger(raw.pendingForceHistorySnapshotEpoch)
+        && raw.pendingForceHistorySnapshotEpoch > 0
+        ? raw.pendingForceHistorySnapshotEpoch
+        : raw.pendingForceHistorySnapshot === true
+            ? 1
+            : undefined;
     return {
         userScope: scope,
         canvasId,
@@ -150,6 +169,7 @@ function parseCanvasOperationJournal(raw: unknown, scope: string, canvasId: stri
         confirmedSnapshot: parseConfirmedSnapshot(raw.confirmedSnapshot, canvasId),
         inFlight: parseInFlight(raw.inFlight, canvasId),
         pendingProjection: parsePendingProjection(raw.pendingProjection, canvasId),
+        ...(forceEpoch ? { pendingForceHistorySnapshotEpoch: forceEpoch } : {}),
     };
 }
 
@@ -190,6 +210,7 @@ async function readJournalUnlocked(canvasId: string, scope: string): Promise<Can
 
 async function writeJournalUnlocked(journal: CanvasOperationJournal) {
     const scope = journal.userScope || getActiveUserScope();
+    bumpMediaReferenceEpoch();
     const validated = parseCanvasOperationJournal(journal, scope, journal.canvasId);
     if (validated.confirmedSnapshot && validated.confirmedSnapshot.revision !== validated.confirmedRevision) {
         validated.confirmedSnapshot = { ...validated.confirmedSnapshot, revision: validated.confirmedRevision };
@@ -233,15 +254,27 @@ export async function updateCanvasOperationJournal(
 export async function recordConfirmedCanvasCommit(
     project: CanvasProject,
     scope = getActiveUserScope(),
-    options: { ackOperationId?: string; unflushedProjection?: boolean } = {},
+    options: { ackOperationId?: string; unflushedProjection?: boolean; clearForceHistorySnapshotEpoch?: number } = {},
 ) {
     return updateCanvasOperationJournal(project.id, scope, (current) => {
         const incomingRevision = typeof project.revision === "number" && Number.isInteger(project.revision) && project.revision >= 0
             ? project.revision
             : current.confirmedRevision;
         const ackMatches = Boolean(options.ackOperationId && current.inFlight?.operationId === options.ackOperationId);
+        const currentForceEpoch = current.pendingForceHistorySnapshotEpoch ?? 0;
+        const clearEpoch = options.clearForceHistorySnapshotEpoch ?? 0;
+        const nextForceEpoch = clearEpoch > 0 && currentForceEpoch > 0 && clearEpoch >= currentForceEpoch
+            ? undefined
+            : current.pendingForceHistorySnapshotEpoch;
+        const forceChanged = nextForceEpoch !== current.pendingForceHistorySnapshotEpoch;
         if (incomingRevision < current.confirmedRevision) {
-            if (ackMatches && current.inFlight) return { ...current, inFlight: null };
+            if ((ackMatches && current.inFlight) || forceChanged) {
+                return {
+                    ...current,
+                    inFlight: ackMatches ? null : current.inFlight,
+                    ...(nextForceEpoch ? { pendingForceHistorySnapshotEpoch: nextForceEpoch } : { pendingForceHistorySnapshotEpoch: undefined }),
+                };
+            }
             return;
         }
         if (
@@ -249,7 +282,13 @@ export async function recordConfirmedCanvasCommit(
             && current.confirmedSnapshot
             && sameCanvasDocument(current.confirmedSnapshot, project)
         ) {
-            if (ackMatches && current.inFlight) return { ...current, inFlight: null };
+            if ((ackMatches && current.inFlight) || forceChanged) {
+                return {
+                    ...current,
+                    inFlight: ackMatches ? null : current.inFlight,
+                    ...(nextForceEpoch ? { pendingForceHistorySnapshotEpoch: nextForceEpoch } : { pendingForceHistorySnapshotEpoch: undefined }),
+                };
+            }
             return;
         }
         const confirmedSnapshot = structuredClone(project);
@@ -269,7 +308,22 @@ export async function recordConfirmedCanvasCommit(
             confirmedSnapshot,
             inFlight: ackMatches ? null : current.inFlight,
             pendingProjection,
+            ...(nextForceEpoch ? { pendingForceHistorySnapshotEpoch: nextForceEpoch } : { pendingForceHistorySnapshotEpoch: undefined }),
         };
+    });
+}
+
+export async function markCanvasJournalForceHistorySnapshot(
+    canvasId: string,
+    scope = getActiveUserScope(),
+    minEpoch?: number,
+) {
+    return updateCanvasOperationJournal(canvasId, scope, (current) => {
+        const existing = current.pendingForceHistorySnapshotEpoch ?? 0;
+        const nextEpoch = typeof minEpoch === "number" && Number.isInteger(minEpoch) && minEpoch > existing
+            ? minEpoch
+            : existing + 1;
+        return { ...current, pendingForceHistorySnapshotEpoch: nextEpoch };
     });
 }
 
@@ -293,6 +347,7 @@ export async function abandonCanvasInFlight(canvasId: string, scope = getActiveU
 
 export async function clearCanvasOperationJournal(canvasId: string, scope = getActiveUserScope()) {
     return withJournal(scope, canvasId, async () => {
+        bumpMediaReferenceEpoch();
         await journalStorageDelay?.beforeSet?.();
         await localForageStorageForScope(scope).removeItem(journalName(canvasId));
         memory.delete(cacheKey(scope, canvasId));
@@ -301,6 +356,32 @@ export async function clearCanvasOperationJournal(canvasId: string, scope = getA
 
 export function newCanvasCommitOperationId() {
     return `canvas-commit-${nanoid()}`;
+}
+
+export async function readAllCanvasOperationJournals(scope = getActiveUserScope()): Promise<CanvasOperationJournal[]> {
+    const byId = new Map<string, CanvasOperationJournal>();
+    for (const journal of memory.values()) {
+        if (journal.userScope === scope) byId.set(journal.canvasId, cloneJournal(journal));
+    }
+    if (typeof window !== "undefined") {
+        const storageModule = await import("@/lib/localforage-storage");
+        if (typeof storageModule.localForageInstance === "function" && typeof storageModule.APP_STATE_STORE_NAME === "string") {
+            const prefix = `${JOURNAL_PREFIX}:`;
+            const suffix = `:user:${scope}`;
+            const store = storageModule.localForageInstance(storageModule.APP_STATE_STORE_NAME);
+            // Fail closed: propagate storage/parse errors so callers (such as media GC)
+            // abort instead of deleting blobs under incomplete reference knowledge.
+            const keys = await store.keys();
+            for (const key of keys) {
+                if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue;
+                const canvasId = key.slice(prefix.length, key.length - suffix.length);
+                if (!canvasId || byId.has(canvasId)) continue;
+                const journal = await loadCanvasOperationJournal(canvasId, scope);
+                byId.set(canvasId, journal);
+            }
+        }
+    }
+    return [...byId.values()];
 }
 
 export function resetCanvasOperationJournalMemory() {

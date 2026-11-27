@@ -9,6 +9,7 @@ import {
     assistantLifecycleText,
     assistantTurnCanContinue,
     assistantFailedActionText,
+    assistantProposalConfirmLabel,
     assistantProposalText,
     assistantProposalProgress,
     appendAssistantDraft,
@@ -46,6 +47,13 @@ describe("助手不可用原因映射成一句用户语加一个出路", () => {
         expect(notice.starting).toBe(true);
     });
 
+    test("配置更新但助手正忙时不给强杀重启按钮，并更快复查自动切换", () => {
+        const notice = assistantStatusNotice("host_busy");
+        expect(notice.text).toBe("配置已更新，当前任务完成后会自动切换");
+        expect(notice.action).toBeUndefined();
+        expect(notice.starting).toBe(true);
+    });
+
     test("启动失败和连不上都给重试", () => {
         for (const reason of ["host_start_failed", "host_unreachable"]) {
             const notice = assistantStatusNotice(reason);
@@ -76,6 +84,13 @@ describe("工具调用翻译成做了什么", () => {
         expect(assistantActionLabel("media.overview")).toBe("浏览素材");
         expect(assistantActionLabel("media.inspect")).toBe("查看和听取素材");
         expect(assistantActionLabel("media.check")).toBe("检查媒体文件");
+        expect(assistantActionLabel("file.read")).toBe("读取文件");
+        expect(assistantActionLabel("file_read")).toBe("读取文件");
+        expect(assistantActionLabel("task.cancel")).toBe("取消任务");
+        expect(assistantActionLabel("canvas.create")).toBe("新建画布");
+        expect(assistantActionLabel("canvas.generation.regenerate")).toBe("原地重做素材");
+        expect(assistantActionLabel("business.list")).toBe("调用工作区接口");
+        expect(assistantActionLabel("business_call")).toBe("调用工作区接口");
     });
 
     test("没见过的操作也不把内部名字露出去", () => {
@@ -168,13 +183,31 @@ describe("付费生成确认", () => {
         expect(text).not.toContain("报价");
     });
 
-    test("旧真人模型提议显示统一名称与当前渠道报价", () => {
-        const text = assistantProposalText({ proposalId: "portrait", kind: "video", nodeIds: ["a"], model: "seedance-2.0-portrait", modelKey: "byok::seedance-2.0-portrait" }, ["720p：无视频输入 ¥69，含视频输入 ¥42 / 百万视频 Token"]);
+    test("视频模型提议按原样展示模型名与服务端下发的展示单价", () => {
+        const text = assistantProposalText({ proposalId: "video-price", kind: "video", nodeIds: ["a"], model: "Seedance 2.0", modelKey: "byok::seedance-2.0" }, ["720p：无视频输入 ¥69，含视频输入 ¥42 / 百万视频 Token"]);
         expect(text).toContain("Seedance 2.0");
-        expect(text).not.toContain("Seedance 2.0-真人");
         expect(text).toContain("¥69");
         expect(text).toContain("¥42");
         expect(text).not.toContain("byok::");
+    });
+
+    test("传入可读展示名时替换裸模型 ID", () => {
+        const text = assistantProposalText(
+            { proposalId: "video-display", kind: "video", nodeIds: ["a"], model: "seedance-2.0", modelKey: "beeftv::seedance-2.0" },
+            ["720p：¥46 / 百万视频 Token"],
+            true,
+            "Seedance 2.0",
+        );
+        expect(text).toContain("为 1 个节点生成视频 · Seedance 2.0");
+        expect(text).not.toContain("seedance-2.0");
+    });
+
+    test("原地重做提议在按钮和说明中明确提示在原节点重新生成并保留旧素材", () => {
+        const proposal = { proposalId: "regen-1", kind: "image" as const, nodeIds: ["n1"], model: "seedream-4", modelKey: "ch::seedream-4", regenerate: true };
+        expect(assistantProposalConfirmLabel(proposal)).toBe("确认并原地重做");
+        const text = assistantProposalText(proposal);
+        expect(text).toContain("在原节点重新生成 1 个图片 · seedream-4");
+        expect(text).toContain("原有结果会保留在素材库");
     });
 });
 

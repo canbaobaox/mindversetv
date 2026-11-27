@@ -13,6 +13,25 @@ import (
 	"infinite-canvas/backend/internal/workspace"
 )
 
+func channelModelIDs(raw any) []string {
+	var ids []string
+	switch items := raw.(type) {
+	case []any:
+		for _, item := range items {
+			if id, ok := item.(string); ok && id != "" {
+				ids = append(ids, id)
+			}
+		}
+	case []string:
+		for _, id := range items {
+			if id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
 func TestGeminiAppliedCatalogResolvesBundledProvider(t *testing.T) {
 	// Connect only to the existing loopback fixture. Its catalog runs through
 	// finalizeSavedCredential -> applyCatalog, then both stores are reopened.

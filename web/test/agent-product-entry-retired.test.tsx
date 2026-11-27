@@ -96,7 +96,7 @@ describe("旧内置 Agent 页面入口退场", () => {
     test("首页不再提供 Agent 能力入口，手工创作入口仍然指向真实画布路径", () => {
         const markup = renderToStaticMarkup(
             <MemoryRouter>
-                <HomeDashboard projects={[]} loading={false} error={false} onRetry={() => {}} />
+                <HomeDashboard projects={[]} loading={false} />
             </MemoryRouter>,
         );
         expect(markup).not.toContain("BeefTV Agent");
@@ -131,8 +131,6 @@ describe("旧内置 Agent 页面入口退场", () => {
         // 真实浏览器验收在实施报告中记录（.local/browser-check/check.mjs）。
         const sidebar = readFileSync(resolve(root, "src/components/layout/workspace-sidebar-nav.tsx"), "utf8");
         expect(sidebar).not.toContain("BeefTV Agent");
-        const topBar = readFileSync(resolve(root, "src/components/layout/workspace-top-bar.tsx"), "utf8");
-        expect(topBar).not.toContain("短剧 Agent");
         const projectsPage = readFileSync(resolve(root, "src/pages/projects/index.tsx"), "utf8");
         expect(projectsPage).not.toContain("短剧 Agent");
     });

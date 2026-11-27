@@ -37,11 +37,13 @@ func registerVideoSubtitleEraseRoutes(r *gin.RouterGroup, svc videoSubtitleErase
 		ok(c, task)
 	})
 	r.GET("/video-subtitle-erase/capabilities", func(c *gin.Context) {
-		if _, e := currentUser(c, svc); e != nil {
+		user, e := currentUser(c, svc)
+		if e != nil {
 			failService(c, e)
 			return
 		}
-		ok(c, svc.VideoSubtitleEraseCapabilities(c.Request.Context()))
+		ctx := generation.WithCallMeta(c.Request.Context(), generation.CallMeta{UserID: user.ID})
+		ok(c, svc.VideoSubtitleEraseCapabilities(ctx))
 	})
 	for _, path := range []string{"estimate", "tasks"} {
 		action := path
@@ -55,7 +57,7 @@ func registerVideoSubtitleEraseRoutes(r *gin.RouterGroup, svc videoSubtitleErase
 				return
 			}
 			policy, available := loadRuntimePolicy(c, svc)
-			if !available || !enforceRateLimit(c, "video-subtitle-erase:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
+			if !available || !enforcePolicyRateLimit(c, policy, "video-subtitle-erase:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
 				return
 			}
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
@@ -64,7 +66,8 @@ func registerVideoSubtitleEraseRoutes(r *gin.RouterGroup, svc videoSubtitleErase
 				fail(c, http.StatusBadRequest, e)
 				return
 			}
-			if e = generation.ValidateSmartEraseRequestCapabilities(&req, svc.VideoSubtitleEraseCapabilities(c.Request.Context())); e != nil {
+			capCtx := generation.WithCallMeta(c.Request.Context(), generation.CallMeta{UserID: user.ID})
+			if e = generation.ValidateSmartEraseRequestCapabilities(&req, svc.VideoSubtitleEraseCapabilities(capCtx)); e != nil {
 				failService(c, e)
 				return
 			}

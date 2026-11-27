@@ -255,7 +255,7 @@ func specializeMediaConstraints(failure *Failure, fields extractedFields) {
 		if strings.Contains(lower, "video") {
 			failure.Category = CategoryInvalidParams
 			failure.Reason = "超分视频素材不符合要求"
-			failure.Action = "请使用 5 分钟以内、200MB 以内的有效 MP4/MOV 视频后重试"
+			failure.Action = "请使用 5 分钟以内的有效 MP4/MOV 视频后重试"
 			return
 		}
 		if strings.Contains(lower, "image") {
@@ -524,7 +524,7 @@ func matchPersistedCategory(text string) FailureCategory {
 		return CategoryInvalidParams
 	}
 	for category, copyText := range categoryCopies {
-		if category == CategoryUnknown {
+		if category == CategoryUnknown || category == CategoryReferenceUploadFailed {
 			continue
 		}
 		if strings.HasPrefix(text, copyText.Reason) {
@@ -553,7 +553,7 @@ func userFacingChineseCopy(raw string) (categoryCopy, bool) {
 	if trimmed == "" || htmlBodyPattern.MatchString(trimmed) || strings.ContainsAny(trimmed, "{}<>") {
 		return categoryCopy{}, false
 	}
-	if urlPattern.MatchString(trimmed) || signedQueryPattern.MatchString(trimmed) || credentialHeaderPattern.MatchString(trimmed) || secretPattern.MatchString(trimmed) || promptEchoPattern.MatchString(trimmed) || diagnosticLocalPath.MatchString(trimmed) {
+	if urlPattern.MatchString(trimmed) || signedQueryPattern.MatchString(trimmed) || credentialHeaderPattern.MatchString(trimmed) || secretPattern.MatchString(trimmed) || promptEchoPattern.MatchString(trimmed) || HasLocalPath(trimmed) {
 		return categoryCopy{}, false
 	}
 	if localDatabaseErrorPattern.MatchString(trimmed) || isLocalDiskFullMessage(trimmed) || infrastructureTextPattern.MatchString(trimmed) {

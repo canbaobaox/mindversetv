@@ -23,6 +23,8 @@ var ErrTaskProviderCancellationConflict = errors.New("task provider cancellation
 
 var ErrTaskStateConflict = errors.New("task state changed concurrently")
 
+var ErrTaskLeaseLost = errors.New("task lease lost")
+
 var ErrTextReplayQuotaExceeded = errors.New("text replay quota exceeded")
 
 var ErrTextReplayClosed = errors.New("text replay task is closed")
@@ -40,7 +42,18 @@ var ErrCanvasRevisionConflict = errors.New("canvas revision changed")
 var ErrAssetExpectedStatusMismatch = errors.New("asset expected status mismatch")
 
 type Repository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	singleProcess bool
+}
+
+func (r *Repository) SetSingleProcess(enabled bool) {
+	if r != nil {
+		r.singleProcess = enabled
+	}
+}
+
+func (r *Repository) SingleProcess() bool {
+	return r != nil && r.singleProcess
 }
 
 // DB 暴露底层连接，供同一进程内的操作层复用同一个数据库（不新建第二个库）。
@@ -54,10 +67,7 @@ func (r *Repository) DB() *gorm.DB {
 // WithTx 返回绑定到同一事务的仓储，使领域写入与操作记录一起提交。
 // 这是操作层幂等能成立的前提：不做内存去重，也不用第二个数据库假装满足。
 func (r *Repository) WithTx(tx *gorm.DB) *Repository {
-	if r == nil {
-		return &Repository{db: tx}
-	}
-	return &Repository{db: tx}
+	return &Repository{db: tx, singleProcess: r.SingleProcess()}
 }
 
 // HoldsTransaction reports that this repository is already bound to a GORM
@@ -86,7 +96,7 @@ func New(db *gorm.DB) *Repository {
 }
 
 func (r *Repository) WithContext(ctx context.Context) *Repository {
-	return &Repository{db: r.db.WithContext(ctx)}
+	return &Repository{db: r.db.WithContext(ctx), singleProcess: r.SingleProcess()}
 }
 
 func (r *Repository) Transaction(fn func(*Repository) error) error {
@@ -201,89 +211,12 @@ func (r *Repository) SystemChannels(includeDisabled bool) ([]model.ModelChannel,
 	return channels, err
 }
 
-func (r *Repository) HistoricalSystemChannelReferences() ([]model.ModelChannel, error) {
-	var channels []model.ModelChannel
-	err := r.db.Unscoped().Select("id", "name").Where("scope = ?", model.ChannelScopeSystem).Order("created_at asc").Find(&channels).Error
-	return channels, err
-}
-
-func (r *Repository) AdminSystemChannels(keyword string, status string, limit int, offset int) ([]model.ModelChannel, int64, error) {
-	var channels []model.ModelChannel
-	var total int64
-	query := r.db.Model(&model.ModelChannel{}).Where("scope = ?", model.ChannelScopeSystem)
-	if value := strings.TrimSpace(keyword); value != "" {
-		pattern := "%" + strings.ToLower(value) + "%"
-		query = query.Where("lower(name) LIKE ? OR lower(public_alias) LIKE ? OR lower(base_url) LIKE ?", pattern, pattern, pattern)
-	}
-	if status == "enabled" {
-		query = query.Where("enabled = ?", true)
-	} else if status == "disabled" {
-		query = query.Where("enabled = ?", false)
-	}
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	if err := query.Order("sort_order asc, created_at asc, id asc").Limit(limit).Offset(offset).Find(&channels).Error; err != nil {
-		return nil, 0, err
-	}
-	return channels, total, nil
-}
-
-func (r *Repository) AdminSystemChannelReferences() ([]model.ModelChannel, error) {
-	var channels []model.ModelChannel
-	err := r.db.Select("id", "name", "enabled").Where("scope = ?", model.ChannelScopeSystem).Order("created_at asc").Find(&channels).Error
-	return channels, err
-}
-
 func (r *Repository) SystemChannel(id string) (*model.ModelChannel, error) {
 	var channel model.ModelChannel
 	if err := r.db.First(&channel, "id = ? AND scope = ? AND enabled = ?", id, model.ChannelScopeSystem, true).Error; err != nil {
 		return nil, err
 	}
 	return &channel, nil
-}
-
-func (r *Repository) AdminSystemChannel(id string) (*model.ModelChannel, error) {
-	var channel model.ModelChannel
-	if err := r.db.First(&channel, "id = ? AND scope = ?", id, model.ChannelScopeSystem).Error; err != nil {
-		return nil, err
-	}
-	return &channel, nil
-}
-
-func (r *Repository) DeleteSystemChannel(id string) error {
-	now := time.Now()
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		channelResult := tx.Model(&model.ModelChannel{}).
-			Where("id = ? AND scope = ?", id, model.ChannelScopeSystem).
-			Updates(map[string]any{"api_key": "", "secret_key": "", "enabled": false, "updated_at": now})
-		if channelResult.Error != nil {
-			return channelResult.Error
-		}
-		if channelResult.RowsAffected != 1 {
-			return gorm.ErrRecordNotFound
-		}
-		if err := tx.Model(&model.ChannelModel{}).Where("channel_id = ?", id).Updates(map[string]any{"enabled": false, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("channel_id = ?", id).Delete(&model.ChannelModel{}).Error; err != nil {
-			return err
-		}
-		return tx.Where("id = ? AND scope = ?", id, model.ChannelScopeSystem).Delete(&model.ModelChannel{}).Error
-	})
-}
-
-func (r *Repository) ApiCallLogs(userID string, admin bool, limit int) ([]model.ApiCallLog, error) {
-	var logs []model.ApiCallLog
-	if limit <= 0 || limit > 200 {
-		limit = 100
-	}
-	query := r.db.Order("created_at desc").Limit(limit)
-	if !admin {
-		query = query.Where("user_id = ?", userID)
-	}
-	err := query.Omit("RequestBody", "ResponseBody").Find(&logs).Error
-	return logs, err
 }
 
 func (r *Repository) SystemSetting(key string) (*model.SystemSetting, error) {

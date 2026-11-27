@@ -29,6 +29,7 @@ const (
 	MaterializeErrorDeliveryUnreadable = "delivery_unreadable"
 	MaterializeErrorUnsupportedShape   = "unsupported_result_shape"
 	MaterializeErrorAssetForeign       = "asset_foreign"
+	MaterializeErrorAssetDeleted       = "asset_deleted"
 )
 
 // CanonicalOutput is the durable generation product identity the backend owns
@@ -221,14 +222,19 @@ func ResultState(status model.TaskStatus, outputs []CanonicalOutput, failedRetry
 		if len(outputs) == 0 {
 			return ResultStateReady
 		}
-		ready := true
+		materialized := 0
+		deleted := 0
 		retryable := false
 		permanent := false
 		for _, output := range outputs {
 			if output.MaterializedAssetID != "" {
+				materialized++
 				continue
 			}
-			ready = false
+			if output.MaterializationErrorCode == MaterializeErrorAssetDeleted {
+				deleted++
+				continue
+			}
 			switch output.MaterializationErrorCode {
 			case MaterializeErrorResourceForeign, MaterializeErrorAssetForeign, MaterializeErrorUnsupportedShape:
 				permanent = true
@@ -240,14 +246,17 @@ func ResultState(status model.TaskStatus, outputs []CanonicalOutput, failedRetry
 				}
 			}
 		}
-		if ready {
-			return ResultStateReady
+		if retryable {
+			return ResultStateFailedRetryable
 		}
-		if permanent && !retryable {
+		if permanent {
 			return ResultStateFailedPermanent
 		}
-		if retryable || permanent {
-			return ResultStateFailedRetryable
+		if materialized+deleted == len(outputs) {
+			if materialized == 0 && deleted > 0 {
+				return ResultStateFailedPermanent
+			}
+			return ResultStateReady
 		}
 		return ResultStatePendingMaterialization
 	case model.TaskStatusFailed:
@@ -309,7 +318,7 @@ func DeliveryComplete(resultJSON string, stored []CanonicalOutput, taskType stri
 
 func terminalMaterializeError(code string) bool {
 	switch code {
-	case MaterializeErrorResourceForeign, MaterializeErrorAssetForeign, MaterializeErrorUnsupportedShape:
+	case MaterializeErrorResourceForeign, MaterializeErrorAssetForeign, MaterializeErrorUnsupportedShape, MaterializeErrorAssetDeleted:
 		return true
 	default:
 		return false

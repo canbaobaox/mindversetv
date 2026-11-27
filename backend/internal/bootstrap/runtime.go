@@ -24,11 +24,13 @@ import (
 	"infinite-canvas/backend/internal/conversation"
 	"infinite-canvas/backend/internal/database"
 	"infinite-canvas/backend/internal/depthcapture"
+	"infinite-canvas/backend/internal/desktopnet"
 	"infinite-canvas/backend/internal/eagle"
 	canvasHandler "infinite-canvas/backend/internal/handler"
 	"infinite-canvas/backend/internal/localapp"
 	"infinite-canvas/backend/internal/localipc"
 	"infinite-canvas/backend/internal/modelcatalog"
+	"infinite-canvas/backend/internal/operations"
 	"infinite-canvas/backend/internal/pluginhost"
 	"infinite-canvas/backend/internal/plugins"
 	"infinite-canvas/backend/internal/repository"
@@ -43,28 +45,33 @@ import (
 )
 
 type Runtime struct {
-	workspaceLock    *os.File
-	cfg              Config
-	db               *gorm.DB
-	service          *app.Service
-	localApp         *localapp.App
-	handler          http.Handler
-	status           *systemStatus
-	launchToken      string
-	uiBootstrapToken string
-	beefTV           *beeftv.Service
-	assistantHost    *assistantruntime.Host
-	listener         net.Listener
-	pipeMu           sync.Mutex
-	pipeListener     net.Listener
-	pipePath         string
-	httpServer       *http.Server
-	serveErr         chan error
-	started          atomic.Bool
-	closed           atomic.Bool
-	closeOnce        sync.Once
-	backgroundDone   chan struct{}
-	closeErr         error
+	workspaceLock        *os.File
+	cfg                  Config
+	db                   *gorm.DB
+	repo                 *repository.Repository
+	service              *app.Service
+	localApp             *localapp.App
+	handler              http.Handler
+	status               *systemStatus
+	launchToken          string
+	uiBootstrapToken     string
+	beefTV               *beeftv.Service
+	assistantHost        *assistantruntime.Host
+	assistantStartMu     sync.Mutex
+	assistantStartCancel context.CancelFunc
+	assistantStartDone   chan struct{}
+	listener             net.Listener
+	pipeMu               sync.Mutex
+	pipeListener         net.Listener
+	pipePath             string
+	httpServer           *http.Server
+	serveErr             chan error
+	started              atomic.Bool
+	closed               atomic.Bool
+	safeModeRequested    atomic.Bool
+	closeOnce            sync.Once
+	backgroundDone       chan struct{}
+	closeErr             error
 }
 
 func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
@@ -86,6 +93,9 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 	reportPhase("lock", "正在检查工作区目录与实例锁")
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
+	}
+	if _, prefErr := desktopnet.LoadPreference(cfg.DataDir); prefErr != nil {
+		log.Printf("读取网络代理设置失败，回退为跟随系统代理: %v", prefErr)
 	}
 	var workspaceLock *os.File
 	if cfg.Profile == ProfileDesktop {
@@ -127,6 +137,7 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 
 	reportPhase("services", "正在加载本地工作区服务")
 	repo := repository.New(db)
+	repo.SetSingleProcess(cfg.Profile == ProfileDesktop)
 	if cfg.Profile == ProfileDesktop {
 		if err := repo.PauseDepthCapturesAfterRestart(context.Background()); err != nil {
 			cleanupDB()
@@ -260,12 +271,12 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 	api := router.Group("/api")
 	status := newSystemStatus(db, svc, true)
 	registerSystemStatusRoutes(api, status)
+	var opsRegistry *agentops.Registry
 	canvasHandler.RegisterDesktopCanvasAPIWithDependencies(api, svc, canvasHandler.RuntimeDependencies{
 		RequestCoordinator: localKernel,
 		ProviderConfig:     localRoot.ProviderConfig,
 		ModelCapability:    localRoot.ModelCapability,
 		Assets:             localRoot.Assets,
-		Projects:           localRoot.Projects,
 		Tasks:              localRoot.Tasks,
 		Generation:         localRoot.Generation,
 		BeefTV:             beefTVConnection,
@@ -276,9 +287,13 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 		Diagnostics:        svc.DiagnosticsDomain(),
 		Eagle:              eagle.New(),
 		DesktopTrust:       desktopTrust(launchToken, uiBootstrapToken),
+		OnAgentOpsRegistry: func(reg *agentops.Registry) { opsRegistry = reg },
 	})
 	canvasHandler.RegisterMCPActivity(api, repo, owner.ID, svc, desktopTrust(launchToken, uiBootstrapToken))
 	businessCatalog := canvasHandler.NewBusinessCatalog(router.Routes())
+	if opsRegistry != nil {
+		opsRegistry.SetBusinessGateway(canvasHandler.NewBusinessGateway(router, businessCatalog))
+	}
 	canvasHandler.RegisterBusinessDiscovery(api, businessCatalog, svc)
 	router.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"code": http.StatusNotFound, "msg": "请求不存在"})
@@ -291,6 +306,10 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 	}
 	clients := agentops.NewClientRegistry(svc.DataDir())
 	rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/media/") {
+			serveLoopbackMediaTicket(w, r, svc.ResourceService(), svc.PlaybackService())
+			return
+		}
 		if tool, allowed := businessCatalog.Match(r.Method, r.URL.Path); allowed && isLoopbackRemote(r.RemoteAddr) {
 			if reg, valid := clients.Lookup(r.Header.Get("X-Beeftv-Client"), strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))); valid {
 				if reg.Mode == agentops.ClientReadOnly && !tool.ReadOnly {
@@ -304,6 +323,23 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 					w.WriteHeader(http.StatusForbidden)
 					_, _ = w.Write([]byte(`{"code":403,"reason":"invalid_external_identity","msg":"外部调用不能使用助手身份"}`))
 					return
+				}
+				if tool.IsPaidExternalSubmission() {
+					if guardErr := operations.CheckExternalBusinessPaidGuardrail(svc.Database()); guardErr != nil {
+						opErr := operations.AsError(guardErr)
+						status := http.StatusPreconditionFailed
+						if opErr.Code == operations.CodePermissionDenied {
+							status = http.StatusForbidden
+						}
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(status)
+						_ = json.NewEncoder(w).Encode(map[string]any{
+							"code":   status,
+							"reason": opErr.Reason,
+							"msg":    opErr.Message,
+						})
+						return
+					}
 				}
 				r = canvasHandler.WithMCPClient(r, string(agentops.NormalizeClientKind(string(reg.Kind))), tool)
 				router.ServeHTTP(w, canvasHandler.WithExternalBusinessPrincipal(r, reg.Mode == agentops.ClientReadOnly))
@@ -345,10 +381,11 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 		}
 		protected.ServeHTTP(w, r)
 	})
-	return &Runtime{
+	rt := &Runtime{
 		workspaceLock:    workspaceLock,
 		cfg:              cfg,
 		db:               db,
+		repo:             repo,
 		service:          svc,
 		localApp:         localRoot,
 		handler:          rootHandler,
@@ -358,7 +395,8 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 		beefTV:           beefTVConnection,
 		assistantHost:    assistantHost,
 		serveErr:         make(chan error, 1),
-	}, nil
+	}
+	return rt, nil
 }
 
 // wirePluginPackages connects installed plugin packages to the skill catalog
@@ -478,15 +516,29 @@ func (r *Runtime) Start() error {
 					}
 					r.pipeMu.Unlock()
 					if r.assistantHost != nil && !r.closed.Load() {
+						r.cancelAssistantStartup()
 						_ = r.assistantHost.Stop()
 					}
 				}
 			}(r.cfg.DataDir, opsURL, version, pipeListener)
 		}
+		// 异步拉起内置助手宿主，避免冷启动 Node/杀软扫描耗时阻塞主应用就绪。
 		if r.assistantHost != nil {
-			if err := r.assistantHost.Start(opsURL, r.launchToken); err != nil {
-				log.Printf("内置创作助手宿主未启动（不影响应用启动）：%v", err)
+			r.assistantStartMu.Lock()
+			if !r.closed.Load() {
+				assistantCtx, cancelAssistant := context.WithCancel(context.Background())
+				assistantDone := make(chan struct{})
+				r.assistantStartCancel = cancelAssistant
+				r.assistantStartDone = assistantDone
+				go func() {
+					defer close(assistantDone)
+					defer cancelAssistant()
+					if err := r.assistantHost.StartContext(assistantCtx, opsURL, r.launchToken); err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("内置创作助手宿主未启动（不影响应用启动）：%v", err)
+					}
+				}()
 			}
+			r.assistantStartMu.Unlock()
 		}
 	}
 	if r.beefTV != nil {
@@ -531,6 +583,30 @@ func (r *Runtime) PrepareStorageMigration(ctx context.Context) (func(), error) {
 	return r.service.PrepareStorageMigration(ctx)
 }
 
+func (r *Runtime) cancelAssistantStartup() chan struct{} {
+	r.assistantStartMu.Lock()
+	cancel := r.assistantStartCancel
+	done := r.assistantStartDone
+	r.assistantStartMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return done
+}
+
+func (r *Runtime) stopAssistantStartup(ctx context.Context) error {
+	done := r.cancelAssistantStartup()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("等待内置创作助手宿主启动退出：%w", ctx.Err())
+	}
+}
+
 func (r *Runtime) Close(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -539,6 +615,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.closed.Store(true)
 		r.status.beginDrain()
 		var failures []error
+		if err := r.stopAssistantStartup(ctx); err != nil {
+			failures = append(failures, err)
+		}
 		// Durable must release its invocations while Go authorization and ops
 		// are still reachable; closing HTTP first turns Quit into fetch errors.
 		if r.assistantHost != nil {

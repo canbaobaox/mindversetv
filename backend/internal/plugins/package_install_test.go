@@ -920,3 +920,105 @@ func TestCuratedCommunityPluginManifestPassesWritingAndInstall(t *testing.T) {
 		t.Fatalf("Manifest.ID = %q, want %q", installed.Manifest.ID, EagleAssetConnector)
 	}
 }
+
+func TestInstallPackagePromotesNpmPackageContentsToPluginRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	rt, err := NewRuntime(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capability.BuiltinRegistry().ResetPluginDescriptors()
+	svc := New(rt, nil)
+	svc.SetPackageFetcher(func(_ context.Context, spec, _ string, prefixDir string) (string, error) {
+		root, err := copyPackageFetcher(context.Background(), spec, "", prefixDir)
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(prefixDir, "package.json"), []byte(`{"private":true,"dependencies":{"pkg":"1.0.0"}}`), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Join(prefixDir, "node_modules", "hoisted-dep"), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(prefixDir, "node_modules", "hoisted-dep", "index.js"), []byte("export const x = 1;\n"), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Join(prefixDir, "node_modules", "shared-dep"), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(prefixDir, "node_modules", "shared-dep", "version.txt"), []byte("hoisted"), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Join(root, "node_modules", "shared-dep"), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(root, "node_modules", "shared-dep", "version.txt"), []byte("nested"), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Join(prefixDir, "node_modules", "@acme", "helper"), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(prefixDir, "node_modules", "@acme", "helper", "index.js"), []byte("export const h = 1;\n"), 0o644); err != nil {
+			return "", err
+		}
+		return root, nil
+	})
+
+	src := writeSamplePluginDir(t, "1.0.0")
+	if _, err := svc.InstallPackage(src, ""); err != nil {
+		t.Fatalf("InstallPackage failed: %v", err)
+	}
+	installRoot := filepath.Join(dataDir, "plugins", "storyboard-grid-test")
+	if _, err := os.Stat(filepath.Join(installRoot, "dist", "client.js")); err != nil {
+		t.Fatalf("expected dist/client.js directly under plugin root %q: %v", installRoot, err)
+	}
+	if _, err := os.Stat(filepath.Join(installRoot, "node_modules", "storyboard-grid-test")); !os.IsNotExist(err) {
+		t.Fatalf("expected package itself not nested under node_modules/<id>, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installRoot, "node_modules", "hoisted-dep", "index.js")); err != nil {
+		t.Fatalf("expected hoisted runtime dependency preserved under plugin root node_modules: %v", err)
+	}
+	sharedBytes, err := os.ReadFile(filepath.Join(installRoot, "node_modules", "shared-dep", "version.txt"))
+	if err != nil || string(sharedBytes) != "nested" {
+		t.Fatalf("expected package's own nested dep to win over hoisted dep, got %q err=%v", string(sharedBytes), err)
+	}
+	if _, err := os.Stat(filepath.Join(installRoot, "node_modules", "@acme", "helper", "index.js")); err != nil {
+		t.Fatalf("expected scoped dependency preserved under plugin root node_modules: %v", err)
+	}
+	var enabled EnabledPackageView
+	for _, item := range svc.EnabledPackages() {
+		if item.ID == "storyboard-grid-test" {
+			enabled = item
+		}
+	}
+	if filepath.Clean(enabled.PackageDir) != filepath.Clean(installRoot) {
+		t.Fatalf("PackageDir = %q, want plugin root %q", enabled.PackageDir, installRoot)
+	}
+
+	// Scoped npm package should also flatten into plugins/<id> and preserve sibling scoped deps.
+	scopedSrc := t.TempDir()
+	writePluginFolder(t, scopedSrc, map[string]string{
+		"dist/client.js": "export function activate() {}\n",
+		"package.json": `{
+  "name": "@acme/scoped-demo",
+  "version": "1.0.0",
+  "beeftv": {
+    "name": "Scoped Demo",
+    "client": "./dist/client.js"
+  }
+}`,
+	})
+	if _, err := svc.InstallPackage(scopedSrc, ""); err != nil {
+		t.Fatalf("InstallPackage scoped failed: %v", err)
+	}
+	scopedRoot := filepath.Join(dataDir, "plugins", "acme-scoped-demo")
+	if _, err := os.Stat(filepath.Join(scopedRoot, "dist", "client.js")); err != nil {
+		t.Fatalf("expected scoped package dist/client.js at root %q: %v", scopedRoot, err)
+	}
+	if _, err := os.Stat(filepath.Join(scopedRoot, "node_modules", "@acme", "scoped-demo")); !os.IsNotExist(err) {
+		t.Fatalf("expected scoped package not nested under node_modules/@acme/scoped-demo, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scopedRoot, "node_modules", "@acme", "helper", "index.js")); err != nil {
+		t.Fatalf("expected sibling scoped dep preserved: %v", err)
+	}
+}

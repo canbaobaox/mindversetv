@@ -233,3 +233,99 @@ func TestSaveRecoversFromUndecryptableConfigWhenDisabledOrSecretProvided(t *test
 		t.Fatalf("expected readable enabled config with new secret, got %+v, err=%v", restored, err)
 	}
 }
+
+func TestUploadRejectionParsesAllowlistedS3CodesWithoutLeakingXML(t *testing.T) {
+	cases := []struct {
+		name           string
+		status         int
+		xmlBody        string
+		wantContain    string
+		wantNotContain string
+	}{
+		{
+			name:           "AccessDenied gives COS permission hint",
+			status:         403,
+			xmlBody:        `<Error><Code>AccessDenied</Code><Message>secret-bucket-policy-detail</Message></Error>`,
+			wantContain:    "AccessDenied",
+			wantNotContain: "secret-bucket-policy-detail",
+		},
+		{
+			name:           "SignatureDoesNotMatch gives key/region hint",
+			status:         403,
+			xmlBody:        `<Error><Code>SignatureDoesNotMatch</Code><StringToSign>SECRET_SIGN</StringToSign></Error>`,
+			wantContain:    "SignatureDoesNotMatch",
+			wantNotContain: "SECRET_SIGN",
+		},
+		{
+			name:           "InvalidAccessKeyId gives SecretId hint",
+			status:         403,
+			xmlBody:        `<Error><Code>InvalidAccessKeyId</Code><AWSAccessKeyId>AKIA_PRIVATE_KEY</AWSAccessKeyId></Error>`,
+			wantContain:    "SecretId",
+			wantNotContain: "AKIA_PRIVATE_KEY",
+		},
+		{
+			name:           "NoSuchBucket gives APPID hint",
+			status:         404,
+			xmlBody:        `<Error><Code>NoSuchBucket</Code><BucketName>private-bucket</BucketName></Error>`,
+			wantContain:    "-APPID",
+			wantNotContain: "private-bucket",
+		},
+		{
+			name:           "InvalidBucketName gives APPID hint",
+			status:         400,
+			xmlBody:        `<Error><Code>InvalidBucketName</Code><BucketName>bad-bucket</BucketName></Error>`,
+			wantContain:    "InvalidBucketName",
+			wantNotContain: "bad-bucket",
+		},
+		{
+			name:           "RequestTimeTooSkewed gives clock hint",
+			status:         403,
+			xmlBody:        `<Error><Code>RequestTimeTooSkewed</Code><RequestId>secret-req</RequestId></Error>`,
+			wantContain:    "系统时间",
+			wantNotContain: "secret-req",
+		},
+		{
+			name:           "AuthorizationHeaderMalformed gives endpoint/region hint",
+			status:         400,
+			xmlBody:        `<Error><Code>AuthorizationHeaderMalformed</Code><Region>private-region</Region></Error>`,
+			wantContain:    "AuthorizationHeaderMalformed",
+			wantNotContain: "private-region",
+		},
+		{
+			name:           "PermanentRedirect gives endpoint/region hint",
+			status:         301,
+			xmlBody:        `<Error><Code>PermanentRedirect</Code><Endpoint>https://private.cos.test</Endpoint></Error>`,
+			wantContain:    "PermanentRedirect",
+			wantNotContain: "private.cos.test",
+		},
+		{
+			name:           "Unknown XML code falls back cleanly on 403",
+			status:         403,
+			xmlBody:        `<Error><Code>InternalVendorCode</Code><Message>raw-internal</Message></Error>`,
+			wantContain:    "HTTP 403",
+			wantNotContain: "InternalVendorCode",
+		},
+		{
+			name:           "Unknown 500 falls back cleanly without leaking body",
+			status:         500,
+			xmlBody:        `<Error><Code>InternalError</Code><Message>https://secret.cos/?X-Amz-Signature=PRIV</Message></Error>`,
+			wantContain:    "HTTP 500",
+			wantNotContain: "PRIV",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := uploadRejectionError(tc.status, strings.NewReader(tc.xmlBody))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.wantContain) {
+				t.Fatalf("error %q missing %q", msg, tc.wantContain)
+			}
+			if tc.wantNotContain != "" && strings.Contains(msg, tc.wantNotContain) {
+				t.Fatalf("error %q leaked %q", msg, tc.wantNotContain)
+			}
+		})
+	}
+}

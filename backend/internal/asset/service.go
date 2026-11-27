@@ -89,19 +89,26 @@ type Service struct {
 	lifecycle    Lifecycle
 	localStorage bool
 	dataDir      string
+	previews     *previewManager
+	tickets      *MediaTicketStore
 	sessionMu    sync.Mutex
 	sessions     map[string]*chunkedUploadSession
+	deletionWake chan struct{}
 }
 
 func NewService(deps Dependencies) *Service {
+	dataDir := strings.TrimSpace(deps.DataDir)
 	svc := &Service{
 		repo:         deps.Repository,
 		blobs:        deps.Blobs,
 		quota:        deps.Quota,
 		lifecycle:    deps.Lifecycle,
 		localStorage: deps.LocalStorage,
-		dataDir:      strings.TrimSpace(deps.DataDir),
+		dataDir:      dataDir,
+		previews:     newPreviewManager(dataDir),
+		tickets:      NewMediaTicketStore(),
 		sessions:     map[string]*chunkedUploadSession{},
+		deletionWake: make(chan struct{}, 1),
 	}
 	if svc.dataDir != "" {
 		svc.abandonStaleSessions()
@@ -368,6 +375,14 @@ func (s *Service) finishQuota(userID string, day string, size int64, resource *m
 	if s == nil || s.quota == nil {
 		return
 	}
+	if day == localReservationDay {
+		if resource != nil && resource.Status == model.ResourceStatusReady && created && err == nil {
+			s.quota.Commit(userID, size, identity)
+			return
+		}
+		s.quota.Release(userID, day, size, identity)
+		return
+	}
 	if resource != nil && resource.Status == model.ResourceStatusReady {
 		if created && err == nil {
 			s.quota.Commit(userID, size, identity)
@@ -403,11 +418,13 @@ func (s *Service) resourceForUploadKey(userID string, uploadKey *string) (*model
 }
 
 func (s *Service) afterReady(resource *model.Resource) {
-	if s == nil || s.lifecycle == nil || resource == nil {
+	if s == nil || resource == nil {
 		return
 	}
-	s.lifecycle.RecordActivity(resource.UserID, "resource", 1)
-	s.lifecycle.AfterResourceReady(resource)
+	if s.lifecycle != nil {
+		s.lifecycle.RecordActivity(resource.UserID, "resource", 1)
+		s.lifecycle.AfterResourceReady(resource)
+	}
 }
 
 func (s *Service) workerID() string {

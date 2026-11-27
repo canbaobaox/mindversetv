@@ -8,7 +8,7 @@ import { collectTurnEffects, extendWriteChain, rebaseOntoWriteChain } from './ca
 import { toolOperationId } from './session-identity.mjs';
 import { budgetError, spendToolStep } from './request-budget.mjs';
 import { mediaToolResult, mediaFacts, mediaEvidence } from './media-content.mjs';
-import { canvasReadView, CANVAS_READ_VIEW_SCHEMA } from './canvas-read-view.mjs';
+import { canvasReadView, canvasNodesGetView, CANVAS_READ_VIEW_SCHEMA } from './canvas-read-view.mjs';
 import { canvasWriteView, canvasWriteViewDescription } from './canvas-write-view.mjs';
 import { awaitBusinessTasks } from './await-business-tasks.mjs';
 import { timelineDeliveryTool } from './timeline-delivery.mjs';
@@ -23,6 +23,7 @@ const REBASABLE_WRITES = new Set([
   'canvas.edge.create',
   CANVAS_NODE_UPDATE,
   'canvas.node.configure',
+  'canvas.nodes.configure',
   'canvas.node.move',
   'canvas.script.rows.append',
   'canvas.script.row.update',
@@ -140,8 +141,16 @@ export function createOperationBridge({
     let envelope = null;
     try { envelope = JSON.parse(text); } catch { /* 非 JSON */ }
     if (!response.ok || !envelope || envelope.code !== 0) {
-      const error = new Error(`${envelope?.reason || `http_${response.status}`}: ${envelope?.msg || text.slice(0, 200)}`);
-      error.reason = envelope?.reason || `http_${response.status}`;
+      const reason = envelope?.reason || `http_${response.status}`;
+      const baseMsg = envelope?.msg || text.slice(0, 200);
+      const currentVersion = reason === 'stale_media_version' && typeof envelope?.details?.currentVersion === 'string'
+        ? envelope.details.currentVersion.trim()
+        : '';
+      const msg = currentVersion && !baseMsg.includes(currentVersion)
+        ? `${baseMsg}（currentVersion=${currentVersion}）`
+        : baseMsg;
+      const error = new Error(`${reason}: ${msg}`);
+      error.reason = reason;
       error.details = envelope?.details || null;
       throw error;
     }
@@ -160,15 +169,17 @@ export function createOperationBridge({
     const mode = generation.permissionMode || 'canvas';
     const tools = [...descriptors.entries()].filter(([,d]) =>
       d.id !== 'skill.get' &&
+      d.id !== 'task.wait' &&
       Array.isArray(d.assistantModes) &&
       d.assistantModes.includes(mode)
     ).map(([toolName, descriptor]) => ({
       name: toolName,
       label: descriptor.id,
       readOnly: descriptor.readOnly === true,
+      noTurnCanvas: descriptor.noTurnCanvas === true,
       replay: descriptor.replay === 'safe' ? 'safe' : 'unsafe',
       description: descriptor.summary + canvasWriteViewDescription(descriptor.id),
-      parameters: scopedSchema(descriptor.params, mode !== 'canvas' || descriptor.id === 'canvas.get', descriptor.id),
+      parameters: scopedSchema(descriptor.params, mode !== 'canvas' || descriptor.id === 'canvas.get' || descriptor.id === 'canvas.nodes.get', descriptor.id),
       ...(descriptor.readOnly ? {} : { executionMode: 'sequential' }),
       execute: async (toolCallId, args, signal, api = {}) => {
         try { assertToolGeneration(generation, descriptor, signal, turn); }
@@ -211,8 +222,11 @@ export function createOperationBridge({
             params.canvasId = params.projectId;
             delete params.projectId;
           }
+        } else if (descriptor.id === 'canvas.create') {
+          // canvas.create accepts an optional custom canvasId for the newly created
+          // canvas; never inject the current session canvasId here.
         } else if (Object.hasOwn(descriptor.params?.properties || {}, 'canvasId')) {
-          if ((generation.permissionMode || 'canvas') === 'canvas' && descriptor.id !== 'canvas.get' && params.canvasId !== undefined && params.canvasId !== canvasId) {
+          if ((generation.permissionMode || 'canvas') === 'canvas' && descriptor.id !== 'canvas.get' && descriptor.id !== 'canvas.nodes.get' && params.canvasId !== undefined && params.canvasId !== canvasId) {
             throw new Error(`scope_denied: 画布参数与当前会话不一致（${params.canvasId} ≠ ${canvasId}）`);
           }
           if (params.canvasId === undefined) params.canvasId = canvasId;
@@ -286,9 +300,26 @@ export function createOperationBridge({
               },
             };
           }
-          if (descriptor.id === 'canvas.generation.submit' || descriptor.id === 'canvas.timeline.render') {
+          if (descriptor.id === 'file.read' && data?.result?.pagination && typeof data.result.content === 'string') {
+            const p = data.result.pagination;
+            if (p.truncated) {
+              const nextLine = p.firstLineExceedsLimit ? (p.startLine + 1) : (p.endLine + 1);
+              let footer;
+              if (p.nextByteOffset > 0) {
+                const nextLineHint = p.startLine < p.totalLines ? `；或跳过本行传 offset=${nextLine} 读后续行` : '';
+                footer = `\n\n[第 ${p.startLine} 行共 ${p.firstLineBytes} 字节，已按单页上限截断；文件共 ${p.totalLines} 行。如需继续阅读本行剩余内容，请传 offset=${p.startLine}, byteOffset=${p.nextByteOffset} 调用 file_read（resourceId="${params.resourceId}"）${nextLineHint}。]`;
+              } else if (p.firstLineExceedsLimit) {
+                footer = `\n\n[第 ${p.startLine} 行共 ${p.firstLineBytes} 字节，已按单页上限截断；文件共 ${p.totalLines} 行。${p.startLine < p.totalLines ? `如需继续阅读，请传 offset=${nextLine} 调用 file_read（resourceId="${params.resourceId}"）。` : ''}]`;
+              } else {
+                footer = `\n\n[当前显示第 ${p.startLine}-${p.endLine} 行（共 ${p.totalLines} 行）。如需继续阅读后续内容，请传 offset=${nextLine} 调用 file_read（resourceId="${params.resourceId}"）。]`;
+              }
+              data = { ...data, result: { ...data.result, content: data.result.content + footer } };
+            }
+          }
+          if (descriptor.id === 'canvas.generation.submit' || descriptor.id === 'canvas.generation.regenerate' || descriptor.id === 'canvas.timeline.render') {
             data = await awaitBusinessTasks(data, { opsRequest, turnId: turn.turnId, signal, canvasId: params.canvasId,
-              rendering: descriptor.id === 'canvas.timeline.render', onProgress: api.reportProgress });
+              rendering: descriptor.id === 'canvas.timeline.render', onProgress: api.reportProgress,
+              useTaskWait: descriptors.has('task_wait') });
           }
           // A replay can recover the receipt lost between business commit and
           // the durable checkpoint. Only our persisted request may advance
@@ -308,10 +339,32 @@ export function createOperationBridge({
           }
           // A binding replay projects the current canvas, not a write by this turn.
           if (descriptor.id !== 'canvas.task.bind' || !data?.replayed) {
-            collectTurnEffects(turn, descriptor.id, data?.result, opId);
+            collectTurnEffects(turn, descriptor.id, data?.result, opId, { noTurnCanvas: descriptor.noTurnCanvas === true });
           }
-          const converted = mediaToolResult(descriptor.id === 'canvas.get' ? canvasReadView(data, readView) : canvasWriteView(data, descriptor.id, params), descriptor.id, { ...mediaModel, originTurnId:turn.turnId,
+          let scannedPdfImageParts = [];
+          if (descriptor.id === 'file.read' && Array.isArray(data?.result?.images) && data.result.images.length > 0) {
+            scannedPdfImageParts = data.result.images
+              .filter((img) => img && typeof img.data === 'string' && img.data.length > 0 && typeof img.mimeType === 'string')
+              .map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType }));
+            const { images: rawImages, ...restResult } = data.result;
+            data = {
+              ...data,
+              result: {
+                ...restResult,
+                imagePages: rawImages.map((img) => ({ page: img.page, width: img.width, height: img.height })),
+              },
+            };
+          }
+          const projected = descriptor.id === 'canvas.get'
+            ? canvasReadView(data, readView)
+            : descriptor.id === 'canvas.nodes.get'
+              ? canvasNodesGetView(data)
+              : canvasWriteView(data, descriptor.id, params);
+          const converted = mediaToolResult(projected, descriptor.id, { ...mediaModel, originTurnId:turn.turnId,
             ...(generation.durable ? {nativePartStore} : {}) });
+          if (scannedPdfImageParts.length > 0 && Array.isArray(converted?.content)) {
+            converted.content = [...converted.content, ...scannedPdfImageParts];
+          }
           const evidence = mediaEvidence(data?.result, descriptor.id);
           const facts = evidence ? undefined : mediaFacts(data?.result, descriptor.id);
           log.push({ toolCallId: toolCallId || null, tool: descriptor.id, args: params, isError: false, ms: Date.now() - started, replayed: !!data?.replayed, ...rebaseNote,

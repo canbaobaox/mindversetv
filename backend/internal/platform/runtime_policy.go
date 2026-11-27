@@ -17,7 +17,8 @@ import (
 const runtimePolicySettingKey = "runtime_policy"
 
 const (
-	maxRuntimeUploadMB       int64 = 999
+	maxRuntimeUploadMB       int64 = 2048
+	maxRuntimeRelayMB        int64 = 999
 	maxRuntimeStorageGB      int64 = 999
 	maxRuntimeDataMB         int64 = 999_999
 	maxRuntimeCount          int64 = 999_999_999
@@ -38,6 +39,7 @@ type RuntimeResourcePolicy struct {
 	TaskCount               int64 `json:"taskCount"`
 	APICallLogCount         int64 `json:"apiCallLogCount"`
 	RecycleBinRetentionDays int   `json:"recycleBinRetentionDays"`
+	Unlimited               bool  `json:"-"`
 }
 
 type RuntimeTaskPolicy struct {
@@ -68,6 +70,7 @@ type RuntimeRequestPolicy struct {
 	SystemRelayResponseMB      int64 `json:"systemRelayResponseMB"`
 	ChannelCircuitFailureCount int   `json:"channelCircuitFailureCount"`
 	ChannelCircuitOpenSeconds  int   `json:"channelCircuitOpenSeconds"`
+	Unlimited                  bool  `json:"-"`
 }
 
 type RuntimePolicySetting struct {
@@ -140,6 +143,7 @@ func selfUseRuntimePolicy() RuntimePolicySetting {
 		TaskDataGB: maxRuntimeStorageGB, AssetCount: maxRuntimeCount, CanvasCount: maxRuntimeCount,
 		TaskCount: maxRuntimeCount, APICallLogCount: maxRuntimeCount,
 		RecycleBinRetentionDays: 0,
+		Unlimited:               true,
 	}
 	value.Task = RuntimeTaskPolicy{
 		WorkerConcurrency: maxRuntimeConcurrency, ChannelConcurrency: maxRuntimeConcurrency, ActiveTaskLimit: maxRuntimeConcurrency,
@@ -152,10 +156,11 @@ func selfUseRuntimePolicy() RuntimePolicySetting {
 		ResourceUploadPerMinute: maxRuntimeRate, ResourceImportPerMinute: maxRuntimeRate,
 		AssetWritePerMinute: maxRuntimeRate, CanvasWritePerMinute: maxRuntimeRate,
 		SystemRelayPerMinute: maxRuntimeRate, CustomRelayPerMinute: maxRuntimeRate,
-		CustomRelayConcurrency: maxRuntimeConcurrency, CustomRelayRequestMB: maxRuntimeUploadMB,
-		CustomRelayResponseMB: maxRuntimeUploadMB, CustomRelayTimeoutMinutes: maxRuntimeTimeoutMinutes,
-		SystemRelayRequestMB: maxRuntimeUploadMB, SystemRelayResponseMB: maxRuntimeUploadMB,
+		CustomRelayConcurrency: maxRuntimeConcurrency, CustomRelayRequestMB: maxRuntimeRelayMB,
+		CustomRelayResponseMB: maxRuntimeRelayMB, CustomRelayTimeoutMinutes: maxRuntimeTimeoutMinutes,
+		SystemRelayRequestMB: maxRuntimeRelayMB, SystemRelayResponseMB: maxRuntimeRelayMB,
 		ChannelCircuitFailureCount: maxRuntimeConcurrency, ChannelCircuitOpenSeconds: 1,
+		Unlimited: true,
 	}
 	return value
 }
@@ -281,8 +286,8 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 		"自定义渠道请求体": request.CustomRelayRequestMB, "自定义渠道响应体": request.CustomRelayResponseMB,
 		"系统渠道请求体": request.SystemRelayRequestMB, "系统渠道响应体": request.SystemRelayResponseMB,
 	} {
-		if item < 1 || item > maxRuntimeUploadMB {
-			return kernel.BadAuthRequest(fmt.Sprintf("%s必须是 1-%d MB 的整数", label, maxRuntimeUploadMB))
+		if item < 1 || item > maxRuntimeRelayMB {
+			return kernel.BadAuthRequest(fmt.Sprintf("%s必须是 1-%d MB 的整数", label, maxRuntimeRelayMB))
 		}
 	}
 	if request.CustomRelayTimeoutMinutes < 1 || request.CustomRelayTimeoutMinutes > maxRuntimeTimeoutMinutes {

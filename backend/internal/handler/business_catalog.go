@@ -36,6 +36,12 @@ func externalBusiness(c *gin.Context) (externalBusinessPrincipal, bool) {
 }
 
 func businessRouteAllowed(method, p string) bool {
+	if method == http.MethodHead {
+		return false
+	}
+	if p == "/resources/:id/media-ticket" || p == "/resources/:id/asset" || strings.HasPrefix(p, "/resources/:id/asset/") {
+		return false
+	}
 	// Public market reads are ordinary discovery. Publishing grants, private
 	// drafts and the two confirmation actions remain on the desktop UI path.
 	if p == "/skills/market" || strings.HasPrefix(p, "/skills/market/") {
@@ -95,6 +101,12 @@ func NewBusinessCatalog(routes gin.RoutesInfo) *BusinessCatalog {
 	return c
 }
 
+// IsPaidExternalSubmission reports whether a Business Catalog route triggers a paid
+// generation or cloud transcription outside canvas.generation.submit pricing.
+func (t BusinessTool) IsPaidExternalSubmission() bool {
+	return t.SubmitsGeneration || (t.Method == http.MethodPost && t.Path == "/timeline/transcriptions")
+}
+
 func (c *BusinessCatalog) Match(method, p string) (BusinessTool, bool) {
 	if method == http.MethodGet && p == "/api/business/tools" {
 		return BusinessTool{ReadOnly: true}, true
@@ -120,6 +132,34 @@ func (c *BusinessCatalog) Match(method, p string) (BusinessTool, bool) {
 		}
 	}
 	return BusinessTool{}, false
+}
+
+// AssistantBlockPolicy is the single audited classification of catalog routes
+// that the built-in assistant cannot invoke directly through business.call
+// (paid submission/approval routes, canvas mutations that bypass turn
+// snapshots/undo, and infinite SSE event streams).
+func (t BusinessTool) AssistantBlockPolicy() (kind, reason, msg string, blocked bool) {
+	if t.SubmitsGeneration {
+		return "permission", "generation_approval_required",
+			"内置助手不能通过 business.call 直接提交计费生成任务；请使用 canvas.generation.propose 让用户确认", true
+	}
+	if t.Method == http.MethodPost && t.Path == "/timeline/transcriptions" {
+		return "permission", "generation_approval_required",
+			"时间线转写可能调用计费云端模型，内置助手不能直接通过 business.call 提交", true
+	}
+	if t.Method == http.MethodPost && (t.Path == "/creation-runs/:id/submissions/approve" || t.Path == "/creation-runs/:id/proposal-approve") {
+		return "permission", "generation_approval_required",
+			"付费方案审批必须由用户在界面确认，内置助手不能通过 business.call 代审批", true
+	}
+	if t.Method != http.MethodGet && (t.Path == "/canvas-projects" || strings.HasPrefix(t.Path, "/canvas-projects/") || t.Path == "/creation-runs/:id/canvas" || t.Path == "/creation-runs/:id/canvas-commit") {
+		return "permission", "use_canvas_operation",
+			"新建、修改或删除画布请使用专用的 canvas.create / canvas.* 工具，以保留回合快照、版本校验与撤销记录", true
+	}
+	if t.Method == http.MethodGet && (t.Path == "/canvas-projects/:id/events" || t.Path == "/tasks/:id/text-events") {
+		return "invalid", "streaming_route_unsupported",
+			"事件流接口不支持通过一次性 business.call 调用", true
+	}
+	return "", "", "", false
 }
 
 func RegisterBusinessDiscovery(api *gin.RouterGroup, catalog *BusinessCatalog, owners ownerCredentialDirs) {

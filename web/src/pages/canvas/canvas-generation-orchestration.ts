@@ -1,8 +1,14 @@
 import type { Dispatch, SetStateAction } from "react";
 import { nanoid } from "nanoid";
 import { beefTVImageContract } from "@/lib/beeftv-image-contracts";
+import { survivingGenerationHistoryImageOutputs } from "@/lib/canvas/canvas-generation-history";
 
 import { getNodeSpec } from "@/constant/canvas";
+import { findAvailableGenerationGroupPosition } from "@/lib/canvas/canvas-generation-layout";
+import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
+import { modelCompatibilityError } from "@/lib/model-selection";
+import { seedanceSettingsConstraints } from "@/lib/seedance-task-constraints";
+import { seedreamFamily, seedreamSupportsLayerSplit } from "@/lib/seedream-image";
 import { applyGenerationTaskResultToNodes, applyMaterializedGenerationTaskResultToNodes, generationTaskMode } from "@/lib/canvas/canvas-generation-task-sync";
 import { failedImageBatchChildren, markImageBatchRetrying, reconcileImageBatchRoot, restoreUnsubmittedImageBatchChild } from "@/lib/canvas/canvas-image-batch-retry";
 import { bindMissingCanvasResourceAssets, canvasNodesMissingResourceAssetBinding } from "@/lib/canvas/canvas-node-asset";
@@ -12,6 +18,7 @@ import { isDepthCaptureResultNode } from "@/lib/canvas/canvas-depth-capture";
 import { canvasNodeFailureView } from "@/lib/canvas/canvas-node-failure-view";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { Asset } from "@/stores/use-asset-store";
+import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 
 import { CanvasOwnerAbandonedError, canvasOwnerCanPersist, canvasOwnerEpochMatches, canvasOwnerUserMatches, type CanvasOwnerEpoch } from "./canvas-owner-epoch";
@@ -128,6 +135,32 @@ export function createImageNodeFromTextSource(input: {
     return { ok: true, imageNode, connection, nextNodes, nextConnections: [...input.connections, connection] };
 }
 
+export function createImageLayerSplit(source: CanvasNodeData, config: AiConfig, nodes: CanvasNodeData[], isReady: (model: string) => boolean) {
+    const available = selectableModelsByCapability(config, "image").filter((model) =>
+        seedreamSupportsLayerSplit(seedreamFamily(model)) && isReady(model));
+    const preferred = [source.metadata?.model, config.imageModel]
+        .map((model) => normalizeModelOptionValue(model, config.channels));
+    const model = preferred.find((key) => available.includes(key))
+        || available.find((key) => seedreamFamily(key) === "5.5")
+        || available[0];
+    if (!model) return null;
+
+    const prompt = "图层拆分：保留原图构图，将主体和其他独立元素拆为透明图层，补齐被遮挡的背景。";
+    const node = createCanvasNode(CanvasNodeType.Image, { x: 0, y: 0 }, {
+        model, prompt, composerContent: prompt, size: "auto", count: 1,
+        seedreamMode: "layers", seedreamOutputFormat: "png", transparentBackground: "false",
+        generationResultPlacement: "replace-node",
+    });
+    node.title = "图层拆分";
+    node.width = source.width;
+    node.height = source.height;
+    node.position = findAvailableGenerationGroupPosition(nodes, {
+        x: source.position.x + source.width + 96,
+        y: source.position.y,
+    }, node);
+    return { node, model, prompt, connection: { id: nanoid(), fromNodeId: source.id, toNodeId: node.id } };
+}
+
 export function createInsertingHistoryGate() {
     let busy = false;
     return {
@@ -167,9 +200,12 @@ export async function insertCanvasGenerationHistoryTask(input: {
     const nodeType = mode === "video" ? CanvasNodeType.Video : mode === "audio" ? CanvasNodeType.Audio : CanvasNodeType.Image;
     const declaredOutputs = input.task.outputs?.length ? Math.max(...input.task.outputs.map((item) => (item.outputIndex ?? 0) + 1), input.task.outputs.length) : 0;
     const count = mode === "image" ? (beefTVImageContract(input.task.model || "")?.fixedOutputs || declaredOutputs || 1) : 1;
+    const surviving = mode === "image" ? survivingGenerationHistoryImageOutputs(input.task) : undefined;
+    const outputIndexes = surviving?.map((output) => output.outputIndex) ?? Array.from({ length: count }, (_, index) => index);
+    if (!outputIndexes.length) throw new Error("该任务没有可插入的生成结果");
     const insertedNodes: CanvasNodeData[] = [];
-    for (let index = 0; index < count; index++) {
-        const node = createCanvasNode(nodeType, { x: input.center.x + (index % 2) * 400, y: input.center.y + Math.floor(index / 2) * 400 }, {
+    for (const [position, index] of outputIndexes.entries()) {
+        const node = createCanvasNode(nodeType, { x: input.center.x + (position % 2) * 400, y: input.center.y + Math.floor(position / 2) * 400 }, {
             prompt: input.task.prompt,
             composerContent: input.task.prompt,
             status: "loading",
@@ -180,7 +216,7 @@ export async function insertCanvasGenerationHistoryTask(input: {
             taskCreatedAt: input.task.createdAt,
             taskCompletedAt: input.task.completedAt,
             model: input.task.model,
-            ...(count > 1 ? { taskOutputIndex: index } : {}),
+            ...(outputIndexes.length > 1 || index !== 0 ? { taskOutputIndex: index } : {}),
         });
         node.title = mode === "video" ? "历史视频" : mode === "audio" ? "历史音频" : "历史图片";
         const output = input.task.outputs?.find((output) => output.outputIndex === index && output.materializedAssetId);
@@ -242,4 +278,30 @@ export async function runOwnedCanvasHistoryInsert(input: {
         if (error instanceof CanvasOwnerAbandonedError) return "abandoned";
         throw error;
     }
+}
+
+export function resolveVideoEditNodeDraft(effectiveConfig: AiConfig, node: CanvasNodeData, operation: "extend" | "inpaint") {
+    const editQuality = node.metadata?.vquality || "720p";
+    const candidateModels = [node.metadata?.model, effectiveConfig.videoModel, ...selectableModelsByCapability(effectiveConfig, "video")].filter((item): item is string => Boolean(item));
+    const editRequirementsFor = (modelKey: string) => {
+        const constraints = seedanceSettingsConstraints(modelCapabilityConfigFor(effectiveConfig, modelKey), 0, 1, 0, operation);
+        return {
+            capability: "video" as const,
+            videoOperation: operation,
+            videoSeconds: constraints.durationLocked ? "-1" : node.metadata?.seconds || effectiveConfig.videoSeconds,
+            options: { vquality: editQuality },
+            input: { textCount: 1, imageCount: 0, videoCount: 1, audioCount: 0, characterCount: 0 },
+        };
+    };
+    const targetModel =
+        candidateModels.find((item) => modelCapabilityConfigFor(effectiveConfig, item).video?.operations?.includes(operation) && !modelCompatibilityError(effectiveConfig, item, editRequirementsFor(item))) ||
+        candidateModels.find((item) => !modelCompatibilityError(effectiveConfig, item, editRequirementsFor(item))) ||
+        node.metadata?.model;
+    const constraints = targetModel ? seedanceSettingsConstraints(modelCapabilityConfigFor(effectiveConfig, targetModel), 0, 1, 0, operation) : {};
+    return {
+        model: targetModel,
+        size: "adaptive",
+        seconds: constraints.durationLocked ? "-1" : node.metadata?.seconds,
+        vquality: editQuality,
+    };
 }

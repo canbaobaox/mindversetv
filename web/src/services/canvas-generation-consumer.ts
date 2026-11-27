@@ -10,7 +10,7 @@ import { CanvasBackendSubmitPausedError, isCanvasRevisionConflict } from "@/serv
 import { generationEffectApplied } from "@/services/generation-consumer-dedupe";
 import { attachNodeEffectKey } from "@/services/generation-task-materializer";
 import { persistCanvasDocument } from "@/services/local-workspace-repository";
-import { hydrateBackendGeneratedOutputs, type ensureCanvasNodeAsset } from "@/services/project-asset-sync";
+import { hydrateBackendGeneratedOutputs } from "@/services/project-asset-sync";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { publishGenerationDeliveryProgress } from "@/stores/use-generation-delivery-progress";
 import { clearGenerationTaskTelemetry } from "@/stores/use-generation-task-telemetry";
@@ -22,7 +22,7 @@ function throwIfAborted(signal?: AbortSignal) {
     if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
 }
 
-import { healCanvasProjectMediaAssets, isCanvasMediaAssetGuardError, persistCanvasGenerationTarget, syncInMemoryCanvasProjectMediaAssets } from "./canvas-generation-target";
+import { persistCanvasGenerationTarget, syncInMemoryCanvasProjectMediaAssets } from "./canvas-generation-target";
 export { persistCanvasGenerationTarget };
 
 export function isCanvasGenerationDurableAckError(error: unknown): error is CanvasGenerationDurableAckError {
@@ -76,7 +76,6 @@ type SleepWithSignal = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 export type BindBackendCanvasGenerationRuntime = {
     hydrateOutputs?: typeof hydrateBackendGeneratedOutputs;
-    ensureNodeAsset?: typeof ensureCanvasNodeAsset;
     persistDocument?: PersistCanvasDocumentPatch;
     bindOutput?: typeof bindCanvasTaskOutput;
     adoptConfirmedProjection?: AdoptServerConfirmedProjection;
@@ -92,7 +91,7 @@ export type BindBackendCanvasGenerationRuntime = {
 // reporting the transient state as a canvas conflict.
 const GENERATION_MATERIALIZATION_BUDGET_MS = 15 * 60 * 1000;
 
-const PERMANENT_MATERIALIZATION_ERROR_CODES = new Set(["resource_foreign", "asset_foreign", "unsupported_result_shape"]);
+const PERMANENT_MATERIALIZATION_ERROR_CODES = new Set(["asset_deleted", "resource_foreign", "asset_foreign", "unsupported_result_shape"]);
 
 function materializationPollDelay(attempt: number) {
     const schedule = [1000, 2000, 3000, 5000];
@@ -190,7 +189,11 @@ async function pollMaterializedGenerationOutput(
             if (deliveryCode === "delivery_paused" || deliveryCode === "delivery_timed_out") {
                 throw new CanvasGenerationMaterializationError(new Error(deliveryCode === "delivery_paused" ? "已停止取回，可继续取回原结果" : "结果取回超时，可继续取回原结果"));
             }
-            if (generationTaskOutputPermanentlyFailed(task, state.outputIndex)) throw new CanvasGenerationMaterializationError(new Error(task.resultState || task.error || "生成结果下载失败"));
+            if (generationTaskOutputPermanentlyFailed(task, state.outputIndex)) {
+                throw new CanvasGenerationMaterializationError(
+                    new Error(deliveryCode === "asset_deleted" ? "生成结果已被删除" : task.resultState || task.error || "生成结果下载失败"),
+                );
+            }
         }
         await state.sleep(materializationPollDelay(attempt), state.signal);
         attempt += 1;
@@ -299,37 +302,7 @@ export async function bindBackendCanvasGenerationResult(input: {
             await persistDocument(capturedCanvasId, { nodes: live.nodes, connections: live.connections });
         } catch (error) {
             if (error instanceof Error && error.name === "AbortError") throw error;
-            if (isCanvasMediaAssetGuardError(error)) {
-                try {
-                    const targetProject = useCanvasStore.getState().projects.find((project) => project.id === capturedCanvasId) ?? live;
-                    const healed = await healCanvasProjectMediaAssets(targetProject, {
-                        ensureNodeAsset: runtime.ensureNodeAsset,
-                        signal: input.signal,
-                        isCurrent: input.isCurrent,
-                        nodesRef: input.nodesRef,
-                        setNodes: input.setNodes,
-                    });
-                    if (!healed.current) {
-                        if (!input.isCurrent()) {
-                            throw new DOMException("The canvas operation was abandoned", "AbortError");
-                        }
-                        throw error instanceof CanvasBindFlushError ? error : new CanvasBindFlushError(error);
-                    }
-                    const current = useCanvasStore.getState().openProject(capturedCanvasId);
-                    if (!current) throw new DOMException("The canvas operation was abandoned", "AbortError");
-                    await persistDocument(
-                        capturedCanvasId,
-                        {
-                            nodes: current.nodes,
-                            connections: current.connections,
-                            ...(current.timeline ? { timeline: current.timeline } : {}),
-                        },
-                    );
-                } catch (retryError) {
-                    if (retryError instanceof Error && retryError.name === "AbortError") throw retryError;
-                    throw retryError instanceof CanvasBindFlushError ? retryError : new CanvasBindFlushError(retryError);
-                }
-            } else if (!(isCanvasRevisionConflict(error) || error instanceof CanvasBackendSubmitPausedError)) {
+            if (!(isCanvasRevisionConflict(error) || error instanceof CanvasBackendSubmitPausedError)) {
                 // 画布 document.commit 的陈旧 revision / 已暂停提交不能当成生成失败：
                 // 资源已落盘，bind 回执才是画布真相；继续绑定后由三路合并保留并发节点。
                 throw error instanceof CanvasBindFlushError ? error : new CanvasBindFlushError(error);
@@ -339,7 +312,6 @@ export async function bindBackendCanvasGenerationResult(input: {
 
     const operationId = attachNodeEffectKey(task.id, input.nodeId, outputIndex);
     let response: Awaited<ReturnType<typeof bindCanvasTaskOutput>>;
-    let healedOnBind = false;
     recordCanvasBindingDiagnostic({ phase: "requested", canvasId: capturedCanvasId, nodeId: input.nodeId, outputIndex, task, project: useCanvasStore.getState().openProject(capturedCanvasId) ?? undefined });
     for (;;) {
         assertNodeOwnership();
@@ -355,39 +327,6 @@ export async function bindBackendCanvasGenerationResult(input: {
             });
             break;
         } catch (error) {
-            const targetProject = useCanvasStore.getState().projects.find((project) => project.id === capturedCanvasId) ?? live;
-            if (!healedOnBind && targetProject && isCanvasMediaAssetGuardError(error)) {
-                healedOnBind = true;
-                const healed = await healCanvasProjectMediaAssets(targetProject, {
-                    ensureNodeAsset: runtime.ensureNodeAsset,
-                    signal: input.signal,
-                    isCurrent: input.isCurrent,
-                    nodesRef: input.nodesRef,
-                    setNodes: input.setNodes,
-                });
-                if (!healed.current) {
-                    if (!input.isCurrent()) {
-                        throw new DOMException("The canvas operation was abandoned", "AbortError");
-                    }
-                    throw error;
-                }
-                const current = useCanvasStore.getState().openProject(capturedCanvasId);
-                if (!current) throw new DOMException("The canvas operation was abandoned", "AbortError");
-                try {
-                    await persistDocument(
-                        capturedCanvasId,
-                        {
-                            nodes: current.nodes,
-                            connections: current.connections,
-                            ...(current.timeline ? { timeline: current.timeline } : {}),
-                        },
-                    );
-                } catch (flushError) {
-                    if (flushError instanceof Error && flushError.name === "AbortError") throw flushError;
-                    throw flushError instanceof CanvasBindFlushError ? flushError : new CanvasBindFlushError(flushError);
-                }
-                continue;
-            }
             // 交付仍在进行时 bind 会以 output_not_ready/resource_not_ready 拒绝；
             // 同一个 operationId 幂等，回到等待再重试，不把在途状态报成画布冲突。
             if (!isOutputNotReadyError(error)) {

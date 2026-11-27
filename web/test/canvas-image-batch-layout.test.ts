@@ -93,10 +93,13 @@ test("reopening keeps the saved size and position of media nodes that already ha
 });
 
 test("reopening still gives empty media placeholders the minimum stage size", () => {
-    const empty: CanvasNodeData = { id: "video-empty", type: CanvasNodeType.Video, title: "视频", position: { x: 0, y: 0 }, width: 270, height: 480, metadata: {} };
-    const [reopened] = resetInterruptedGeneration([empty]);
-    expect(reopened!.width).toBeGreaterThanOrEqual(420);
-    expect(reopened!.height).toBeGreaterThanOrEqual(236);
+    const emptyLandscape: CanvasNodeData = { id: "video-empty-landscape", type: CanvasNodeType.Video, title: "横屏视频", position: { x: 0, y: 0 }, width: 270, height: 152, metadata: {} };
+    const emptyPortrait: CanvasNodeData = { id: "video-empty-portrait", type: CanvasNodeType.Video, title: "竖屏视频", position: { x: 0, y: 0 }, width: 118, height: 210, metadata: {} };
+    const [reopenedLandscape, reopenedPortrait] = resetInterruptedGeneration([emptyLandscape, emptyPortrait]);
+    expect(reopenedLandscape!.width).toBeGreaterThanOrEqual(420);
+    expect(reopenedLandscape!.height).toBeGreaterThanOrEqual(236);
+    expect(reopenedPortrait!.width).toBeGreaterThanOrEqual(236);
+    expect(reopenedPortrait!.height).toBeGreaterThanOrEqual(420);
 });
 
 test("reopening keeps finished media that only stores a resource key", () => {
@@ -105,10 +108,13 @@ test("reopening keeps finished media that only stores a resource key", () => {
 });
 
 test("reopening still sizes a node that is regenerating over its old result", () => {
-    const regenerating: CanvasNodeData = { id: "video-regen", type: CanvasNodeType.Video, title: "镜 2", position: { x: 0, y: 0 }, width: 270, height: 480, metadata: { content: "old.mp4", status: "loading" } };
-    const [reopened] = resetInterruptedGeneration([regenerating]);
-    expect(reopened!.width).toBeGreaterThanOrEqual(420);
-    expect(reopened!.height).toBeGreaterThanOrEqual(236);
+    const regeneratingLandscape: CanvasNodeData = { id: "video-regen-landscape", type: CanvasNodeType.Video, title: "镜 2", position: { x: 0, y: 0 }, width: 270, height: 152, metadata: { content: "old.mp4", status: "loading" } };
+    const regeneratingPortrait: CanvasNodeData = { id: "video-regen-portrait", type: CanvasNodeType.Video, title: "镜 3", position: { x: 0, y: 0 }, width: 118, height: 210, metadata: { content: "old-v.mp4", status: "loading" } };
+    const [reopenedLandscape, reopenedPortrait] = resetInterruptedGeneration([regeneratingLandscape, regeneratingPortrait]);
+    expect(reopenedLandscape!.width).toBeGreaterThanOrEqual(420);
+    expect(reopenedLandscape!.height).toBeGreaterThanOrEqual(236);
+    expect(reopenedPortrait!.width).toBeGreaterThanOrEqual(236);
+    expect(reopenedPortrait!.height).toBeGreaterThanOrEqual(420);
 });
 
 test("reopening repairs a damaged zero-sized result instead of blowing it up", () => {
@@ -132,6 +138,42 @@ test("image decode still corrects a result saved with the wrong ratio", () => {
     const decoded = fitImageNodeToDecodedSize(landscapeBox, 1080, 1920);
     expect(decoded.height).toBeGreaterThan(decoded.width);
     expect(Math.abs(decoded.width / decoded.height - 1080 / 1920)).toBeLessThan(0.01);
+});
+
+function seedreamLayer(index: number, x: number, y: number): CanvasNodeData {
+    const id = `layer-${index}`;
+    return {
+        id, title: id, type: CanvasNodeType.Image, position: { x, y }, width: 300, height: 180,
+        metadata: { status: "success", seedreamMode: "layers", taskId: "split", taskOutputIndex: index, storageKey: `resource:${id}` },
+    };
+}
+
+test("late layer image dimensions cannot expand a card into a neighbouring layer", () => {
+    const frames = [seedreamLayer(0, 0, 0), seedreamLayer(1, 344, 0), seedreamLayer(2, 0, 236)];
+    frames[1]!.metadata = { ...frames[1]!.metadata, generationType: "edit", size: "16:9" };
+    const decoded = frames.map((node, i) => fitImageNodeToDecodedSize(node, i === 1 ? 80 : 1920, i === 1 ? 1800 : 120));
+    assertSeparated(decoded);
+    for (const [index, layer] of decoded.entries()) {
+        expect(layer.position).toEqual(frames[index]!.position);
+        expect([layer.width, layer.height]).toEqual([300, 180]);
+    }
+    expect(decoded[1]!.metadata?.naturalHeight).toBe(1800);
+    expect(resetInterruptedGeneration(decoded)).toBe(decoded);
+});
+
+test("reopening separates overlapping saved layers and keeps already clear or locked nodes in place", () => {
+    const locked = seedreamLayer(0, 0, 0);
+    locked.metadata = { ...locked.metadata, locked: true };
+    const covered = seedreamLayer(1, 120, 90);
+    const separated = seedreamLayer(2, 0, 400);
+    const neighbour = { ...seedreamLayer(3, 440, 90), metadata: { content: "other.png", status: "success" as const } };
+    const repaired = resetInterruptedGeneration([locked, covered, separated, neighbour]);
+    assertSeparated(repaired);
+    expect(repaired[0]).toBe(locked);
+    expect(repaired[2]).toBe(separated);
+    expect(repaired[3]).toBe(neighbour);
+    expect(repaired[1]?.metadata?.storageKey).toBe(covered.metadata?.storageKey);
+    expect(resetInterruptedGeneration(repaired)).toBe(repaired);
 });
 
 for (const [width, height] of [[300, 1], [1, 480], [300, 23]]) {

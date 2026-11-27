@@ -97,6 +97,7 @@ export type CanvasGenerationBatchStatus = "queued" | "running" | "partial_failed
 export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board" | "video_retake";
+export type CanvasVideoReferenceMode = "frames" | "all";
 export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat" | "draft_to_final";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
 export type CanvasSkillOutputMode = "text" | "json" | "image_prompt" | "workflow";
@@ -435,6 +436,7 @@ export type CanvasNodeMetadata = {
     generationProviderCode?: string;
     taskFailureDiagnostics?: import("@/lib/generation-error").GenerationFailureDiagnostics;
     taskProviderRequestId?: string;
+    taskProviderCancelStatus?: "requested" | "confirmed" | "uncertain" | string;
     taskOfficialStatus?: "pending" | "processing" | "completed" | "failed" | "cancelled";
     taskReceiptRecorded?: boolean;
     taskCreatedAt?: string;
@@ -464,7 +466,7 @@ export type CanvasNodeMetadata = {
     videoEndFrameNodeId?: string;
     videoMiddleFrameNodeId?: string;
     videoMiddleFrameTime?: number;
-    videoH3Options?: import("@/lib/h3-video").H3VideoOptions;
+    videoH3Options?: import("@/lib/model-capabilities").VideoGenerationControls;
     videoReferenceOrder?: string[];
     videoFrameSourceNodeId?: string;
     videoFrameTimeMs?: number;
@@ -601,6 +603,12 @@ export type CanvasNodeMetadata = {
         sourceWidth?: number;
         sourceHeight?: number;
         providerSize?: string;
+        maskStorageKey?: string;
+        editMode?: "provider-mask" | "local-composite";
+        fullImage?: boolean;
+    };
+    maskEdit?: {
+        sourceNodeId: string;
         maskStorageKey?: string;
         editMode?: "provider-mask" | "local-composite";
     };

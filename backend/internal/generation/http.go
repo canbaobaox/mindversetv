@@ -31,10 +31,6 @@ type submissionKeyContext struct{}
 type binaryNoRedirectContext struct{}
 type providerDownloadContext struct{}
 
-func doBinaryWithoutRedirect(req *http.Request) ([]byte, string, error) {
-	return DoBinary(req.WithContext(context.WithValue(req.Context(), binaryNoRedirectContext{}, true)))
-}
-
 func WithSubmissionKey(ctx context.Context, key string) context.Context {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -98,26 +94,6 @@ func PostForm(ctx context.Context, config Config, path string, contentType strin
 	return DoJSON(req, target)
 }
 
-func PostBinary(ctx context.Context, config Config, path string, body interface{}) ([]byte, string, error) {
-	req, err := newJSONRequest(ctx, http.MethodPost, APIURL(config.BaseURL, path), config, body)
-	if err != nil {
-		return nil, "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-	outbound.ApplyOutboundHeaders(req, config.Headers)
-	return DoBinary(req)
-}
-
-func GetBinary(ctx context.Context, config Config, path string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, APIURL(config.BaseURL, path), nil)
-	if err != nil {
-		return nil, "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-	outbound.ApplyOutboundHeaders(req, config.Headers)
-	return DoBinary(req)
-}
-
 func GetExternalBinary(ctx context.Context, rawURL string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -126,24 +102,50 @@ func GetExternalBinary(ctx context.Context, rawURL string) ([]byte, string, erro
 	return DoBinary(req)
 }
 
-func GetProviderExternalBinary(ctx context.Context, config Config, rawURL string) ([]byte, string, error) {
+func newProviderExternalRequest(ctx context.Context, config Config, rawURL string) (*http.Request, error) {
 	ctx = context.WithValue(ctx, providerDownloadContext{}, true)
 	downloadURL := ProviderDownloadURL(config.BaseURL, rawURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if SameProviderOrigin(config.BaseURL, downloadURL) {
 		if auth, ok := ctx.Value(videoProtocolAuthContext{}).(protocol.ManifestAuth); ok {
 			if err := ApplyProtocolAuth(req, config, auth); err != nil {
-				return nil, "", err
+				return nil, err
 			}
 		} else {
 			ApplyAuth(req, config)
 		}
 		outbound.ApplyOutboundHeaders(req, config.Headers)
 	}
+	return req, nil
+}
+
+func GetProviderExternalBinary(ctx context.Context, config Config, rawURL string) ([]byte, string, error) {
+	req, err := newProviderExternalRequest(ctx, config, rawURL)
+	if err != nil {
+		return nil, "", err
+	}
 	return DoBinary(req)
+}
+
+// GetExternalVideoFile streams a remote video URL directly to a local file via
+// outbound's resumable download cache when bound to ctx.
+func GetExternalVideoFile(ctx context.Context, rawURL string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	return executeVideoRequestToFile(req)
+}
+
+func getProviderExternalVideoFile(ctx context.Context, config Config, rawURL string) (string, string, error) {
+	req, err := newProviderExternalRequest(ctx, config, rawURL)
+	if err != nil {
+		return "", "", err
+	}
+	return executeVideoRequestToFile(req)
 }
 
 func PostStreamingBinary(ctx context.Context, config Config, path string, body interface{}, onChunk func(string, []byte)) ([]byte, string, error) {
@@ -173,16 +175,6 @@ func GetGeminiJSON(ctx context.Context, config Config, path string, target inter
 	req.Header.Set("x-goog-api-key", config.APIKey)
 	outbound.ApplyOutboundHeaders(req, config.Headers)
 	return DoJSON(req, target)
-}
-
-func GetGeminiBinary(ctx context.Context, config Config, rawURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, "", err
-	}
-	req.Header.Set("x-goog-api-key", config.APIKey)
-	outbound.ApplyOutboundHeaders(req, config.Headers)
-	return DoBinary(req)
 }
 
 func newJSONRequest(ctx context.Context, method, rawURL string, config Config, body interface{}) (*http.Request, error) {
@@ -274,9 +266,6 @@ func DoBinary(req *http.Request) ([]byte, string, error) {
 }
 
 func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]byte, string, error) {
-	if partial, _ := req.Context().Value(videoDownloadPartialContext{}).(string); partial != "" && req.Method == http.MethodGet && onChunk == nil {
-		return getResumableVideoBinary(req, partial)
-	}
 	return doBinaryWithAdmission(req, onChunk, nil)
 }
 
@@ -340,19 +329,12 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 		}
 		defer release()
 	}
-	videoIdleTimeout, _ := req.Context().Value(videoDeliveryRequestContext{}).(time.Duration)
-	credentials, _ := req.Context().Value(videoCredentialContext{}).(videoProviderCredentials)
-	if videoIdleTimeout > 0 && !SameProviderOrigin(credentials.Origin, req.URL.String()) {
-		stripVideoCredentialQuery(req.URL, credentials.Values)
-	}
 	if _, err := outbound.ValidateOutboundURLContext(req.Context(), req.URL.String()); err != nil {
 		return nil, "", err
 	}
 	outbound.ApplyDefaultOutboundHeaders(req)
 	client := outbound.OutboundHTTPClient(requestTimeout)
-	if videoIdleTimeout > 0 {
-		client = videoDownloadHTTPClient(req, requestTimeout)
-	} else if download, _ := req.Context().Value(providerDownloadContext{}).(bool); download {
+	if download, _ := req.Context().Value(providerDownloadContext{}).(bool); download {
 		checkRedirect := client.CheckRedirect
 		leftOrigin := false
 		client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
@@ -381,21 +363,6 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 		if err := admit(); err != nil {
 			return nil, "", err
 		}
-	}
-	var videoIdleTimer *time.Timer
-	if videoIdleTimeout > 0 {
-		// Start after slot admission: local queueing is not a stalled transfer.
-		parentCtx := req.Context()
-		downloadCtx, cancel := context.WithCancelCause(parentCtx)
-		videoIdleTimer = time.AfterFunc(videoIdleTimeout, func() { cancel(context.DeadlineExceeded) })
-		req = req.WithContext(downloadCtx)
-		defer func() {
-			videoIdleTimer.Stop()
-			if resultErr != nil && errors.Is(context.Cause(downloadCtx), context.DeadlineExceeded) && parentCtx.Err() == nil {
-				resultErr = context.DeadlineExceeded
-			}
-			cancel(nil)
-		}()
 	}
 	observation.TransportRoute = outbound.RequestNetworkRoute(req, client.Transport)
 	resp, err := client.Do(req)
@@ -433,9 +400,6 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 		readCount, readErr := reader.Read(chunk)
 		observation.ReceivedBytes += int64(readCount)
 		if readCount > 0 {
-			if videoIdleTimer != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				videoIdleTimer.Reset(videoIdleTimeout)
-			}
 			if int64(buffered.Len()+readCount) > responseLimit {
 				observation.Outcome = "response_limit"
 				return nil, "", fmt.Errorf("上游响应超过 %s 限制", formatStorageLimit(responseLimit))
@@ -472,9 +436,6 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 		observation.StatusCode = resp.StatusCode
 		if gatewayReferenceNotSubmitted(req, resp, data) {
 			return nil, "", RequestPreparationError{Cause: httpErr}
-		}
-		if videoIdleTimeout > 0 && !SameProviderOrigin(req.URL.String(), resp.Request.URL.String()) && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			return nil, "", videoBackupLinkExpiredError{cause: httpErr}
 		}
 		return nil, "", httpErr
 	}

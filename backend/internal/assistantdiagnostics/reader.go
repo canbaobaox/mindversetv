@@ -5,6 +5,7 @@ package assistantdiagnostics
 import (
 	"bufio"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -118,7 +119,7 @@ func (r *Reader) DiagnosticAssistantEvidence(userID string, from, to time.Time, 
 			out.Coverage.Status = "partial"
 			continue
 		}
-		// This projection is deliberately pinned to Durable schema 1. Unsupported
+		// This projection is deliberately pinned to Durable schema 1 and 2. Unsupported
 		// formats are reported as missing evidence, never opened for execution.
 		file := filepath.Join(r.dataDir, directory, base+".sqlite")
 		if readErr := readSession(file, session, from, to, &out); readErr != nil {
@@ -144,11 +145,33 @@ func (r *Reader) DiagnosticAssistantEvidence(userID string, from, to time.Time, 
 	return out, nil
 }
 
+//go:embed model_outcome_reasons.json
+var modelOutcomeReasonsJSON []byte
+
+var allowedOutcomeReasons = loadAllowedOutcomeReasons()
+
+func loadAllowedOutcomeReasons() map[string]bool {
+	var reasons []string
+	if err := json.Unmarshal(modelOutcomeReasonsJSON, &reasons); err != nil {
+		panic("invalid embedded model_outcome_reasons.json: " + err.Error())
+	}
+	allowed := make(map[string]bool, len(reasons))
+	for _, code := range reasons {
+		if code != "" {
+			allowed[code] = true
+		}
+	}
+	return allowed
+}
+
 func readLedger(reader io.Reader, allowed map[string]diagnostics.AssistantTurnEvidence, from, to time.Time, out *diagnostics.AssistantEvidenceSnapshot) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), 8192)
 	for scanner.Scan() {
-		var row struct{ ID, At, TurnID, CanvasID, SessionID, RequestID, Model string }
+		var row struct {
+			ID, At, TurnID, CanvasID, SessionID, RequestID, Model, Status, Reason string
+			DurationMs                                                            int64
+		}
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
 			return errors.New("dispatch_record_invalid")
 		}
@@ -166,7 +189,31 @@ func readLedger(reader io.Reader, allowed map[string]diagnostics.AssistantTurnEv
 			out.Coverage.Status = "partial"
 			continue
 		}
-		out.Records = append(out.Records, diagnostics.AssistantRuntimeEvidence{ID: "dispatch:" + row.ID, SessionID: turn.SessionID, TurnID: turn.ID, CanvasID: turn.CanvasID, Kind: "model_call", Name: "model.dispatch", Status: "dispatched", RequestID: row.RequestID, Model: row.Model, Timestamp: stamp})
+		if row.Status == "" {
+			out.Records = append(out.Records, diagnostics.AssistantRuntimeEvidence{
+				ID: "dispatch:" + row.ID, SessionID: turn.SessionID, TurnID: turn.ID, CanvasID: turn.CanvasID,
+				Kind: "model_call", Name: "model.dispatch", Status: "dispatched",
+				RequestID: row.RequestID, Model: row.Model, Timestamp: stamp,
+			})
+		} else {
+			status := "error"
+			if row.Status == "ok" {
+				status = "ok"
+			}
+			reason := ""
+			if allowedOutcomeReasons[row.Reason] {
+				reason = row.Reason
+			}
+			durationMs := row.DurationMs
+			if durationMs < 0 {
+				durationMs = 0
+			}
+			out.Records = append(out.Records, diagnostics.AssistantRuntimeEvidence{
+				ID: "outcome:" + row.ID, SessionID: turn.SessionID, TurnID: turn.ID, CanvasID: turn.CanvasID,
+				Kind: "model_call", Name: "model.outcome", Status: status, Reason: reason,
+				RequestID: row.RequestID, Model: row.Model, Timestamp: stamp, DurationMs: durationMs,
+			})
+		}
 		if len(out.Records) > maxRecords {
 			out.Coverage.Status = "truncated"
 			return nil

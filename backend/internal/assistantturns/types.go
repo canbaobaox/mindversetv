@@ -84,6 +84,7 @@ type Input struct {
 	SelectedNodeIDs []string
 	AssetIDs        []string
 	CanvasIDs       []string
+	ResourceIDs     []string
 	SkillPins       []skills.Pin
 }
 
@@ -93,6 +94,7 @@ type Scope struct {
 	CanvasID        string
 	AssetIDs        []string
 	CanvasIDs       []string
+	ResourceIDs     []string
 	TaskIDs         []string
 	SkillPins       []skills.Pin
 	ActiveSkillPins []skills.Pin
@@ -114,28 +116,28 @@ type HistoryState struct {
 // Record is the in-memory business round. Document is the pre-turn canvas
 // snapshot, not a chat transcript.
 type Record struct {
-	ContinuationInvalidated     bool
-	GenerationAuthorizationJSON string
+	ContinuationInvalidated bool
 
-	DurableNativeSources string
-	DurableSessionID     string
-	PermissionMode       string
-	CanvasSnapshots      map[string]CanvasSnapshot
-	TurnID               string
-	UserID               string
-	CanvasID             string
-	RevisionBefore       int64
-	CreatedAt            time.Time
-	State                string
-	SelectedNodeIDs      []string
-	ReferencedAssetIDs   []string
-	ReferencedCanvasIDs  []string
-	AssociatedAssetIDs   []string
-	AssociatedTaskIDs    []string
-	SkillPins            []skills.Pin
-	Undone               bool
-	Change               *Change
-	Document             json.RawMessage
+	DurableNativeSources  string
+	DurableSessionID      string
+	PermissionMode        string
+	CanvasSnapshots       map[string]CanvasSnapshot
+	TurnID                string
+	UserID                string
+	CanvasID              string
+	RevisionBefore        int64
+	CreatedAt             time.Time
+	State                 string
+	SelectedNodeIDs       []string
+	ReferencedAssetIDs    []string
+	ReferencedCanvasIDs   []string
+	ReferencedResourceIDs []string
+	AssociatedAssetIDs    []string
+	AssociatedTaskIDs     []string
+	SkillPins             []skills.Pin
+	Undone                bool
+	Change                *Change
+	Document              json.RawMessage
 }
 
 func (r Record) effectiveState() string {
@@ -151,6 +153,7 @@ func (r Record) sameBeginScope(userID, canvasID string, input Input) bool {
 		equalStringLists(r.SelectedNodeIDs, uniqueSorted(input.SelectedNodeIDs)) &&
 		equalStringLists(r.ReferencedAssetIDs, uniqueSorted(input.AssetIDs)) &&
 		equalStringLists(r.ReferencedCanvasIDs, uniqueSorted(input.CanvasIDs)) &&
+		equalStringLists(r.ReferencedResourceIDs, uniqueSorted(input.ResourceIDs)) &&
 		reflect.DeepEqual(skillPinIdentities(r.SkillPins), skillPinIdentities(input.SkillPins))
 }
 

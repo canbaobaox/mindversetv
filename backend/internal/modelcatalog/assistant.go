@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"infinite-canvas/backend/internal/assistant"
+	"infinite-canvas/backend/internal/outbound"
 	"infinite-canvas/backend/internal/protocol"
 )
 
@@ -15,20 +16,19 @@ const (
 )
 
 // assistantProtocols 是助手会话支持的文本协议。配置里历史上同时出现
-// "responses"/"openai-response" 与 "gemini-generate-content"/"google-gemini-generate-content"，这里都接受并归一。
+// "responses"/"openai-response"、"claude-api"/"anthropic-messages"/"claude-messages" 与
+// "gemini-generate-content"/"google-gemini-generate-content"，这里都接受并归一。
 var assistantProtocols = map[string]string{
 	"chat-completion":                "chat-completion",
 	"claude-api":                     "claude-api",
+	"anthropic-messages":             "claude-api",
+	"claude-messages":                "claude-api",
 	"responses":                      "responses",
 	"openai-response":                "responses",
+	"openai-responses":               "responses",
 	"gemini-generate-content":        "gemini-generate-content",
 	"google-gemini-generate-content": "gemini-generate-content",
 }
-
-// managedAssistantModels 是 BeefTV 托管渠道允许的助手模型。名单必须显式列出：
-// gpt-6-astra 已经不是默认值，但已选它的老用户仍要能继续使用，所以不能随手删掉
-// 旧默认值；换默认值只改 DefaultManagedAssistantModel，不动这份名单。
-var managedAssistantModels = []string{"deepseek-v4.1-flash", "gpt-6-astra", "claude-opus-5-5", "glm-5.3", "gemini-3.8-flash"}
 
 type AssistantModelProfile struct {
 	Model         string `json:"model"`
@@ -42,9 +42,10 @@ type AssistantChannel struct {
 	ID            string                  `json:"id"`
 	Name          string                  `json:"name"`
 	BaseURL       string                  `json:"baseUrl"`
-	APIKey        string                  `json:"apiKey"`
-	CredentialRef string                  `json:"credentialRef"`
-	Enabled       bool                    `json:"enabled"`
+	APIKey        string                    `json:"apiKey"`
+	CredentialRef string                    `json:"credentialRef"`
+	Headers       []outbound.OutboundHeader `json:"headers,omitempty"`
+	Enabled       bool                      `json:"enabled"`
 	Pinned        bool                    `json:"pinned"`
 	Scope         string                  `json:"scope"`
 	APIFormat     string                  `json:"apiFormat"`
@@ -113,10 +114,6 @@ func ResolveAssistantProvider(snapshot AssistantConfigSnapshot, lookup ManagedCr
 }
 
 func ResolveAssistantChannelModel(snapshot AssistantConfigSnapshot, modelKey string, lookup ManagedCredentialLookup) (assistant.Provider, string) {
-	return resolveChannelModel(snapshot, modelKey, lookup, managedAssistantModels)
-}
-
-func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, lookup ManagedCredentialLookup, managedModels []string) (assistant.Provider, string) {
 	if modelKey == "" {
 		return assistant.Provider{}, AssistantReasonModelNotConfigured
 	}
@@ -132,20 +129,6 @@ func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, look
 	if !assistantChannelHasModel(channel, modelID) {
 		return assistant.Provider{}, AssistantReasonModelNotConfigured
 	}
-	if channel.ID == "beeftv" && (channel.Pinned || channel.CredentialRef == "beeftv") {
-		// 内置渠道的助手/评审模型只允许白名单里的模型：白名单是纯列表检查，
-		// 被拒的选择在查凭证之前就返回，不触碰托管凭证。
-		allowed := false
-		for _, candidate := range managedModels {
-			if assistantModelAlias(channel, candidate) == modelID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return assistant.Provider{}, AssistantReasonModelNotConfigured
-		}
-	}
 	protocol, protocolOK := ChannelModelProtocol(channel, modelID)
 	if !protocolOK {
 		protocol, protocolOK = defaultTextModelProtocol(snapshot, channel, modelID)
@@ -157,10 +140,29 @@ func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, look
 		return assistant.Provider{}, AssistantReasonProtocolUnsupported
 	}
 	contextWindow, maxTokens := channelModelLimits(channel, modelID)
+	normalizedHeaders, err := outbound.NormalizeOutboundHeaders(channel.Headers)
+	if err != nil && len(channel.Headers) > 0 {
+		// 兼容升级前落盘的旧配置：单个异常头不连坐丢弃其余合法头（如 Referer / CF-AIG-Authorization）。
+		seen := make(map[string]struct{}, len(channel.Headers))
+		normalizedHeaders = make([]outbound.OutboundHeader, 0, len(channel.Headers))
+		for _, item := range channel.Headers {
+			single, itemErr := outbound.NormalizeOutboundHeaders([]outbound.OutboundHeader{item})
+			if itemErr != nil || len(single) == 0 {
+				continue
+			}
+			key := strings.ToLower(single[0].Name)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			normalizedHeaders = append(normalizedHeaders, single[0])
+		}
+	}
 	provider := assistant.Provider{
 		ChannelID: channel.ID, ChannelName: AssistantChannelName(channel),
 		Model: modelID, ModelKey: modelKey, Protocol: protocol,
 		BaseURL: strings.TrimSpace(channel.BaseURL), APIKey: strings.TrimSpace(channel.APIKey),
+		Headers: normalizedHeaders,
 		ContextWindow: contextWindow, MaxTokens: maxTokens,
 	}
 	if provider.BaseURL == "" {
@@ -242,7 +244,7 @@ func ChannelModelProtocol(channel AssistantChannel, modelID string) (string, boo
 			continue
 		}
 		capability := strings.TrimSpace(profile.Capability)
-		if capability != "" && capability != "text" {
+		if capability != "text" {
 			return "", false
 		}
 		declared := strings.TrimSpace(profile.Protocol)

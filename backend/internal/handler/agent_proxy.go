@@ -1,15 +1,19 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -41,12 +45,24 @@ type agentProxyService interface {
 // agentProxyMaxBody 限制转发体积；解析失败或超限都按真实失败返回。
 const agentProxyMaxBody = 64 << 10
 
+// agentProductionConfirmMaxBody 放宽整片制作确认请求体上限，支持任意大批量生成方案。
+const agentProductionConfirmMaxBody = 8 << 20
+
 // hostStartGrace 是宿主从拉起到健康的宽限期：这段时间里状态是「正在启动」而不是「不可达」。
 const hostStartGrace = 20 * time.Second
 
 // agentHostClient 不跟随重定向：避免宿主凭据被转发到其他地址。
 func agentHostClient(host *assistantruntime.Host, timeout time.Duration) *http.Client {
 	return host.HTTPClient(timeout)
+}
+
+// assistantHostOpsURL 用请求自身的 Host 推导操作层基址：桌面形态监听随机端口，猜端口会指向别处。
+func assistantHostOpsURL(c *gin.Context) string {
+	return "http://" + c.Request.Host + "/api"
+}
+
+func assistantLaunchToken(c *gin.Context) string {
+	return strings.TrimSpace(c.GetHeader(httptransport.LaunchTokenHeader))
 }
 
 // assistantChatHeaderTimeout 只限制等宿主开始回应的时间：此前宿主要读取附件并确认回合归属。
@@ -72,12 +88,16 @@ var assistantSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{1,128}$`)
 
 // readAssistantBody 读取并解析小型 JSON 请求体，返回原文与解析结果（原文用于原样转给宿主）。
 func readAssistantBody[T any](c *gin.Context, shape T) ([]byte, T, bool) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, agentProxyMaxBody+1))
+	return readAssistantBodyLimit(c, shape, agentProxyMaxBody)
+}
+
+func readAssistantBodyLimit[T any](c *gin.Context, shape T, maxBytes int64) ([]byte, T, bool) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBytes+1))
 	if err != nil {
 		fail(c, http.StatusBadRequest, app.BadAuthRequest("请求体读取失败"))
 		return nil, shape, false
 	}
-	if int64(len(body)) > agentProxyMaxBody {
+	if int64(len(body)) > maxBytes {
 		fail(c, http.StatusRequestEntityTooLarge, app.BadAuthRequest("请求体超过限制"))
 		return nil, shape, false
 	}
@@ -126,10 +146,11 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 
 	// 助手行为设置改变脚本确认方式，写入必须与助手入口共用同一套身份与只读校验。
 	RegisterAssistantSettingsRoutes(r, svc, guard)
+	// 内置助手直连的外部 MCP 服务配置（经 @earendil-works/pi-mcp 接入）。
+	RegisterAssistantMCPRoutes(r, svc, host, guard)
 
-	// hostOpsURL 用请求自身的 Host 推导操作层基址：桌面形态监听随机端口，猜端口会指向别处。
-	hostOpsURL := func(c *gin.Context) string { return "http://" + c.Request.Host + "/api" }
-	launchToken := func(c *gin.Context) string { return strings.TrimSpace(c.GetHeader(httptransport.LaunchTokenHeader)) }
+	hostOpsURL := assistantHostOpsURL
+	launchToken := assistantLaunchToken
 
 	unavailable := func(c *gin.Context, reason string) {
 		ok(c, gin.H{"available": false, "reason": reason})
@@ -146,15 +167,25 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 			return
 		}
 		modelInfo := gin.H{"id": provider.Model, "channelId": provider.ChannelID, "channelName": provider.ChannelName}
-		health := host.Probe(c.Request.Context())
 		state := host.State()
+		if state.Starting {
+			ok(c, gin.H{"available": false, "reason": "host_starting", "model": modelInfo})
+			return
+		}
+		health := host.Probe(c.Request.Context())
+		state = host.State()
 		if health.OK {
-			if state.Fingerprint != "" && state.Fingerprint != provider.Fingerprint() {
+			providerChanged := state.Fingerprint != "" && state.Fingerprint != provider.Fingerprint()
+			if providerChanged || host.NeedsRestart(provider) {
 				if health.Busy {
-					ok(c, gin.H{"available": false, "reason": "host_busy", "model": gin.H{"id": health.Model}})
+					if providerChanged {
+						ok(c, gin.H{"available": false, "reason": "host_busy", "model": gin.H{"id": health.Model}})
+						return
+					}
+					ok(c, gin.H{"available": true, "model": modelInfo})
 					return
 				}
-				if err := host.Restart(provider, hostOpsURL(c), launchToken(c)); err != nil {
+				if err := host.RestartAsync(provider, hostOpsURL(c), launchToken(c)); err != nil {
 					unavailable(c, "host_start_failed")
 					return
 				}
@@ -162,6 +193,10 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 				return
 			}
 			ok(c, gin.H{"available": true, "model": modelInfo})
+			return
+		}
+		if state.Starting {
+			ok(c, gin.H{"available": false, "reason": "host_starting", "model": modelInfo})
 			return
 		}
 		if state.Running {
@@ -174,7 +209,7 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 			ok(c, gin.H{"available": false, "reason": "host_unreachable", "model": modelInfo})
 			return
 		}
-		launched, err := host.Ensure(provider, hostOpsURL(c), launchToken(c), true)
+		launched, err := host.EnsureAsync(provider, hostOpsURL(c), launchToken(c))
 		if err != nil {
 			ok(c, gin.H{"available": false, "reason": "host_start_failed", "model": modelInfo})
 			return
@@ -216,8 +251,8 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 		ok(c, gin.H{"restarted": true})
 	})
 
-	// hostJSON 把一次 JSON 请求转给宿主并原样回传业务结果；宿主凭据只在这里注入。
-	hostJSON := func(c *gin.Context, method, path string, body []byte) {
+	// hostJSONWithTimeout 把一次 JSON 请求转给宿主并原样回传业务结果；宿主凭据只在这里注入。
+	hostJSONWithTimeout := func(c *gin.Context, method, path string, body []byte, timeout time.Duration) {
 		if host == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "reason": "host_unreachable",
 				"msg": "内置创作助手宿主未运行"})
@@ -234,8 +269,14 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 			return
 		}
 		upstream.Header.Set("Content-Type", "application/json")
-		resp, err := agentHostClient(host, 30*time.Second).Do(upstream)
+		resp, err := agentHostClient(host, timeout).Do(upstream)
 		if err != nil {
+			var netErr net.Error
+			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+				c.JSON(http.StatusGatewayTimeout, gin.H{"code": http.StatusGatewayTimeout, "reason": "host_timeout",
+					"msg": "内置创作助手处理超时"})
+				return
+			}
 			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "reason": "host_unreachable",
 				"msg": "内置创作助手宿主未运行"})
 			return
@@ -307,6 +348,9 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 		}
 		ok(c, decoded)
 	}
+	hostJSON := func(c *gin.Context, method, path string, body []byte) {
+		hostJSONWithTimeout(c, method, path, body, 30*time.Second)
+	}
 
 	// requireOwnedCanvas 先验证范围：只能操作当前用户确实拥有的画布，再转发给宿主。
 	requireOwnedCanvas := func(c *gin.Context, canvasID string) (json.RawMessage, bool) {
@@ -375,6 +419,31 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 		hostJSON(c, http.MethodPost, "/sessions/activate", body)
 	})
 
+	r.POST("/assistant/sessions/fork", func(c *gin.Context) {
+		if !guard(c, true) {
+			return
+		}
+		body, payload, valid := readAssistantBody(c, struct {
+			CanvasID  string `json:"canvasId"`
+			SessionID string `json:"sessionId"`
+			TurnID    string `json:"turnId"`
+		}{})
+		if !valid {
+			return
+		}
+		if _, allowed := requireOwnedCanvas(c, payload.CanvasID); !allowed {
+			return
+		}
+		if !assistantSessionIDPattern.MatchString(strings.TrimSpace(payload.SessionID)) || strings.TrimSpace(payload.TurnID) == "" {
+			fail(c, http.StatusBadRequest, app.BadAuthRequest("请指定要分叉的会话和轮次"))
+			return
+		}
+		if !stopAssistantContinuationsForIntent(c, svc, host, payload.CanvasID, "") {
+			return
+		}
+		hostJSON(c, http.MethodPost, "/sessions/fork", body)
+	})
+
 	r.DELETE("/assistant/sessions/:sessionId", func(c *gin.Context) {
 		if !guard(c, true) {
 			return
@@ -421,5 +490,60 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc agentProxyService, clients *age
 		hostJSON(c, http.MethodGet, query, nil)
 	})
 
-	registerAgentProxyTurnRoutes(r, svc, host, client, guard, hostJSON, requireOwnedCanvas)
+	r.POST("/assistant/compact", func(c *gin.Context) {
+		if !guard(c, true) {
+			return
+		}
+		body, payload, valid := readAssistantBody(c, struct {
+			CanvasID     string `json:"canvasId"`
+			SessionID    string `json:"sessionId"`
+			Instructions string `json:"instructions"`
+		}{})
+		if !valid {
+			return
+		}
+		if _, allowed := requireOwnedCanvas(c, payload.CanvasID); !allowed {
+			return
+		}
+		if strings.TrimSpace(payload.SessionID) != "" && !assistantSessionIDPattern.MatchString(strings.TrimSpace(payload.SessionID)) {
+			fail(c, http.StatusBadRequest, app.BadAuthRequest("sessionId 无效"))
+			return
+		}
+		if utf8.RuneCountInString(payload.Instructions) > 4000 {
+			fail(c, http.StatusBadRequest, app.BadAuthRequest("压缩说明过长"))
+			return
+		}
+		// 宿主单次模型流超时 180s，代理宽限到 210s（浏览器 240s），避免代理抢先超时误报宿主不可达。
+		hostJSONWithTimeout(c, http.MethodPost, "/compact", body, 210*time.Second)
+	})
+
+	r.POST("/assistant/session-config", func(c *gin.Context) {
+		if !guard(c, true) {
+			return
+		}
+		body, payload, valid := readAssistantBody(c, struct {
+			CanvasID      string `json:"canvasId"`
+			SessionID     string `json:"sessionId"`
+			ThinkingLevel string `json:"thinkingLevel"`
+		}{})
+		if !valid {
+			return
+		}
+		if _, allowed := requireOwnedCanvas(c, payload.CanvasID); !allowed {
+			return
+		}
+		if strings.TrimSpace(payload.SessionID) != "" && !assistantSessionIDPattern.MatchString(strings.TrimSpace(payload.SessionID)) {
+			fail(c, http.StatusBadRequest, app.BadAuthRequest("sessionId 无效"))
+			return
+		}
+		switch strings.TrimSpace(payload.ThinkingLevel) {
+		case "off", "minimal", "low", "medium", "high":
+		default:
+			fail(c, http.StatusBadRequest, app.BadAuthRequest("thinkingLevel 无效"))
+			return
+		}
+		hostJSON(c, http.MethodPost, "/session-config", body)
+	})
+
+	registerAgentProxyTurnRoutes(r, svc, host, client, guard, hostJSON, requireOwnedCanvas, hostOpsURL, launchToken)
 }

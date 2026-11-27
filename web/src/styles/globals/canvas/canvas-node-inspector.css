@@ -73,15 +73,6 @@
         100% { opacity: 0; transform: scale(0.9); }
     }
 
-    /* 任务进度条 shimmer 扫描动画（对应 #98 决策3）*/
-    @keyframes canvas-task-progress-shimmer {
-        0% { transform: translateX(-100%); }
-        100% { transform: translateX(200%); }
-    }
-    .canvas-task-progress-shimmer {
-        animation: canvas-task-progress-shimmer 1.4s linear infinite;
-    }
-
     /* 节点内进度：上游百分比久未变化时改为循环扫描，不再显示停住的进度条。
        减少动效时不动，只铺一层浅色满条，表示仍在进行。 */
     @keyframes canvas-node-progress-indeterminate {
@@ -100,14 +91,16 @@
         }
     }
 
+    /* 选中节点时播放有限次流光脉冲后静止为清晰高亮线，避免非合成的 stroke-dashoffset
+       无限重绘导致大画布和 Windows ANGLE GPU 进程持续满载。 */
     .canvas-connection-flow {
-        animation: canvas-connection-flow 1.25s var(--motion-ease-linear) infinite;
+        animation: canvas-connection-flow 1.25s var(--motion-ease-linear) 2;
     }
 
     /* 流光：一小段高亮沿连线跑。周期与上面的虚线流动刻意错开，两者同频会锁成
        一条整体平移的虚线、看不出「有光在走」。只在选中/关联态渲染（见 canvas-connections.tsx）。 */
     .canvas-connection-comet {
-        animation: canvas-connection-comet 2.1s var(--motion-ease-linear) infinite;
+        animation: canvas-connection-comet 2.1s var(--motion-ease-out) 1 forwards;
     }
 
     .canvas-connection-draft {
@@ -149,50 +142,6 @@
     }
 
 
-    .canvas-node-info-modal .ant-modal-header {
-        padding-right: 0;
-    }
-
-    .canvas-node-info-modal .ant-modal-title {
-        line-height: 1;
-    }
-
-    .canvas-node-info-modal .ant-modal-close {
-        top: 21px;
-    }
-
-    .canvas-node-inspector-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-right: 40px; }
-    .canvas-node-inspector-id { max-width: 440px; overflow: hidden; margin-top: 4px; color: color-mix(in srgb, currentColor 42%, transparent); font-size: var(--fs-label); text-overflow: ellipsis; white-space: nowrap; }
-    .canvas-node-inspector { height: min(64vh, 560px); min-height: 360px; font-size: var(--fs-body); }
-    .canvas-node-inspector-scroll, .canvas-node-inspector-json { height: 100%; overflow: auto; }
-    .canvas-node-inspector-scroll { padding-right: 4px; }
-    .canvas-node-inspector-section { padding: 14px 2px; }
-    .canvas-node-inspector-section + .canvas-node-inspector-section { margin-top: 8px; }
-    .canvas-node-inspector-section-heading { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
-    .canvas-node-inspector-section-heading span, .canvas-node-inspector-subheading { font-size: var(--fs-label); font-weight: 650; }
-    .canvas-node-inspector-section-heading p { margin-top: 3px; color: color-mix(in srgb, currentColor 43%, transparent); font-size: var(--fs-micro); font-weight: 400; }
-    .canvas-node-inspector-section-heading em { flex-shrink: 0; border-radius: var(--r-full); background: rgba(128, 128, 128, 0.1); padding: 3px 8px; color: color-mix(in srgb, currentColor 48%, transparent); font-size: var(--fs-micro); font-style: normal; font-weight: 560; }
-    .canvas-node-inspector-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; }
-    .canvas-node-inspector-fact { min-width: 0; padding: 6px 0; }
-    .canvas-node-inspector-fact > div { margin-bottom: 4px; color: color-mix(in srgb, currentColor 42%, transparent); font-size: var(--fs-micro); }
-    .canvas-node-inspector-fact strong { display: block; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-body); font-weight: 580; line-height: 1.45; }
-    .canvas-node-inspector-options { display: flex; flex-wrap: wrap; gap: 6px; }
-    .canvas-node-inspector-options button { height: 30px; border: 0; border-radius: var(--r-sm); background: rgba(128, 128, 128, 0.09); padding: 0 10px; color: color-mix(in srgb, currentColor 56%, transparent); font-size: var(--fs-label); font-weight: 560; transition: background-color var(--motion-state) ease, color var(--motion-state) ease; }
-    .canvas-node-inspector-options button:hover:not(:disabled) { background: rgba(128, 128, 128, 0.14); color: currentColor; }
-    .canvas-node-inspector-options button.is-active { background: var(--control-selected-bg); color: var(--control-selected-fg); }
-    .canvas-node-inspector-options button:disabled:not(.is-active) { cursor: not-allowed; background: var(--control-disabled-bg); color: var(--control-disabled-fg); opacity: 1; }
-    .canvas-node-inspector-options button.is-active:disabled { cursor: not-allowed; opacity: 1; }
-    .canvas-node-inspector-help { margin-top: 8px; color: color-mix(in srgb, currentColor 43%, transparent); font-size: var(--fs-micro); line-height: 1.55; }
-    .canvas-node-inspector-copy, .canvas-node-inspector-json, .canvas-node-inspector-notice { border: 0; border-radius: var(--r-md); background: rgba(128, 128, 128, 0.07); }
-    .canvas-node-inspector-copy { padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
-    .canvas-node-info-modal { width: min(920px, calc(100vw - 32px)) !important; }
-    .canvas-node-inspector-prompt { height: min(220px, 32vh); min-height: 120px; overflow: auto; }
-    .canvas-node-inspector-subheading { margin: 14px 0 8px; color: color-mix(in srgb, currentColor 58%, transparent); }
-    .canvas-node-inspector-tag-editor { display: flex; gap: 8px; }
-    .canvas-node-inspector-tags { display: flex; min-height: 36px; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .canvas-node-inspector-notice { margin-bottom: 8px; padding: 9px 12px; color: color-mix(in srgb, currentColor 55%, transparent); font-size: var(--fs-label); }
-    .canvas-node-inspector-empty-label { padding: 4px; color: color-mix(in srgb, currentColor 40%, transparent); font-size: var(--fs-label); }
-    .canvas-node-inspector-error { border-radius: var(--r-md); background: rgba(255, 115, 115, 0.08); padding: 12px 14px; color: var(--foreground); line-height: 1.6; }
     .generation-failure-notice { display: flex; min-width: 0; flex-direction: column; gap: 8px; color: var(--foreground); text-align: left; }
     .generation-failure-notice.is-compact { align-items: center; gap: 7px; text-align: center; }
     .generation-failure-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -221,14 +170,6 @@
     .generation-failure-notice .generation-failure-actions .generation-failure-button.is-primary:hover:not(:disabled) { border-color: transparent; background: var(--control-check-hover-bg); }
     .generation-failure-notice .generation-failure-actions .generation-failure-button svg { width: 14px; height: 14px; }
     .generation-failure-notice.is-compact .generation-failure-actions .generation-failure-button { height: 30px; min-height: 30px; padding: 0 10px; font-size: var(--fs-caption); }
-    .canvas-node-inspector-json { box-sizing: border-box; margin: 0; padding: 14px; font-size: var(--fs-label); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-    @media (max-width: 640px) {
-        .canvas-node-inspector-title { align-items: flex-start; gap: 10px; }
-        .canvas-node-inspector-facts { grid-template-columns: 1fr; }
-        .canvas-node-inspector-tag-editor { flex-direction: column; }
-    }
-
     @keyframes canvas-batch-child-in {
         from {
             opacity: 0;

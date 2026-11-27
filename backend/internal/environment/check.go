@@ -25,6 +25,7 @@ type Check struct {
 type Report struct {
 	CheckedAt time.Time   `json:"checkedAt"`
 	OS        string      `json:"os"`
+	OSVersion string      `json:"osVersion,omitempty"`
 	Arch      string      `json:"arch"`
 	Catalog   CaseCatalog `json:"catalog"`
 	Checks    []Check     `json:"checks"`
@@ -34,7 +35,7 @@ type Report struct {
 // Repair only recreates missing scratch/download directories; existing files,
 // permissions, projects, credentials and system settings are left alone.
 func Inspect(ctx context.Context, dir string, repair bool) Report {
-	r := Report{CheckedAt: time.Now().UTC(), OS: runtime.GOOS, Arch: runtime.GOARCH, Catalog: catalog(), Checks: []Check{}}
+	r := Report{CheckedAt: time.Now().UTC(), OS: runtime.GOOS, OSVersion: osVersion(), Arch: runtime.GOARCH, Catalog: catalog(), Checks: []Check{}}
 	add := func(id, title, status, detail string, cases ...string) {
 		r.Checks = append(r.Checks, Check{id, title, status, detail, cases})
 	}
@@ -91,12 +92,15 @@ func Inspect(ctx context.Context, dir string, repair bool) Report {
 	if stop() {
 		return r
 	}
-	path, err := mediatools.ResolveFFmpeg()
-	info, statErr := os.Stat(path)
-	if err != nil || statErr != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
-		add("media-tool", "视频处理工具", "warning", "未找到可执行的视频处理工具。部分视频预览、转码和导出将不可用，请从官方安装包重新安装。", "ENV-0014", "ENV-0015", "ENV-0016")
-	} else {
-		add("media-tool", "视频处理工具", "pass", "已找到工具文件；具体素材的编解码能力仍在使用时检查。", "ENV-0014", "ENV-0015")
+	ffmpegPath, ffmpegErr := mediatools.ResolveFFmpeg()
+	ffprobePath, ffprobeErr := mediatools.ResolveFFprobe()
+	switch {
+	case !isExecutableRegularFile(ffmpegPath, ffmpegErr):
+		add("media-tool", "视频处理工具", "warning", "未找到可执行的视频处理工具（ffmpeg）。部分视频预览、转码和导出将不可用，请从官方安装包重新安装。", "ENV-0014", "ENV-0015", "ENV-0016")
+	case !isExecutableRegularFile(ffprobePath, ffprobeErr):
+		add("media-tool", "视频处理工具", "warning", "未找到可执行的视频检查工具（ffprobe）。视频超分、时长检查和音轨保留将不可用，请从官方安装包重新安装。", "ENV-0014", "ENV-0015", "ENV-0016")
+	default:
+		add("media-tool", "视频处理工具", "pass", "已找到 ffmpeg 与 ffprobe 工具文件；具体素材的编解码能力仍在使用时检查。", "ENV-0014", "ENV-0015")
 	}
 	if stop() {
 		return r
@@ -114,12 +118,25 @@ func Inspect(ctx context.Context, dir string, repair bool) Report {
 		return r
 	}
 	proxy := desktopnet.ConfigurationStatus()
-	if proxy.AutoConfigOnly {
-		add("proxy", "下载代理", "warning", "系统仅配置了自动代理脚本，当前下载器不能解析。请配置可用的静态系统代理或明确的代理环境变量。", "ENV-0010", "ENV-0011")
+	if proxy.Preference == desktopnet.ModeDirect {
+		add("proxy", "网络代理", "pass", "已设置为不使用代理，当前使用直连。此项没有测试外网连通性。", "ENV-0010", "ENV-0011")
+	} else if proxy.AutoConfigOnly {
+		add("proxy", "网络代理", "warning", "系统仅配置了自动代理脚本，当前下载器不能解析。请配置可用的静态系统代理，或在设置中切换为不使用代理。", "ENV-0010", "ENV-0011")
 	} else {
-		add("proxy", "下载代理", "pass", map[string]string{"environment": "沿用明确配置的代理环境变量。", "system": "沿用系统静态代理，并向组件下载子进程传递。", "direct": "未发现静态代理配置，当前使用直连。"}[proxy.Mode]+"此项没有测试外网连通性。", "ENV-0010", "ENV-0011")
+		add("proxy", "网络代理", "pass", map[string]string{"environment": "沿用明确配置的代理环境变量。", "system": "沿用系统静态代理，并向组件下载子进程传递。", "direct": "未发现静态代理配置，当前使用直连。"}[proxy.Mode]+"此项没有测试外网连通性。", "ENV-0010", "ENV-0011")
 	}
 	return r
+}
+
+func isExecutableRegularFile(path string, resolveErr error) bool {
+	if resolveErr != nil || path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	return runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0
 }
 
 func probeWrite(ctx context.Context, root *os.Root) error {

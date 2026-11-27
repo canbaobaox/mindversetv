@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { isDedicatedMediaToolCapability, type MediaCapabilities } from "@/lib/media-capabilities";
+import { isDedicatedMediaToolCapability, sanitizeMediaCapabilities, type MediaCapabilities } from "@/lib/media-capabilities";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
@@ -7,12 +7,11 @@ import { nanoid } from "nanoid";
 import { scopedLocalStorage } from "@/lib/user-scope";
 import { beefTVVideoContract, isBeefTVEndpoint } from "@/lib/beeftv-video-contracts";
 import { beefTVImageContract } from "@/lib/beeftv-image-contracts";
-import { defaultProtocolForCapability, defaultProtocolForModel, inferProtocolCapabilityFromModel, modelProtocolCapability, normalizeModelProtocol, usesOpenAICompatibleProtocolDefault, type ModelProtocol } from "@/lib/model-protocols";
+import { defaultProtocolForCapability, defaultProtocolForModel, inferProtocolCapabilityFromModel, isMiniMaxVideoModelName, modelProtocolCapability, normalizeModelProtocol, usesOpenAICompatibleProtocolDefault, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoBoolean, normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { defaultModelCapabilityConfig, upgradeGPTImageCapability, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { useUserStore } from "@/stores/use-user-store";
-import type { CapabilitySpec } from "@/services/api/logical-models";
-import { seedancePortraitLabel, seedancePortraitModel, type VideoPriceQuote } from "@/lib/seedance-portrait";
+import type { VideoPriceQuote } from "@/lib/video-pricing";
 import { upgradeBuiltinModelProfile } from "@/lib/builtin-service-presets";
 export { buildApiUrl, isSystemProxyBaseUrl, resolveBackendApiUrl, systemProxyChannelId } from "@/lib/channel-url";
 
@@ -67,9 +66,6 @@ export type ModelChannel = {
         mediaCapabilities?: MediaCapabilities;
         mediaCapabilitiesVersion?: string;
         videoPricing?: VideoPriceQuote | null;
-        logicalModelId?: string;
-        logicalCapabilitySpec?: CapabilitySpec;
-        logicalCapabilityProfiles?: CapabilitySpec[];
         defaultOptions?: Record<string, unknown>;
     }>;
 };
@@ -200,7 +196,7 @@ function isVideoModelName(model: string) {
         value.includes("animatediff") ||
         value.includes("ltx-video") ||
         value.includes("ltxvideo") ||
-        /minimax-(?:video|h3)/.test(value) ||
+        isMiniMaxVideoModelName(value) ||
         value.includes("abab-video")
     );
 }
@@ -524,7 +520,6 @@ function beefTVVideoCapabilityConfig(model: string, protocol: ModelProtocol, cur
     const resolved = profile || defaultModelCapabilityConfig(protocol, model);
     if (!resolved.video) return resolved;
     const operations = contract.operations || resolved.video.operations;
-    const contractOpRefs = contract.operationReferences ? Object.fromEntries(Object.entries(contract.operationReferences).filter(([op]) => operations.includes(op))) : undefined;
     return { ...resolved, video: { ...resolved.video,
         resolutions: contract.resolutions || resolved.video.resolutions,
         defaultResolution: contract.resolutions?.includes(resolved.video.defaultResolution) ? resolved.video.defaultResolution : contract.resolutions?.[0] || resolved.video.defaultResolution,
@@ -533,10 +528,8 @@ function beefTVVideoCapabilityConfig(model: string, protocol: ModelProtocol, cur
         duration: contract.duration ? { ...resolved.video.duration, selection: "range", min: contract.duration.min, max: contract.duration.max, default: contract.duration.default } : resolved.video.duration,
         generateAudio: contract.generateAudio ? { ...resolved.video.generateAudio, supported: true } : resolved.video.generateAudio,
         references: { ...resolved.video.references, maxImages: Math.min(resolved.video.references.maxImages, limits.image ?? Infinity), maxVideos: Math.min(resolved.video.references.maxVideos, limits.video ?? Infinity), maxAudios: Math.min(resolved.video.references.maxAudios, limits.audio ?? Infinity) },
-        operationReferences: resolved.video.operationReferences !== undefined ? resolved.video.operationReferences : contractOpRefs && Object.keys(contractOpRefs).length ? contractOpRefs : undefined,
         operations,
         defaultOperation: contract.operations?.includes(resolved.video.defaultOperation) ? resolved.video.defaultOperation : contract.operations?.[0] || resolved.video.defaultOperation,
-        ...(contract.middleFrame && resolved.video.middleFrame === undefined ? { middleFrame: true } : {}),
     } };
 }
 
@@ -634,10 +627,7 @@ function enrichBeefTVMediaChannel(channel: ModelChannel): ModelChannel {
 function normalizeSelectedModel(value: string, channels: ModelChannel[], options: string[]) {
     const model = normalizeModelOptionValue(value, channels);
     if (model && options.includes(model)) return model;
-    // Keep an explicit paid-tier choice visible when the catalog removes it.
-    // An ordinary/default choice must never select the paid tier implicitly.
-    if (seedancePortraitModel(value)) return value;
-    return options.find((option) => !seedancePortraitModel(option)) || "";
+    return options[0] || "";
 }
 
 export function useEffectiveConfig() {
@@ -680,7 +670,14 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         concurrencyLimit: typeof channel?.concurrencyLimit === "number" ? channel.concurrencyLimit : undefined,
         hasApiKey: channel?.hasApiKey,
         hasSecretKey: channel?.hasSecretKey,
-        modelProfiles: channel?.modelProfiles?.map((item) => ({ ...item, protocol: normalizeModelProtocol(item.protocol) })),
+        modelProfiles: channel?.modelProfiles?.map((item) => {
+            const mediaCapabilities = item.mediaCapabilities !== undefined ? sanitizeMediaCapabilities(item.mediaCapabilities) : undefined;
+            return {
+                ...item,
+                protocol: normalizeModelProtocol(item.protocol),
+                ...(item.mediaCapabilities !== undefined ? { mediaCapabilities } : {}),
+            };
+        }),
     };
 }
 
@@ -710,8 +707,6 @@ export function modelOptionName(value: string) {
 }
 
 export function modelDisplayName(config: AiConfig, value: string) {
-    const portrait = seedancePortraitLabel(value);
-    if (portrait) return portrait;
     const model = modelOptionName(value);
     const channel = resolveModelChannel(config, value);
     const displayName = channelModelProfile(channel, model)?.displayName?.trim();
@@ -761,11 +756,11 @@ export function normalizeModelOptionValue(value: unknown, channels: ModelChannel
     if (decoded) {
         const channel = channelLookup(channels).byId.get(decoded.channelId);
         const resolved = channel?.modelAliases?.[decoded.model] || decoded.model;
-        return channel && seedancePortraitModel(decoded.model) === seedancePortraitModel(resolved) && channel.models.includes(resolved) ? encodeChannelModel(channel.id, resolved) : "";
+        return channel && channel.models.includes(resolved) ? encodeChannelModel(channel.id, resolved) : "";
     }
     const channel = channels.find((item) => item.models.includes(model) || Boolean(item.modelAliases?.[model])) || channels[0];
     const resolved = channel?.modelAliases?.[model] || model;
-    return channel && seedancePortraitModel(model) === seedancePortraitModel(resolved) && channel.models.includes(resolved) ? encodeChannelModel(channel.id, resolved) : "";
+    return channel && channel.models.includes(resolved) ? encodeChannelModel(channel.id, resolved) : "";
 }
 
 export function resolveModelChannel(config: AiConfig, value: string) {
@@ -775,11 +770,6 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     const lookup = channelLookup(channels);
     const matched = decoded ? lookup.byId.get(decoded.channelId) : lookup.byModel.get(model);
     return matched || channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: (config.models || []).map(modelOptionName) });
-}
-
-export function logicalModelIDForConfig(config: AiConfig) {
-    const channel = resolveModelChannel(config, config.model);
-    return channel.modelProfiles?.find((item) => item.model === modelOptionName(config.model))?.logicalModelId || "";
 }
 
 export function channelConnectionSignature(channel: ModelChannel) {

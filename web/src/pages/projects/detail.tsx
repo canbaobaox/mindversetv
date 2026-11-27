@@ -1,10 +1,11 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, App } from "antd";
-import { ArrowLeft, Plus } from "lucide-react";
+import { Alert, App, Button } from "antd";
+import { ArrowLeft, BookOpen, Plus } from "lucide-react";
 import { Link, Navigate, useNavigate, useParams } from "react-router";
 
-import { getProjectCore, getProjectOverview, getProjectUnitWorkspace, linkCanvasUnit, listProjectUnits } from "@/services/api/projects";
+import { CreativeBibleDrawer } from "@/components/project/creative-bible-drawer";
+import { getProjectCore, getProjectOverview, getProjectUnitWorkspace, listProjectUnits } from "@/services/api/projects";
 import { WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceErrorState, WorkspaceLoadingState } from "@/components/layout/workspace-state";
 import type { ProjectDetail } from "@/services/api/projects";
@@ -12,7 +13,6 @@ import type { ProjectDetail } from "@/services/api/projects";
 import { WorkflowChapterNavigator } from "./detail/workflow-chapter-navigator";
 import { usePluginSlot } from "@/lib/plugins/slot-registry";
 import { createLocalCanvasProject } from "@/services/local-workspace-repository";
-import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 
 const ProjectAssetsView = lazy(() => import("./detail/assets"));
 const ProjectCanvasesView = lazy(() => import("./detail/canvases"));
@@ -39,6 +39,7 @@ export default function ProjectDetailPage() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const { message } = App.useApp();
+    const [bibleOpen, setBibleOpen] = useState(false);
     const pluginViews = usePluginSlot("project.view");
     const activePluginView = pluginViews.find((entry) => entry.payload.id === view);
     const activeView: DetailView = unitId || view === "workflow" ? "workflow" : chapterId ? "chapters" : views.some((item) => item.key === view) ? view as DetailView : "overview";
@@ -87,41 +88,12 @@ export default function ProjectDetailPage() {
             : undefined;
         const shots = unit ? detail?.shots.filter((shot) => shot.unitId === unit.id) || [] : [];
         try {
-            const [{ createCanvasProjectWithRemoteSync }, storyboard] = await Promise.all([
-                import("@/services/local-workspace-sync"),
-                unit && shots.length ? import("@/lib/canvas/project-chapter-storyboard") : Promise.resolve(null),
-            ]);
+            const storyboard = unit && shots.length ? await import("@/lib/canvas/project-chapter-storyboard") : null;
             const seed = unit && shots.length ? storyboard?.upsertProjectChapterStoryboard([], [], { unit, shots }) : undefined;
             const initialContent = seed ? { nodes: seed.nodes, connections: seed.connections } : undefined;
             const title = unit ? `${unit.title} · ${shots.length ? "分镜画布" : "画布"}` : `${detail?.project.name || "项目"} · 新画布`;
-            // 本地 BeefTV 项目库不建立云端项目关联；章节/项目 API 仍可供
-            // 显式 hosted build 使用，但默认创建路径只写入本地画布存储。
-            // Use the central workspace capability boundary so a local
-            // session remains local even when the build also supports hosted
-            // mode or is still finishing session hydration.
-            if (isLocalWorkspaceMode()) {
-                const { id } = await createLocalCanvasProject(title, projectId, initialContent);
-                message.success(unit && shots.length ? `已创建本地章节画布并导入 ${shots.length} 个分镜` : "本地画布已创建");
-                navigate(`/canvas/${id}`);
-                return;
-            }
-            const { id, syncError } = await createCanvasProjectWithRemoteSync(title, projectId, initialContent);
-            if (syncError) {
-                message.warning(syncError instanceof Error ? `画布已保存在本地，项目关联稍后重试：${syncError.message}` : "画布已保存在本地，项目关联稍后重试");
-                navigate(`/canvas/${id}`);
-                return;
-            }
-            if (unit) {
-                try {
-                    await linkCanvasUnit(projectId, { canvasId: id, unitId: unit.id, role: "storyboard" });
-                } catch (error) {
-                    refreshProject();
-                    message.error(error instanceof Error ? `画布已创建，但章节关联失败：${error.message}` : "画布已创建，但章节关联失败");
-                    return;
-                }
-            }
-            refreshProject();
-            message.success(unit && shots.length ? `已创建章节画布并导入 ${shots.length} 个分镜` : unit ? "章节画布已创建并关联" : "项目画布已创建");
+            const { id } = await createLocalCanvasProject(title, projectId, initialContent);
+            message.success(unit && shots.length ? `已创建本地章节画布并导入 ${shots.length} 个分镜` : "本地画布已创建");
             navigate(`/canvas/${id}`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "画布创建失败");
@@ -148,7 +120,9 @@ export default function ProjectDetailPage() {
                     chapterHref={chapterHref}
                     workflowHref={workflowHref}
                     onCreateCanvas={createCanvas}
+                    onOpenBible={() => setBibleOpen(true)}
                 />
+                <CreativeBibleDrawer open={bibleOpen} onClose={() => setBibleOpen(false)} projectId={projectId} />
                 {detail.project.status === "archived" ? <Alert type="warning" showIcon banner message="项目已归档，恢复后才能创建画布和生成任务" className="!border-x-0 !border-t-0" /> : null}
                 <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                     <div className={!activePluginView && (activeView === "chapters" || activeView === "workflow" || activeView === "editor") ? "min-h-0 flex-1" : "thin-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5 lg:px-8 lg:py-7"}>
@@ -171,7 +145,7 @@ export default function ProjectDetailPage() {
     );
 }
 
-function ProjectWorkspaceHeader({ detail, projectId, activeView, unitId, stage, chapterHref, workflowHref, onCreateCanvas }: { detail: ProjectDetail; projectId: string; activeView: string; unitId?: string; stage?: string; chapterHref: string; workflowHref: string; onCreateCanvas: () => void }) {
+function ProjectWorkspaceHeader({ detail, projectId, activeView, unitId, stage, chapterHref, workflowHref, onCreateCanvas, onOpenBible }: { detail: ProjectDetail; projectId: string; activeView: string; unitId?: string; stage?: string; chapterHref: string; workflowHref: string; onCreateCanvas: () => void; onOpenBible: () => void }) {
     const archived = detail.project.status === "archived";
     const pluginViews = usePluginSlot("project.view");
     const createCanvasLabel = activeView === "chapters" && detail.units.length ? "新建当前章节画布" : "新建项目画布";
@@ -217,6 +191,9 @@ function ProjectWorkspaceHeader({ detail, projectId, activeView, unitId, stage, 
                 })}
             </nav>
             <div className="project-workspace-actions">
+                <Button size="small" icon={<BookOpen size={14} />} onClick={onOpenBible}>
+                    设定集
+                </Button>
                 {activeView === "workflow" ? (
                     <WorkflowChapterNavigator projectId={projectId} units={detail.units} unitId={unitId} stage={stage} />
                 ) : (
