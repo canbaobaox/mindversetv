@@ -107,8 +107,12 @@ func (s *Service) saveCanvasDocWithRevision(userID, canvasID string, doc map[str
 	return s.UpsertUserCanvasProject(userID, encoded)
 }
 
+// requireExpectedRevision 只拦“没带版本号”（负数/缺失语义外的非法值）。
+// revision 0 是合法的已读版本：canvas.create 建出的全新画布就是 revision 0，
+// 首写带 expectedRevision 0 才能落盘；仓储的原子谓词仍会拦住“拿 0 去写已有
+// 更新的画布”（0 != 现有 revision 即冲突），所以放行 0 不会丢掉写保护。
 func requireExpectedRevision(expectedRevision int64) error {
-	if expectedRevision <= 0 {
+	if expectedRevision < 0 {
 		return kernel.NewAppError(http.StatusBadRequest, "写操作必须带上读取时的 expectedRevision")
 	}
 	return nil

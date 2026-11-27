@@ -527,7 +527,20 @@ export function formatReconcileDeadlineCopy(reconcileDeadline?: string, nowMs = 
 
 export type TaskOutcomeCopyOptions = {
     providerCancelStatus?: string;
+    /**
+     * 站方返回的真实错误文本（已脱敏，卡片上已展示，如任务诊断摘要）。
+     * 仅用于 `result_unrecoverable`：原因未知时，确认弹窗不再只剩一句扣费警告，
+     * 先写明站方到底为什么拒绝，再保留扣费不确定的提醒。
+     */
+    providerErrorText?: string;
 };
+
+function truncateProviderErrorText(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed) return "";
+    const runes = Array.from(trimmed);
+    return runes.length > 200 ? `${runes.slice(0, 200).join("")}…` : trimmed;
+}
 
 /**
  * 根据 `TaskOutcome` 生成面向用户的中文状态、提示与确认弹窗文案。
@@ -699,7 +712,10 @@ export function taskOutcomeCopy(outcome?: TaskOutcome | null, nowMs = Date.now()
                     };
                 }
                 if (outcome.reason === "result_unrecoverable") {
-                    const reason = "无法确认上次是否已扣费，可先到模型服务后台查看使用记录";
+                    const providerText = truncateProviderErrorText(options?.providerErrorText || "");
+                    const reason = providerText
+                        ? `站方返回：${providerText}；无法确认上次是否已扣费，可先到模型服务后台查看使用记录`
+                        : "无法确认上次是否已扣费，可先到模型服务后台查看使用记录";
                     const action = "重新生成可能会再扣一次，确认后创建新任务";
                     return {
                         badge: "结果无法取回",
@@ -707,7 +723,9 @@ export function taskOutcomeCopy(outcome?: TaskOutcome | null, nowMs = Date.now()
                         action,
                         message: `${reason}。${action}。`,
                         confirmTitle: "确认重新生成？",
-                        confirmContent: "无法确认上次是否已扣费，可先到模型服务后台查看使用记录。重新生成可能会再扣一次。",
+                        confirmContent: providerText
+                            ? `站方返回：${providerText}\n无法确认上次是否已扣费，可先到模型服务后台查看使用记录。重新生成可能会再扣一次。`
+                            : "无法确认上次是否已扣费，可先到模型服务后台查看使用记录。重新生成可能会再扣一次。",
                     };
                 }
                 const reason = "这个渠道无法确认上次是否已扣费，重新生成可能会再扣一次";

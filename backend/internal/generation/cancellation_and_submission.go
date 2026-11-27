@@ -589,15 +589,15 @@ func UpscaleConfig(name string, lookupCred func() (string, string, string, strin
 	return Config{BaseURL: base, APIKey: key, CredentialRef: beeftv.CredentialRef, Model: name, InterfaceType: "newapi"}, nil
 }
 
-func fetchUpstreamUpscaleModes(ctx context.Context, user string, lookupCred func() (string, string, string, string, error), bindRuntime func(context.Context, CallMeta) context.Context) ([]topaz.Mode, int, int64) {
+func fetchUpstreamUpscaleModes(ctx context.Context, user string, lookupCred func() (string, string, string, string, error), bindRuntime func(context.Context, CallMeta) context.Context) ([]topaz.Mode, int, int64, bool) {
 	// Default safely to 200 MiB whenever upstream capabilities cannot be verified.
 	// Higher tool limits (up to 1 GiB) require explicit server advertisement.
 	if lookupCred == nil {
-		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes
+		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes, false
 	}
 	cfg, err := UpscaleConfig("", lookupCred)
 	if err != nil {
-		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes
+		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes, false
 	}
 	qctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
@@ -607,7 +607,9 @@ func fetchUpstreamUpscaleModes(ctx context.Context, user string, lookupCred func
 	qctx = WithRequestKind(qctx, "capabilities")
 	upstream, err := managedMediaClient(qctx, cfg).GetUpscaleCapabilities(qctx)
 	if err != nil || len(upstream.SupportedModels) == 0 {
-		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes
+		// 拿不到上游模型时仍回退默认模式列表：调用方必须用 upstreamAvailable
+		// 区分“真的可用”与“回退列表”，回退列表提交必失败，不得当成可用。
+		return topaz.Modes(), 300000, BeefTVSeedanceVideoMaxBytes, false
 	}
 	items := make([]topaz.UpstreamModel, 0, len(upstream.SupportedModels))
 	for _, m := range upstream.SupportedModels {
@@ -618,12 +620,12 @@ func fetchUpstreamUpscaleModes(ctx context.Context, user string, lookupCred func
 		maxDurationMs = upstream.MaxVideoSeconds * 1000
 	}
 	maxVideoBytes := NormalizeToolVideoLimit(upstream.MaxVideoBytes)
-	return topaz.ModesFromUpstream(items), maxDurationMs, maxVideoBytes
+	return topaz.ModesFromUpstream(items), maxDurationMs, maxVideoBytes, true
 }
 
 func LiveUpscaleCapabilities(ctx context.Context, lookupCred func() (string, string, string, string, error), bindRuntime func(context.Context, CallMeta) context.Context) map[string]any {
-	modes, maxVideoDurationMs, maxVideoBytes := fetchUpstreamUpscaleModes(ctx, CanonicalCallMeta(ctx).UserID, lookupCred, bindRuntime)
-	return map[string]any{"modes": modes, "cloudProcessing": true, "maxVideoDurationMs": maxVideoDurationMs, "maxVideoBytes": maxVideoBytes}
+	modes, maxVideoDurationMs, maxVideoBytes, upstreamAvailable := fetchUpstreamUpscaleModes(ctx, CanonicalCallMeta(ctx).UserID, lookupCred, bindRuntime)
+	return map[string]any{"modes": modes, "cloudProcessing": true, "maxVideoDurationMs": maxVideoDurationMs, "maxVideoBytes": maxVideoBytes, "upstreamAvailable": upstreamAvailable}
 }
 
 func UpscaleInput(ctx context.Context, user string, request topaz.Request, ensureMetadata func(context.Context, string, string) (*model.Resource, error), lookupCred func() (string, string, string, string, error), bindRuntime ...func(context.Context, CallMeta) context.Context) (Input, *model.Resource, error) {
@@ -637,7 +639,7 @@ func UpscaleInput(ctx context.Context, user string, request topaz.Request, ensur
 	if len(bindRuntime) > 0 {
 		bind = bindRuntime[0]
 	}
-	modes, _, maxVideoBytes := fetchUpstreamUpscaleModes(ctx, user, lookupCred, bind)
+	modes, _, maxVideoBytes, _ := fetchUpstreamUpscaleModes(ctx, user, lookupCred, bind)
 	resolvedModel, err := topaz.ResolveModelID(request, kind, modes)
 	if err != nil {
 		return input, nil, BadAuthRequest(err.Error())

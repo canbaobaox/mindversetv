@@ -138,10 +138,6 @@ func registerSkillMarketRoutes(r *gin.RouterGroup, owners workspaceOwners, domai
 		e := domain.MarketDisconnect(c.Request.Context(), owner(c))
 		marketReply(c, gin.H{"connected": false}, e)
 	})
-	m.GET("/submissions", func(c *gin.Context) {
-		v, e := domain.MarketSubmissions(c.Request.Context(), owner(c))
-		marketReply(c, v, e)
-	})
 	m.GET("/publish-plans", func(c *gin.Context) {
 		v, e := domain.PublishPlans(owner(c))
 		marketReply(c, gin.H{"items": v}, e)

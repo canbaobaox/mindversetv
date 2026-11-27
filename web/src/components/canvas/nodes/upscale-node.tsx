@@ -8,7 +8,7 @@ import { canRecoverUpscaleNode } from "@/lib/canvas/canvas-ai-upscale-task";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { channelHasGenerationCredential, isMyxsaiChannel, useEffectiveConfig } from "@/stores/use-config-store";
 import { ApiError, getTransportFailureKind } from "@/services/api/request";
-import { estimateUpscale, getUpscaleCapabilities } from "@/services/api/media-upscale";
+import { estimateUpscale, getUpscaleCapabilities, isUpscaleUpstreamAvailable } from "@/services/api/media-upscale";
 import { useCanvasNodeActions } from "../canvas-node-action-context";
 import { CanvasNodeGraphContext, useUpstreamNodes } from "../canvas-node-graph-context";
 
@@ -81,6 +81,9 @@ export function UpscaleNodePanel({ node, theme, readOnly = false }: { node: Canv
     };
     const patch = (change: Partial<typeof settings>) => actions.updateMetadata?.(node.id, { upscale: { ...settings, ...change } });
     const modelAvailable = (!videos.length || videoMode) && (!images.length || imageMode);
+    // 云端超分服务未开启时，后端仍会回退一份默认模式列表：只看 modes 会误以为可用，
+    // 点提交才失败。以上游是否明确返回模型为准，没能力就置灰并写明原因，不走本地放大。
+    const upstreamUnavailable = Boolean(capabilities.data) && !isUpscaleUpstreamAvailable(capabilities.data);
     const batch = node.metadata?.upscaleBatch;
     const outputs = (batch?.items || []).flatMap(item => {
         const output = getNode?.(item.outputNodeId);
@@ -104,7 +107,7 @@ export function UpscaleNodePanel({ node, theme, readOnly = false }: { node: Canv
             const estimate = await estimateUpscale(params, signal);
             return { sourceId: source.id, sourceKey: upscaleSourceKey(source), params, reservation: estimate.reservation };
         })),
-        enabled: !readOnly && connected && Boolean(prepareResource) && quoteInputs.length > 0
+        enabled: !readOnly && connected && Boolean(prepareResource) && quoteInputs.length > 0 && !upstreamUnavailable
             && (canRetryBatch || (!resuming && Boolean(modelAvailable))),
         retry: false,
         staleTime: 30_000,
@@ -154,13 +157,14 @@ export function UpscaleNodePanel({ node, theme, readOnly = false }: { node: Canv
     const status = (!connected && !readOnly ? "请连接梦由心生超分模型" : "")
         || (!inputs.length ? "从左侧连接图片或视频" : "")
         || (resuming && !canRetryBatch ? `已完成 ${batchState.succeeded}/${batchState.total}${batchState.failed ? ` · ${batchState.failed} 项失败` : ""}` : "")
+        || (upstreamUnavailable ? "云端超分服务暂未开启" : "")
         || (modelError ? "暂时无法加载超分模型" : "")
         || (capabilities.isFetching ? "正在加载超分模型…" : "")
         || (quote.isFetching ? "正在估价…" : "")
         || (quote.error?.message ?? "")
         || (reservation !== undefined ? `预计先扣 ¥${reservation.toFixed(2)}` : "提交前获取费用");
     const submitDisabled = busy || !actions.startUpscaleBatch
-        || ((!resuming || canRetryBatch) && (!connected || !quote.data?.length || quote.isFetching || quote.isError))
+        || ((!resuming || canRetryBatch) && (!connected || upstreamUnavailable || !quote.data?.length || quote.isFetching || quote.isError))
         || (!resuming && (!inputs.length || !modelAvailable));
     const showVideo = videos.length > 0;
     const statusIsError = notice || quote.isError || modelError;
@@ -193,7 +197,7 @@ export function UpscaleNodePanel({ node, theme, readOnly = false }: { node: Canv
             </div>
             <footer className="flex min-w-0 items-center justify-end gap-2">
                 <span role={statusIsError ? "alert" : "status"} className="min-w-0 flex-1 break-words tabular-nums" style={{ color: theme.node.muted }}>{notice ? `${notice} · ${status}` : status}</span>
-                {!readOnly && modelError && connected ? <Button size="small" onClick={() => void capabilities.refetch()}>重试加载模型</Button> : null}
+                {!readOnly && modelError && connected && !upstreamUnavailable ? <Button size="small" onClick={() => void capabilities.refetch()}>重试加载模型</Button> : null}
                 {!readOnly && quote.isError ? <Button size="small" onClick={() => void quote.refetch()}>重新估价</Button> : null}
                 {!readOnly && recoverable.length ? <Button size="small" disabled={busy} onClick={() => void run(true)}>取回结果</Button> : null}
                 {!readOnly ? <Button type="text" className="canvas-node-composer-submit canvas-node-composer-submit-canvas"

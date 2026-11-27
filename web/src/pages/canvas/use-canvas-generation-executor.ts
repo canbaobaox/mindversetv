@@ -398,6 +398,8 @@ export function useCanvasGenerationExecutor({
                         if (isNodeRegenerateConfirm(sourceNode?.metadata) && modal?.confirm) {
                             const copy = taskOutcomeCopy(readNodeTaskOutcome(sourceNode?.metadata), undefined, {
                                 providerCancelStatus: sourceNode?.metadata?.taskProviderCancelStatus,
+                                providerErrorText:
+                                    sourceNode?.metadata?.taskFailureDiagnostics?.summary?.trim() || sourceNode?.metadata?.generationErrorSummary?.trim() || undefined,
                             });
                             stage = "duplicate_confirmation";
                             diagnostic("generation_confirmation_waiting");

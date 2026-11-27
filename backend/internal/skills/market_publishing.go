@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"os"
@@ -387,20 +386,6 @@ func (s *Service) PublishSubmit(ctx context.Context, user, id string, revision i
 	}
 	return p, nil
 }
-func (s *Service) MarketSubmissions(ctx context.Context, user string) (any, error) {
-	c, e := marketClient()
-	if e != nil {
-		return nil, e
-	}
-	token, e := s.marketToken(user, c)
-	if e != nil {
-		return nil, e
-	}
-	var result json.RawMessage
-	e = c.JSON(ctx, "GET", "submissions", token, "", nil, &result)
-	return result, e
-}
-
 func (s *Service) PublicationStatus(ctx context.Context, user, id string) (*PublishPlan, error) {
 	unlock := s.lockMarket(user)
 	defer unlock()

@@ -371,7 +371,8 @@ func ValidateSmartEraseRequestCapabilities(req *SubtitleEraseRequest, caps map[s
 		}
 	case "privacy":
 		if len(privacyModels) > 0 && !slices.Contains(privacyModels, opts.PrivacyModel) {
-			return BadAuthRequest("当前官方算力暂未开放该隐私打码样式")
+			// 隐私打码没有本地人脸/车牌检测替代：只有渠道能力矩阵明确给出的样式才能提交。
+			return BadAuthRequest("当前渠道暂未开放该隐私打码样式")
 		}
 		if len(privacyTargets) > 0 {
 			for _, target := range opts.PrivacyTargets {

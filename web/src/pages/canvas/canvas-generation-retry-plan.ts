@@ -125,7 +125,11 @@ export async function confirmCanvasRetryGate(
     if ((!needsOutcomeConfirm && !baseline.unchangedModeration) || !deps.modal?.confirm) {
         return { confirmed: true, prompted: false, baseline };
     }
-    const targetCopy = taskOutcomeCopy(targetOutcome, undefined, { providerCancelStatus: targetNode.metadata?.taskProviderCancelStatus });
+    const targetCopy = taskOutcomeCopy(targetOutcome, undefined, {
+        providerCancelStatus: targetNode.metadata?.taskProviderCancelStatus,
+        providerErrorText:
+            targetNode.metadata?.taskFailureDiagnostics?.summary?.trim() || targetNode.metadata?.generationErrorSummary?.trim() || undefined,
+    });
     const latestNode = deps.nodesRef.current.find((item) => item.id === deps.node.id) || deps.node;
     const promptTarget = !deps.readOnly
         ? resolveCanvasPromptEditTarget(latestNode, deps.nodesRef.current, deps.connectionsRef.current)
