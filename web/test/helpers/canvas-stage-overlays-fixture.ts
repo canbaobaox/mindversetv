@@ -211,6 +211,12 @@ export function createCanvasStageProps(overrides: OverlayStageFixtureOverrides =
         openVersions: noop,
         toggleVersions: noop,
         nodeGraphContext: {} as CanvasProjectStageProps["nodeGraphContext"],
+        dockPanelEntries: [],
+        activeDockPanelId: null,
+        dockPanelCollapsed: false,
+        onToggleDockPanel: noop,
+        onToggleDockPanelMinimized: noop,
+        onCloseDockPanel: noop,
     };
 }
 
