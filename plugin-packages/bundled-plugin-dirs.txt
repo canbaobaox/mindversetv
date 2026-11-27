@@ -1,2 +1,3 @@
 beeftv-plugin-market
 beeftv-plugin-myxsai
+beeftv-plugin-muse

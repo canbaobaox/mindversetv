@@ -18,6 +18,7 @@ Windows 安装包在 [Releases](https://github.com/canbaobaox/mindversetv/releas
 
 ## 最近更新
 
+- **[v2.3.7](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.7)** — 新增 Muse 视频插件（经 muse2api 中继，视频走 JSON 提交，时长 5/6/8/10 秒、画幅 16:9/9:16），修复轮询 404 时报错文案显示整段 JSON。
 - **[v2.3.6](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.6)** — 本地 AI 去字幕/去水印（接开源 VSR，自动检测并修复，首次使用需下载约 1.5GB 组件），深度动作捕捉自建签名清单（Windows 组件改从自有 Release 下载验签，CPU 档）。
 - **[v2.3.5](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.5)** — 修复梦由心生生图仍失败（resolution 只发站方接受的 auto / 1K / 2K / 4K），生成面板无价格时显示“价格待确认”，超分门禁收紧，深度动作捕捉失败弹常驻弹窗不再静默。
 - **[v2.3.4](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.4)** — 修复梦由心生生图失败（结果地址与轮询判定按站方协议对齐），选择模型加全选，每个模型显示费用。

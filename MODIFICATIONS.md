@@ -418,3 +418,13 @@
 - Linux CLI 实测（2026-11-22，VSR 1.4.0 源码）：`--help` 合同与方案一致；lama + `-c` 2 秒片段完整跑通（退出 0，273 秒，输出 640×360、音轨保留，字幕区亮像素 5.9%→0.0%）；完成行实测为 `[Complete] Subtitles removed. Output saved to: …`（英文）/`[完成] 字幕移除成功, 文件已保存到 …`（中文，见 en.ini:92/ch.ini:92），`FinishedOutput` 已按实测改。sttn-auto 6 秒片段在本机 1.5 核 CPU 上 35 分钟未跑完（第一批 50 帧推理中），CPU 档很慢，对话框需明示等待时间，Windows 真机验收仍待补。
 - 未核实：CPU 档在 Windows 上的实际速度；官方 Setup.exe 静默安装可行性（备选，不阻塞主线）；Windows 真机验收待用户机器。（已核实：自打 CPU 包 1,570,656,403 字节；1.4.0 打包布局与 1.1.1 一致，CI 构建的布局校验已通过。）
 - 方案全文：`~/workspace/goals/ai/hidden_files/vsr-integration-plan-2026-11-22.md`。
+
+## 2026-11-27 v2.3.7：Muse 视频插件（经 muse2api 中继）
+
+- 背景：用户 2026-11-27 定先只做 A——把 Muse 当模型渠道接进画布（聊天+生图零代码走自填渠道，生视频要插件），中继就用 muse2api（MIT，czg86389-hub/muse2api，version.json 1.6.14）。本机跑中继真服务验证那步用户跳过（执行风险检查拦住运行该仓库代码），以他 Windows 真机验收为准。
+- 插件：`plugin-packages/beeftv-plugin-muse/`（1.0.0，Apache-2.0），只声明视频 provider `muse-video`；文本 muse-spark 走宿主通用 chat-completion、图片 muse-image 走 openai-image，均不动代码。注册两处都加了（`bundled-plugin-dirs.txt` + `BundledBuiltinPluginNames`，myxsai 的教训）。
+- 提交：JSON（不用 multipart，中继 multipart 回 422），`duration` 整数（不用 `seconds`，中继不认）、`images` 发 data URL（中继默认禁拉私网/localhost 地址）、`aspect_ratio` 与 `resolution` 只拼进提示词；轮询 `GET /v1/videos/{{taskId}}`，状态 queued→pending、processing→processing、completed→succeeded（成功时 url 在顶层）、failed→failed。
+- 能力配置（`client/presets.js` 的 `MUSE_VIDEO_CAPABILITY_CONFIG`）：时长 enum [5,6,8,10] 默认 6、画幅 [16:9,9:16] 默认 16:9（muse2api README）、参考图上限 10 张单张 40 MiB（MAX_REFERENCE_IMAGES=10）、视频文件参考/续写/局部修改不支持；分辨率中继无结构化参数，resolutions 为空（sanitize 要求空列表配空字符串）；生成音频开关只影响界面（Muse Video 自带原生音频，不发音频参数）。配置整份通过宿主 `sanitizeServerVideoCapability`（`web/test/muse-preset-video-capability.test.ts`）。
+- 两个进仓库跑才暴露的问题已修：① 草稿单测断言提示词少写了“伸懒腰”三字；② 404 信封 `{"error":{"message":"task 不存在",…}}` 的 `error` 是对象，文案 `$coalesce` 先取 `response.error` 会整段 JSON 当文案——改成先取 `response.error.message`（`error` 是字符串时取子键返回缺失，自动落到字符串本身，两形都对）。根因见 `backend/internal/protocol/expression.go` 的 `manifestEmpty`/`manifestPathValue`。
+- 未验证（待用户 Windows 真机）：中继无账号时各端点的实际返回（目前只是源码结论）、16:9 生图是否真出横屏（画布发的 `size: "1824x1024"` 不在中继识别的比例值里）、视频 5/8/10 秒与 16:9 横屏出片、参考图 data URL 是否被接受。见 `plugin-packages/beeftv-plugin-muse/docs/interface.md` 文末清单。
+- 注意：审计里的“合完上游再修、发 v2.3.7”计划与本版撞号；上游合并后升版须从 v2.3.8 起，不可同号覆盖发包。

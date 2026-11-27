@@ -819,6 +819,7 @@ const bundledPluginsSubdir = "bundled-plugins"
 var BundledBuiltinPluginNames = []string{
 	"beeftv-plugin-market",
 	"beeftv-plugin-myxsai",
+	"beeftv-plugin-muse",
 }
 
 var (

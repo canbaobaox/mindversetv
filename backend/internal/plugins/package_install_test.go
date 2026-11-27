@@ -441,6 +441,9 @@ func TestBundledPluginDirsManifestAndDesktopAgentHostResolution(t *testing.T) {
 		// First-party official channel plugin, shipped with the installer
 		// since the 2026-11-21 plugin replacement.
 		"beeftv-plugin-myxsai": false,
+		// Muse video plugin (via muse2api relay), shipped with the
+		// installer since v2.3.7.
+		"beeftv-plugin-muse": false,
 	}
 	for _, name := range names {
 		if _, ok := wantNames[name]; !ok {

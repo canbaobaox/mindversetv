@@ -4,6 +4,11 @@ All notable public changes to BeefTV are documented in this file.
 
 ## Unreleased
 
+## v2.3.7
+
+- 新增 Muse 视频插件（经 muse2api 中继）：画布新增内置插件 `beeftv-plugin-muse`，视频走 `POST /v1/videos` JSON 提交（duration 整数，不用 multipart/seconds），时长 5/6/8/10 秒、画幅 16:9/9:16；文本 muse-spark 与图片 muse-image 走自填渠道通用协议，不动代码。中继与画布须在同一台 Windows 机器上（默认 `http://127.0.0.1:18610`），账号由用户本人在中继管理页导入，插件只填中继 API Key。
+- 修复轮询 404 时报错文案显示整段 JSON：错误文案先取 `error.message`，中继对象信封与字符串两种错误形状都显示中文原因。
+
 ## v2.3.6
 
 - 本地 AI 去字幕/去水印：接开源 VSR（Apache-2.0），自动检测字幕/水印位置并修复，首次使用需下载约 1.5GB 组件；CPU 推理较慢，处理长视频请耐心等待；仍保留按选框快速擦除（delogo）备选。
