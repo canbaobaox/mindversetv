@@ -338,7 +338,7 @@ func TestWorkspaceModelConfigRecoversAndSavesAfterPrimaryCorruption(t *testing.T
 		"expectedRevision": 1,
 		"config": map[string]any{
 			"channels": []any{
-				map[string]any{"id": "beeftv", "apiKey": "", "enabled": true},
+				map[string]any{"id": "myxsai", "apiKey": "", "enabled": true},
 				map[string]any{
 					"id":      "custom-sd",
 					"name":    "sd 2.5",
