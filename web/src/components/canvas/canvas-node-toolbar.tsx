@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { App, Dropdown, Tooltip } from "antd";
 import type { MenuProps } from "antd";
-import { Camera, ChevronDown, ChevronRight, Clapperboard, Images, Maximize2, Scissors, Settings2, SlidersHorizontal, Sparkles, UserRound, WandSparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Globe2, Maximize2, SlidersHorizontal, Sparkles, X } from "lucide-react";
 
 import { canvasDockStyle } from "@/lib/canvas/canvas-aceternity-style";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -14,8 +14,9 @@ import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ViewportTransform } from "@/types/canvas";
 import { buildImageToolbarTools } from "./canvas-image-toolbar-tools";
 import { canConvertCanvasVideoDraft } from "@/lib/canvas/canvas-video-draft";
-import { resolveMediaNodeSettingsTools, resolveVideoToolbarSections, type ToolbarTool } from "./canvas-video-toolbar-tools";
+import type { ToolbarTool } from "./canvas-video-toolbar-tools";
 import { CanvasGridSplitPicker } from "./canvas-grid-split-picker";
+import "./canvas-node-capsule.css";
 
 type CanvasNodeToolbarProps = {
     node: CanvasNodeData | null;
@@ -40,15 +41,16 @@ type CanvasNodeToolbarProps = {
     onSplit: (node: CanvasNodeData, params: ImageSplitParams) => void;
     onLayerSplit?: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData) => void;
-    onSuperResolve: (node: CanvasNodeData) => void;
     onDraftToFinal?: (node: CanvasNodeData) => void;
     onVideoEditOperation?: (node: CanvasNodeData, operation: "extend" | "inpaint") => void;
     onVideoRetake?: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onLighting: (node: CanvasNodeData) => void;
     onPanorama: (node: CanvasNodeData) => void;
+    onPanoramaConfig: (node: CanvasNodeData) => void;
+    onClose: () => void;
     onViewImage: (node: CanvasNodeData) => void;
-    onExtractVideoFrames: (node: CanvasNodeData, preset?: "current" | "first" | "last") => void;
+    onExtractVideoFrames: (node: CanvasNodeData, preset?: "current" | "first" | "last" | "firstLast") => void;
     onExtractAudioFromVideo: (node: CanvasNodeData) => void;
     onTrimVideoSegments: (node: CanvasNodeData) => void;
     onDepthCapture: (node: CanvasNodeData) => void;
@@ -65,6 +67,35 @@ type CanvasNodeToolbarProps = {
     onDelete: (node: CanvasNodeData) => void;
     onQuickReference?: (node: CanvasNodeData) => void;
     workspaceMode?: CanvasWorkspaceMode;
+};
+
+type CapsuleEntry = {
+    id: string;
+    label: string;
+    kind: "button" | "split" | "frames";
+    tool: ToolbarTool;
+};
+
+type CapsuleEntryDraft = {
+    id: string;
+    label: string;
+    kind: CapsuleEntry["kind"];
+    tool: ToolbarTool | undefined;
+};
+
+type CapsuleMenuItem = {
+    key: string;
+    label: string;
+    icon?: ReactNode;
+    disabled?: boolean;
+    danger?: boolean;
+    onClick: () => void;
+};
+
+type CapsuleMenuGroup = {
+    key: string;
+    title: string;
+    items: CapsuleMenuItem[];
 };
 
 export function CanvasNodeToolbar({
@@ -90,13 +121,14 @@ export function CanvasNodeToolbar({
     onSplit,
     onLayerSplit,
     onUpscale,
-    onSuperResolve,
     onDraftToFinal,
     onVideoEditOperation,
     onVideoRetake,
     onAngle,
     onLighting,
     onPanorama,
+    onPanoramaConfig,
+    onClose,
     onViewImage,
     onExtractVideoFrames,
     onExtractAudioFromVideo,
@@ -117,6 +149,7 @@ export function CanvasNodeToolbar({
     workspaceMode = "professional",
 }: CanvasNodeToolbarProps) {
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+    const [splitOpen, setSplitOpen] = useState(false);
     const [containerWidth, setContainerWidth] = useState(1000);
     const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
     const toolbarRef = useRef<HTMLDivElement>(null);
@@ -128,7 +161,22 @@ export function CanvasNodeToolbar({
 
     useEffect(() => {
         setOpenMenuId(null);
+        setSplitOpen(false);
     }, [node?.id]);
+
+    // 胶囊只由点条外、× 或 Esc 收起；悬停离开、点开下拉菜单都不收。
+    useEffect(() => {
+        if (!node || (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video)) return;
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target as HTMLElement | null;
+            if (!target || typeof target.closest !== "function") return;
+            if (toolbarRef.current?.contains(target)) return;
+            if (target.closest(".canvas-node-plus-trigger, [data-canvas-no-zoom], .ant-dropdown, .ant-modal-root, .ant-popover")) return;
+            onClose();
+        };
+        document.addEventListener("pointerdown", handlePointerDown, true);
+        return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+    }, [node, onClose]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
@@ -232,7 +280,9 @@ export function CanvasNodeToolbar({
         onCrop,
         onLayerSplit,
         onUpscale,
-        onSuperResolve,
+        // AI 超分随旧工具栏一起下线：图片工具定义里本就没有超分入口，
+        // 这里只为满足 ImageToolHandlers 的类型占位，不再接任何按钮。
+        onSuperResolve: () => undefined,
         onAngle,
         onLighting,
         onPanorama,
@@ -261,7 +311,8 @@ export function CanvasNodeToolbar({
         onNodeCrop: onCrop,
         onNodeSplit: (target) => onSplit(target, { rows: 2, columns: 2 }),
         onNodeUpscale: onUpscale,
-        onNodeSuperResolve: onSuperResolve,
+        // AI 超分随旧工具栏一起下线：注册表里没有跑这条的工具，占位即可。
+        onNodeSuperResolve: () => undefined,
         onNodeAngle: onAngle,
         onNodeViewImage: onViewImage,
         onNodeExtractVideoFrames: onExtractVideoFrames,
@@ -325,70 +376,137 @@ export function CanvasNodeToolbar({
     const inGroup = (group: NodeToolbarGroup) => allTools.filter((tool) => tool.group === group).sort(compareToolbarTools);
     const primary = inGroup("primary");
     const primaryTools = narrow ? primary.slice(0, 1) : primary;
-    // Image nodes use a deliberately small, stable action hierarchy. Keep the
-    // underlying handlers/tool definitions intact, but only expose the actions
-    // that belong to the four image workflows in the primary dock.
-    const imagePrimaryTools = primary.filter((tool) => tool.id === "maskEdit");
-    const portraitTools = inGroup("portrait");
-    const viewpointLightingTools = [...inGroup("viewpoint"), ...inGroup("lighting")];
-    const imageAdjustmentTools = isImage ? [
-        { id: "emotion", label: "表情调整" },
-        { id: "angle", label: "角度调整" },
-        { id: "lighting", label: "打光调整" },
-    ].flatMap(({ id, label }) => {
-        const tool = allTools.find((entry) => entry.id === id);
-        return tool ? [{ ...tool, label }] : [];
-    }) : [];
-    const panoramaTools = compact || isImage ? [] : inGroup("panorama");
-    const processTools = compact
-        ? [
-            ...[...portraitTools, ...viewpointLightingTools]
-                .filter((tool) => !imageAdjustmentTools.some((adjustment) => adjustment.id === tool.id)),
-            ...inGroup("panorama"),
-            ...inGroup("process"),
-            ...(isImage ? allTools.filter((tool) => tool.id === "reversePrompt") : []),
-        ]
-        : isImage
-          ? [...inGroup("process").filter((tool) => ["crop", "annotation", "layerSplit", "split"].includes(tool.id)), ...allTools.filter((tool) => tool.id === "reversePrompt")]
-          : inGroup("process");
+    const processTools = inGroup("process");
     const allWorkspaceTools = inGroup("workspace");
     const workspaceTools = narrow ? [] : allWorkspaceTools;
     const utilityTools = inGroup("utility");
-    const imageSettingsTools = isImage ? resolveMediaNodeSettingsTools(allTools, "image") : [];
-    const processMenuLabel = compact ? "工具" : isVideo ? "提取素材" : isImage ? "图片工具" : isAudio ? "音频处理" : "文本调整";
+    const processMenuLabel = compact ? "工具" : isAudio ? "音频处理" : "文本调整";
     const showDraftToFinal = Boolean(canDraftToFinal && onDraftToFinal);
-    const videoSections = resolveVideoToolbarSections({
-        containerWidth,
-        registryToolbarTools,
-        canDraftToFinal: showDraftToFinal,
-        onExtractVideoFrames: (preset) => onExtractVideoFrames(node, preset),
+
+    // ---- 一期换皮：胶囊浮条模型（图片/视频）----
+    // 按钮只取已解析好的工具定义，接线与旧 dock 完全一致，不重做弹窗。
+    // AI 超分（画质提升）随旧工具栏一起下线：云端超分服务未开启，节点保持置灰，
+    // 这里直接不渲染；超分处理节点本身（Upscale 节点类型）不受影响。
+    const findCapsuleTool = (id: string) => allTools.find((tool) => tool.id === id);
+    const runCapsuleTool = (tool: ToolbarTool | undefined) => {
+        if (!tool || tool.disabled) return;
+        tool.onClick();
+        onClose();
+    };
+    const toCapsuleMenuItem = (tool: ToolbarTool, label?: string): CapsuleMenuItem => ({
+        key: tool.id,
+        label: label ?? tool.label,
+        icon: tool.icon,
+        disabled: tool.disabled,
+        danger: tool.danger,
+        onClick: () => runCapsuleTool(tool),
     });
-    const videoGlobalTools: ToolbarTool[] = isVideo
+    const toCapsuleMenuItems = (ids: string[]) => ids.flatMap((id) => {
+        const tool = findCapsuleTool(id);
+        return tool ? [toCapsuleMenuItem(tool)] : [];
+    });
+    const frameMenuItems: CapsuleMenuItem[] = ([
+        ["current", "截取当前帧"],
+        ["first", "截取首帧"],
+        ["last", "截取尾帧"],
+        ["firstLast", "首尾帧一次出两张"],
+    ] as const).map(([preset, label]) => ({
+        key: `keyframe-${preset}`,
+        label,
+        disabled: extractingVideoFrames,
+        onClick: () => onExtractVideoFrames(node, preset),
+    }));
+
+    // 图片胶囊：拆分图片 / 多角度 / 打光 / 表情 / 生成 720° 全景图。
+    // “拆分图片”开宫格选择器；全景直接建节点（球形 2:1、当前图为源），配置窗只留作“更多设置”。
+    const imageCapsuleDrafts: CapsuleEntryDraft[] = isImage
         ? [
-              {
-                  id: "video-preview",
-                  label: "预览",
-                  icon: <Maximize2 className="size-3.5" />,
-                  group: "utility",
-                  order: 10,
-                  disabled: !Boolean(node.metadata?.content || node.metadata?.storageKey),
-                  onClick: () => onViewImage(node),
-              },
-              ...utilityTools,
-          ]
+            { id: "split", label: "拆分图片", kind: "split", tool: findCapsuleTool("split") },
+            { id: "angle", label: "多角度", kind: "button", tool: findCapsuleTool("angle") },
+            { id: "lighting", label: "打光", kind: "button", tool: findCapsuleTool("lighting") },
+            { id: "emotion", label: "表情", kind: "button", tool: findCapsuleTool("emotion") },
+            { id: "panorama", label: "生成 720° 全景图", kind: "button", tool: findCapsuleTool("panorama") },
+        ]
         : [];
+    const imageCapsuleEntries: CapsuleEntry[] = imageCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool));
+    // 视频胶囊：截取 / 智能去字幕 / 音视频分离 / 深度捕捉。
+    const videoCapsuleDrafts: CapsuleEntryDraft[] = isVideo
+        ? [
+            { id: "frames", label: "截取", kind: "frames", tool: findCapsuleTool("extractFrames") },
+            { id: "subtitleErase", label: "智能去字幕", kind: "button", tool: findCapsuleTool("subtitleErase") },
+            { id: "extractAudio", label: "音视频分离", kind: "button", tool: findCapsuleTool("extractAudio") },
+            { id: "depthCapture", label: "深度捕捉", kind: "button", tool: findCapsuleTool("depthCapture") },
+        ]
+        : [];
+    const videoCapsuleEntries: CapsuleEntry[] = videoCapsuleDrafts.filter((entry): entry is CapsuleEntry => Boolean(entry.tool));
+    const capsuleEntries = isImage ? imageCapsuleEntries : videoCapsuleEntries;
+    // 窄屏与 simple 模式：放不下的按钮收进“更多”，simple 模式只留“更多”。
+    const capsuleVisibleCount = simpleMode ? 0 : narrow ? 1 : compact ? 3 : capsuleEntries.length;
+    const capsuleVisibleEntries = capsuleEntries.slice(0, capsuleVisibleCount);
+    const capsuleOverflowEntries = capsuleEntries.slice(capsuleVisibleCount);
+    const overflowMenuItems: CapsuleMenuItem[] = capsuleOverflowEntries.flatMap((entry): CapsuleMenuItem[] => {
+        if (entry.kind === "split") {
+            return [{ key: "split", label: entry.label, icon: entry.tool.icon, disabled: entry.tool.disabled, onClick: () => setSplitOpen(true) }];
+        }
+        if (entry.kind === "frames") return frameMenuItems;
+        return [toCapsuleMenuItem(entry.tool, entry.label)];
+    });
+
+    // “更多”：被换掉的不删，全收进来；节点管理类跟旧分组走，不丢功能。
+    const imageMoreGroups: CapsuleMenuGroup[] = isImage ? [
+        {
+            key: "image-tools",
+            title: "图片工具",
+            items: [
+                ...overflowMenuItems,
+                ...toCapsuleMenuItems(["maskEdit", "portraitTexture", "annotation", "crop", "upscale", "layerSplit", "copyPrompt", "reversePrompt"]),
+                { key: "panorama-config", label: "全景更多设置", icon: <Globe2 className="size-3.5" />, onClick: () => { onPanoramaConfig(node); onClose(); } },
+            ],
+        },
+        {
+            key: "node-manage",
+            title: "节点管理",
+            items: toCapsuleMenuItems(["replace", "resize", "info", "node-lock", "view", "generationInfo", "download", "saveAsset", "delete", "retry"]),
+        },
+    ] : [];
+    const videoMoreGroups: CapsuleMenuGroup[] = isVideo ? [
+        {
+            key: "video-process",
+            title: "视频处理",
+            items: [
+                ...overflowMenuItems,
+                ...(onVideoEditOperation ? [
+                    { key: "video-extend", label: "视频续写", onClick: () => { onVideoEditOperation(node, "extend"); onClose(); } },
+                    { key: "video-inpaint", label: "视频局部修改", onClick: () => { onVideoEditOperation(node, "inpaint"); onClose(); } },
+                ] as CapsuleMenuItem[] : []),
+                ...(onVideoRetake ? [{ key: "video-retake", label: "片段重拍", onClick: () => { onVideoRetake(node); onClose(); } } as CapsuleMenuItem] : []),
+                { key: "video-reverse-prompt", label: "反推提示词", onClick: () => { onReversePrompt(node); onClose(); } },
+                ...toCapsuleMenuItems(["trimRegenerate", "cropVideo", "watermarkErase"]),
+            ],
+        },
+        {
+            key: "video-post",
+            title: "视频后期",
+            items: [
+                ...toCapsuleMenuItems(["subtitles", "timeline"]),
+                ...(showDraftToFinal && onDraftToFinal ? [{ key: "draft-to-final", label: "转 1080P 成片", icon: <UpscaleToolbarIcon />, onClick: () => { onDraftToFinal(node); onClose(); } } as CapsuleMenuItem] : []),
+            ],
+        },
+        {
+            key: "node-manage",
+            title: "节点管理",
+            items: [
+                ...toCapsuleMenuItems(["uploadVideo", "video-aspect-ratio", "info", "node-lock"]),
+                { key: "video-preview", label: "预览", icon: <Maximize2 className="size-3.5" />, disabled: !Boolean(node.metadata?.content || node.metadata?.storageKey), onClick: () => { onViewImage(node); onClose(); } },
+                ...toCapsuleMenuItems(["generationInfo", "download", "saveAsset", "delete", "retry"]),
+            ],
+        },
+    ] : [];
+    const moreGroups = isImage ? imageMoreGroups : videoMoreGroups;
     const handleMenuOpenChange = (menuId: string, open: boolean) => {
         setOpenMenuId((current) => (open ? menuId : current === menuId ? null : current));
         if (open) onKeep(node.id);
         else if (!toolbarRef.current?.contains(document.activeElement)) onLeave();
-    };
-    const qualityEnhancementTool: ToolbarTool = {
-        id: "ai-upscale",
-        label: "画质提升",
-        icon: <UpscaleToolbarIcon />,
-        group: "process",
-        order: 1,
-        onClick: () => onSuperResolve(node),
     };
     const dockStyle = canvasDockStyle(theme, theme.node.text);
 
@@ -399,136 +517,92 @@ export function CanvasNodeToolbar({
             style={{ left: 0, top: 0, transform: `translate3d(${anchor.left}px, ${anchor.top}px, 0)`, width: "max-content", maxWidth: "calc(100% - 20px)", color: theme.node.text }}
             onMouseEnter={() => onKeep(node.id)}
             onMouseLeave={() => {
-                if (!openMenuId) onLeave();
+                if (!isImage && !isVideo && !openMenuId) onLeave();
             }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             data-canvas-no-zoom
-            onKeyDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Escape") onClose();
+            }}
             onFocus={() => onKeep(node.id)}
             onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget) && !openMenuId) onLeave();
+                if (isImage || isVideo || event.currentTarget.contains(event.relatedTarget as Node | null) || openMenuId) return;
+                onLeave();
             }}
         >
-            <div role="toolbar" aria-label="节点快捷工具" className="flex h-10 max-w-full items-center gap-0.5 overflow-visible rounded-[var(--dock-radius-tight)] px-1.5 backdrop-blur-2xl" style={{ ...dockStyle, border: 0 }}>
-                {isAudio && onQuickReference && !simpleMode && canQuickReferenceCanvasMediaNode(node) ? (
-                    <NodeDockToolButton tool={{ id: "quick-reference", label: "引用生成", icon: <Sparkles className="size-3.5" />, group: "primary", order: 0, onClick: () => onQuickReference(node) }} showTooltip={false} />
-                ) : null}
-                {isVideo ? (
-                    <>
-                        {canDraftToFinal && onDraftToFinal ? (
-                            <NodeDockToolButton tool={{
-                                id: "draft-to-final",
-                                label: "转 1080P 成片",
-                                icon: <UpscaleToolbarIcon />,
-                                group: "process",
-                                order: 0,
-                                onClick: () => onDraftToFinal(node),
-                            }} showTooltip={false} />
-                        ) : null}
-                        <NodeDockToolButton tool={qualityEnhancementTool} showTooltip={false} />
-                        {videoSections.inlineKeyframeTools.length ? (
-                            <NodeDockMenuButton menuId="video-keyframes" label="关键帧截取" icon={<Images className="size-3.5" />} tools={videoSections.inlineKeyframeTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="bottomLeft" />
-                        ) : null}
-                        {(node.metadata?.content || node.metadata?.storageKey) ? (
-                            <NodeDockMenuButton
-                                menuId="video-ai-remix"
-                                label="视频二创"
-                                icon={<WandSparkles className="size-3.5" />}
-                                iconOnly={narrow}
-                                tools={[
-                                    ...(onVideoEditOperation ? [
-                                        { id: "video-extend", label: "视频续写", icon: null, group: "process" as const, order: 1, onClick: () => onVideoEditOperation(node, "extend") },
-                                        { id: "video-inpaint", label: "视频局部修改", icon: null, group: "process" as const, order: 2, onClick: () => onVideoEditOperation(node, "inpaint") },
-                                    ] : []),
-                                    ...(onVideoRetake ? [
-                                        { id: "video-retake", label: "片段重拍", icon: null, group: "process" as const, order: 3, onClick: () => onVideoRetake(node) },
-                                    ] : []),
-                                    { id: "video-reverse-prompt", label: "反推提示词", icon: null, group: "process" as const, order: 4, onClick: () => onReversePrompt(node) },
-                                ]}
-                                openMenuId={openMenuId}
-                                onOpenChange={handleMenuOpenChange}
-                                placement="bottomLeft"
+            {isImage || isVideo ? (
+                <>
+                    <div role="toolbar" aria-label="节点快捷工具" className="canvas-node-capsule">
+                        {capsuleVisibleEntries.map((entry) =>
+                            entry.kind === "frames" ? (
+                                <CapsuleMenuButton
+                                    key={entry.id}
+                                    label={entry.label}
+                                    icon={entry.tool.icon}
+                                    disabled={entry.tool.disabled || extractingVideoFrames}
+                                    menuItems={frameMenuItems}
+                                    onOpen={() => onKeep(node.id)}
+                                />
+                            ) : (
+                                <CapsuleToolButton
+                                    key={entry.id}
+                                    label={entry.label}
+                                    icon={entry.tool.icon}
+                                    disabled={entry.tool.disabled}
+                                    active={entry.tool.active}
+                                    pressed={entry.kind === "split" && splitOpen}
+                                    onClick={entry.kind === "split" ? () => setSplitOpen((current) => !current) : () => runCapsuleTool(entry.tool)}
+                                />
+                            ),
+                        )}
+                        <span aria-hidden className="canvas-node-capsule-separator" />
+                        <CapsuleMenuButton label="更多" menuGroups={moreGroups} onOpen={() => onKeep(node.id)} />
+                        <button type="button" className="canvas-node-capsule-close" aria-label="收起工具栏" onClick={onClose}>
+                            <X className="size-3.5" />
+                        </button>
+                    </div>
+                    {splitOpen && isImage ? (
+                        <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2" data-canvas-no-zoom onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+                            <CanvasGridSplitPicker
+                                onPick={(params) => {
+                                    setSplitOpen(false);
+                                    onSplit(node, params);
+                                    onClose();
+                                }}
                             />
-                        ) : null}
-                        {videoSections.videoProcessingTools.length ? (
-                            <NodeDockMenuButton
-                                menuId="video-processing"
-                                label="视频处理"
-                                icon={<Scissors className="size-3.5" />}
-                                iconOnly={narrow}
-                                tools={videoSections.videoProcessingTools}
-                                openMenuId={openMenuId}
-                                onOpenChange={handleMenuOpenChange}
-                                placement="bottomLeft"
-                            />
-                        ) : null}
-                        {videoSections.videoPostProductionTools.length ? (
-                            <NodeDockMenuButton
-                                menuId="video-post-production"
-                                label="视频后期"
-                                icon={<Clapperboard className="size-3.5" />}
-                                iconOnly={compact}
-                                tools={videoSections.videoPostProductionTools}
-                                openMenuId={openMenuId}
-                                onOpenChange={handleMenuOpenChange}
-                                placement="bottomLeft"
-                            />
-                        ) : null}
-                        {videoSections.videoSettingsTools.length > 0 ? (
-                            <NodeDockMenuButton menuId="video-settings" label="视频设置" icon={<Settings2 className="size-3.5" />} tools={videoSections.videoSettingsTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="bottomRight" iconOnly={narrow} />
-                        ) : null}
-                        {videoGlobalTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
-                        {videoGlobalTools.map((tool) => (
-                            <NodeDockToolButton key={tool.id} tool={tool} iconOnly />
-                        ))}
-                    </>
-                ) : (
-                    <>
-                        {isImage ? <NodeDockToolButton tool={qualityEnhancementTool} showTooltip={false} /> : null}
-                        {(isImage ? imagePrimaryTools : primaryTools).map((tool) => (
-                            <NodeDockToolButton key={tool.id} tool={tool} showTooltip={tool.id !== "maskEdit"} />
-                        ))}
-                        {panoramaTools.map((tool) => (
-                            <NodeDockToolButton key={tool.id} tool={tool} />
-                        ))}
-                        {imageAdjustmentTools.length > 0 ? (
-                            <NodeDockMenuButton
-                                menuId="image-adjustments"
-                                label="图片调整"
-                                icon={<SlidersHorizontal className="size-3.5" />}
-                                tools={imageAdjustmentTools}
-                                openMenuId={openMenuId}
-                                onOpenChange={handleMenuOpenChange}
-                            />
-                        ) : null}
-                        {!isImage && !compact && portraitTools.length ? <NodeDockMenuButton menuId="portrait" label="人像调整" icon={<UserRound className="size-3.5" />} tools={portraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} /> : null}
-                        {!isImage && !compact && viewpointLightingTools.length ? (
-                            <NodeDockMenuButton menuId="viewpoint-lighting" label="视角" icon={<Camera className="size-3.5" />} tools={viewpointLightingTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} />
-                        ) : null}
-                        {processTools.length ? (
-                            <NodeDockMenuButton
-                                menuId="process"
-                                label={processMenuLabel}
-                                icon={isImage ? <Images className="size-3.5" /> : <SlidersHorizontal className="size-3.5" />}
-                                tools={processTools}
-                                openMenuId={openMenuId}
-                                onOpenChange={handleMenuOpenChange}
-                                split={hasImage && !simpleMode ? { node, onSplit } : undefined}
-                            />
-                        ) : null}
-                        {imageSettingsTools.length ? <NodeDockMenuButton menuId="image-settings" label="图片设置" icon={<Settings2 className="size-3.5" />} tools={imageSettingsTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="bottomRight" iconOnly={narrow} /> : null}
-                        {workspaceTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
-                        {workspaceTools.map((tool) => (
-                            <NodeDockToolButton key={tool.id} tool={tool} />
-                        ))}
-                        {utilityTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
-                        {utilityTools.map((tool) => (
-                            <NodeDockToolButton key={tool.id} tool={tool} iconOnly />
-                        ))}
-                    </>
-                )}
-            </div>
+                        </div>
+                    ) : null}
+                </>
+            ) : (
+                <div role="toolbar" aria-label="节点快捷工具" className="flex h-10 max-w-full items-center gap-0.5 overflow-visible rounded-[var(--dock-radius-tight)] px-1.5 backdrop-blur-2xl" style={{ ...dockStyle, border: 0 }}>
+                    {isAudio && onQuickReference && !simpleMode && canQuickReferenceCanvasMediaNode(node) ? (
+                        <NodeDockToolButton tool={{ id: "quick-reference", label: "引用生成", icon: <Sparkles className="size-3.5" />, group: "primary", order: 0, onClick: () => onQuickReference(node) }} showTooltip={false} />
+                    ) : null}
+                    {primaryTools.map((tool) => (
+                        <NodeDockToolButton key={tool.id} tool={tool} showTooltip />
+                    ))}
+                    {processTools.length ? (
+                        <NodeDockMenuButton
+                            menuId="process"
+                            label={processMenuLabel}
+                            icon={<SlidersHorizontal className="size-3.5" />}
+                            tools={processTools}
+                            openMenuId={openMenuId}
+                            onOpenChange={handleMenuOpenChange}
+                        />
+                    ) : null}
+                    {workspaceTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
+                    {workspaceTools.map((tool) => (
+                        <NodeDockToolButton key={tool.id} tool={tool} />
+                    ))}
+                    {utilityTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
+                    {utilityTools.map((tool) => (
+                        <NodeDockToolButton key={tool.id} tool={tool} iconOnly />
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -710,6 +784,98 @@ function NodeDockMenuButton({
                         <ChevronDown className="size-3 shrink-0 opacity-55" />
                     </>
                 ) : null}
+            </button>
+        </Dropdown>
+    );
+}
+
+function CapsuleToolButton({ label, icon, disabled, active, pressed, onClick }: { label: string; icon: ReactNode; disabled?: boolean; active?: boolean; pressed?: boolean; onClick: () => void }) {
+    return (
+        <button
+            type="button"
+            className={`canvas-node-capsule-button${active || pressed ? " is-active" : ""}`}
+            aria-label={label}
+            aria-pressed={pressed}
+            disabled={disabled}
+            onClick={onClick}
+            title={label}
+        >
+            <span className="canvas-node-capsule-icon">{icon}</span>
+            <span>{label}</span>
+        </button>
+    );
+}
+
+function CapsuleMenuButton({
+    label,
+    icon,
+    disabled,
+    menuItems,
+    menuGroups,
+    onOpen,
+}: {
+    label: string;
+    icon?: ReactNode;
+    disabled?: boolean;
+    menuItems?: CapsuleMenuItem[];
+    menuGroups?: CapsuleMenuGroup[];
+    onOpen?: () => void;
+}) {
+    const [open, setOpen] = useState(false);
+    const toAntdItems = (items: CapsuleMenuItem[]): MenuProps["items"] =>
+        items.map((item) => ({
+            key: item.key,
+            label: item.label,
+            icon: item.icon,
+            disabled: item.disabled,
+            danger: item.danger,
+            onClick: () => {
+                setOpen(false);
+                item.onClick();
+            },
+        }));
+    const items: MenuProps["items"] = menuGroups
+        ? menuGroups
+            .filter((group) => group.items.length > 0)
+            .map((group) => ({ key: group.key, label: group.title, type: "group" as const, children: toAntdItems(group.items) }))
+        : toAntdItems(menuItems ?? []);
+    return (
+        <Dropdown
+            open={open}
+            trigger={["click"]}
+            placement="bottom"
+            autoAdjustOverflow={false}
+            onOpenChange={(nextOpen) => {
+                setOpen(nextOpen);
+                if (nextOpen) onOpen?.();
+            }}
+            menu={{ items }}
+            autoFocus
+            popupRender={(menu) => (
+                <div
+                    className="canvas-node-toolbar-menu"
+                    data-canvas-no-zoom
+                    data-canvas-wheel-scroll
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onWheel={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                >
+                    {menu}
+                </div>
+            )}
+        >
+            <button
+                type="button"
+                className={`canvas-node-capsule-button${open ? " is-active" : ""}`}
+                aria-label={label}
+                aria-expanded={open}
+                aria-haspopup="menu"
+                disabled={disabled}
+            >
+                {icon ? <span className="canvas-node-capsule-icon">{icon}</span> : null}
+                <span>{label}</span>
+                <ChevronDown className="size-3 shrink-0 opacity-55" />
             </button>
         </Dropdown>
     );

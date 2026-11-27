@@ -39,9 +39,9 @@ export function useCanvasPointerSelectionChrome({
     const handleNodeDragEnd = useCallback(
         (nodeId: string) => {
             const chrome = canvasNodeDragEndChrome(nodesRef.current.find((item) => item.id === nodeId));
-            const { setDialogNodeId, setToolbarNodeId } = pageUi.getState();
+            const { setDialogNodeId } = pageUi.getState();
             setDialogNodeId(chrome.dialogNodeId);
-            if (chrome.toolbarNodeId) setToolbarNodeId(chrome.toolbarNodeId);
+            // 拖完不自动开胶囊：胶囊只由节点右边缘的“＋”打开。
         },
         [pageUi, nodesRef, projectId],
     );
@@ -104,17 +104,17 @@ export function useCanvasNodeToolbarHover({
         (nodeId: string) => {
             if (nodeDraggingRef.current) return;
             pageUi.getState().setHoveredNodeId(nodeId);
-            keepNodeToolbar(nodeId);
+            // 悬停只亮“＋”触发点，不开胶囊；胶囊只由点“＋”打开。
         },
-        [pageUi, keepNodeToolbar, nodeDraggingRef],
+        [pageUi, nodeDraggingRef],
     );
 
     const handleCanvasNodeHoverEnd = useCallback(
         (nodeId: string) => {
             pageUi.getState().setHoveredNodeId((current) => (current === nodeId ? null : current));
-            hideNodeToolbar();
+            // 移开也不关胶囊：胶囊只由点条外、× 或 Esc 收起。
         },
-        [pageUi, hideNodeToolbar, projectId],
+        [pageUi, projectId],
     );
 
     return {

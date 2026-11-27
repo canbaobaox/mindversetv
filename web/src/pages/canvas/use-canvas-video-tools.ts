@@ -579,7 +579,8 @@ export function useCanvasVideoTools({
     }, [beginMediaOperation, pageUi, projectId, connectionsRef, message, nodesRef, persistMediaNodes, selectedNodeIdsRef, setConnections, setNodes, startUploadStatus]);
 
     // 视频节点工具栏的三个快捷取帧动作直接执行，不再打开批量选帧弹窗。
-    const extractVideoFrameAt = useCallback((node: CanvasNodeData, preset: "current" | "first" | "last" = "current") => {
+    // “首尾帧”一次出两张：首帧 0ms + 尾帧 duration-1ms，走同一条本地 FFmpeg/后端截帧链。
+    const extractVideoFrameAt = useCallback((node: CanvasNodeData, preset: "current" | "first" | "last" | "firstLast" = "current") => {
         if (!node.metadata?.content && !node.metadata?.storageKey) {
             message.warning("视频节点为空，无法进行关键帧截取");
             return;
@@ -587,6 +588,12 @@ export function useCanvasVideoTools({
         const video = document.querySelector<HTMLVideoElement>(`[data-node-id="${CSS.escape(node.id)}"] video`);
         const durationMs = resolveCanvasVideoDurationMs(node.metadata?.durationMs, video?.duration);
         const currentMs = video && Number.isFinite(video.currentTime) ? Math.round(video.currentTime * 1000) : 0;
+        if (preset === "firstLast") {
+            pageUi.getState().setHoveredNodeId(null);
+            pageUi.getState().setToolbarNodeId(null);
+            void extractVideoFrames(node, { timesMs: [0, Math.max(0, durationMs - 1)] });
+            return;
+        }
         const timeMs = resolveVideoFramePresetTimeMs(preset, durationMs, currentMs);
         pageUi.getState().setHoveredNodeId(null);
         pageUi.getState().setToolbarNodeId(null);

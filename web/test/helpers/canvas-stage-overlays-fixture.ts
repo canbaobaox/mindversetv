@@ -9,6 +9,7 @@ export type OverlayStageFixtureOverrides = {
     lightingNode?: CanvasNodeData | null;
     emotionNode?: CanvasNodeData | null;
     toolbarNode?: CanvasNodeData | null;
+    capsuleNodeId?: string | null;
     selectedNodeIds?: Set<string>;
     selectedNodeBounds?: { count: number; x: number; y: number; width: number; height: number } | null;
     maskEditNodeId?: string | null;
@@ -37,6 +38,8 @@ export function createCanvasStageOverlayProps(overrides: OverlayStageFixtureOver
     const state = {
         selectedNodeIds: overrides.selectedNodeIds ?? new Set<string>(),
         nodeImageSettingsOpen: overrides.nodeImageSettingsOpen ?? false,
+        // 一期换皮：图片/视频胶囊只由 toolbarNodeId（点“＋”时写）打开。
+        toolbarNodeId: overrides.capsuleNodeId ?? null,
         setDialogNodeId: overrides.setDialogNodeId ?? noop,
     };
     const pageUi = ((selector: (s: typeof state) => unknown) => selector(state)) as unknown as CanvasProjectStageOverlaysProps["pageUi"];
@@ -112,6 +115,7 @@ export function createCanvasStageOverlayProps(overrides: OverlayStageFixtureOver
                 mergeVideoProgress: null,
                 openInlineVideoTrim: noop,
                 openPanoramaConfig: noop,
+                createPanoramaViewerDirect: noop,
                 openPortraitTextureEditor: noop,
                 openVideoCrop: noop,
                 openVideoSubtitleErase: noop,

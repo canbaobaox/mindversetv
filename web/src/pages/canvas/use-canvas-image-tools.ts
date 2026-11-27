@@ -480,9 +480,9 @@ export function useCanvasImageTools({
         }
     }, [beginMediaOperation, pageUi, projectId, persistMediaNodes, setConnections, setNodes]);
 
-    const generateAngleNode = useCallback(async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
+    const generateAngleNode = useCallback(async (node: CanvasNodeData, params: CanvasImageAngleParams, prompt?: string) => {
         return generateImageEditNode(node, {
-            prompt: buildAnglePrompt(params),
+            prompt: prompt?.trim() ? prompt.trim() : buildAnglePrompt(params),
             title: buildAngleLabel(params),
             generationConfig: { count: "1" },
             onAccepted: () => setAngleNodeId(null),

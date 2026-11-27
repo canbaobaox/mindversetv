@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Slider } from "antd";
+import { Slider, Switch } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { motion, useReducedMotion } from "motion/react";
 import { Camera, RotateCcw, Send, X } from "lucide-react";
@@ -7,6 +7,7 @@ import { Camera, RotateCcw, Send, X } from "lucide-react";
 import { CanvasAngleScene } from "@/components/canvas/canvas-angle-scene";
 import { SpotlightSurface } from "@/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@/lib/aceternity-motion";
+import { buildAnglePrompt } from "@/lib/canvas/canvas-project-domain";
 import { canvasThemes } from "@/lib/canvas-theme";
 import {
     isProtectedResourceFileUrl,
@@ -25,7 +26,7 @@ export type CanvasImageAngleParams = {
     wideAngle: boolean;
 };
 
-type AnglePresetId = "front" | "left" | "right" | "back" | "top" | "bottom";
+type AnglePresetId = "front" | "left" | "right" | "back" | "top" | "bottom" | "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
 
 const defaultParams: CanvasImageAngleParams = { horizontalAngle: 45, pitchAngle: 0, cameraDistance: 4.8, wideAngle: false };
 const presets: Array<{ id: AnglePresetId; label: string; horizontalAngle: number; pitchAngle: number }> = [
@@ -35,6 +36,11 @@ const presets: Array<{ id: AnglePresetId; label: string; horizontalAngle: number
     { id: "back", label: "背面", horizontalAngle: 180, pitchAngle: 0 },
     { id: "top", label: "俯拍", horizontalAngle: 0, pitchAngle: 60 },
     { id: "bottom", label: "仰拍", horizontalAngle: 0, pitchAngle: -60 },
+    // 斜角预设与正交预设拼成 3×3 九宫格机位：行是俯拍/水平/仰拍，列是左侧/正面/右侧。
+    { id: "topLeft", label: "左上", horizontalAngle: -90, pitchAngle: 60 },
+    { id: "topRight", label: "右上", horizontalAngle: 90, pitchAngle: 60 },
+    { id: "bottomLeft", label: "左下", horizontalAngle: -90, pitchAngle: -60 },
+    { id: "bottomRight", label: "右下", horizontalAngle: 90, pitchAngle: -60 },
 ];
 
 function distanceLabel(value: number) {
@@ -65,12 +71,15 @@ export function CanvasNodeAnglePanel({
     dataUrl: string;
     storageKey?: string;
     onClose: () => void;
-    onConfirm: (params: CanvasImageAngleParams) => void;
+    onConfirm: (params: CanvasImageAngleParams, prompt?: string) => void;
 }) {
     const theme = canvasThemes[useActiveTheme()];
     const reducedMotion = useReducedMotion();
     const [params, setParams] = useState(defaultParams);
     const [mode, setMode] = useState<"camera" | "skybox">("camera");
+    // “提示词”开关默认关；打开后显示自动拼出的提示词，可直接改，改完以改过的为准。
+    const [showPrompt, setShowPrompt] = useState(false);
+    const [promptDraft, setPromptDraft] = useState<string | null>(null);
     const storageKey = ownedResourceStorageKey(rawStorageKey, dataUrl);
     const safeFallback = isProtectedResourceFileUrl(dataUrl) ? "" : dataUrl;
     const [resolvedSrc, setResolvedSrc] = useState(() => initialAnglePreviewSrc(storageKey, safeFallback));
@@ -190,7 +199,7 @@ export function CanvasNodeAnglePanel({
                 <div className="flex min-w-0 flex-col justify-center gap-2 rounded-[var(--r-lg)] border px-2.5 py-2" style={{ background: theme.toolbar.itemHover, borderColor: theme.toolbar.border }}>
                     <AngleSeg value={mode} options={[{ label: "天空盒", value: "skybox" }, { label: "摄像头", value: "camera" }]} onChange={(value) => setMode(value as "camera" | "skybox")} />
                     <span className="text-[var(--fs-tiny)] font-medium opacity-70">常用角度</span>
-                    <div className="grid grid-cols-2 gap-1.5">
+                    <div className="grid grid-cols-3 gap-1.5">
                         {presets.map((preset) => (
                             <button
                                 key={preset.id}
@@ -210,6 +219,23 @@ export function CanvasNodeAnglePanel({
                         <span className="text-[var(--fs-tiny)] font-medium opacity-60">镜头</span>
                         <AngleSeg value={params.wideAngle ? "wide" : "standard"} options={[{ label: "标准", value: "standard" }, { label: "广角", value: "wide" }]} onChange={(value) => update("wideAngle", value === "wide")} />
                     </div>
+                    <div className="grid h-8 grid-cols-[62px_minmax(0,1fr)] items-center gap-2">
+                        <span className="text-[var(--fs-tiny)] font-medium opacity-60">提示词</span>
+                        <span className="flex items-center gap-2">
+                            <Switch size="small" checked={showPrompt} aria-label="显示并编辑角度提示词" onChange={(value) => { setShowPrompt(value); if (value) setPromptDraft(null); }} />
+                            <span className="text-[var(--fs-tiny)] opacity-60">{showPrompt ? "可查看、修改自动拼出的提示词" : "默认自动拼出"}</span>
+                        </span>
+                    </div>
+                    {showPrompt ? (
+                        <textarea
+                            aria-label="角度提示词"
+                            rows={3}
+                            className="w-full resize-none rounded-[var(--r-md)] border px-2 py-1.5 text-[var(--fs-tiny)] leading-5"
+                            style={{ borderColor: theme.toolbar.border, background: theme.toolbar.itemHover, color: theme.node.text }}
+                            value={promptDraft ?? buildAnglePrompt(params)}
+                            onChange={(event) => setPromptDraft(event.target.value)}
+                        />
+                    ) : null}
                 </div>
             </div>
             <div className="flex h-11 items-center gap-2 border-t px-3" style={{ borderColor: theme.toolbar.border }}>
@@ -218,7 +244,7 @@ export function CanvasNodeAnglePanel({
                 <span className="text-[var(--fs-tiny)] opacity-60">{params.horizontalAngle}° / {params.pitchAngle}° · {params.cameraDistance.toFixed(1)} {distanceLabel(params.cameraDistance)}</span>
                 <span className="flex-1" />
                 <button type="button" className="flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-2 text-[var(--fs-label)] font-medium transition hover:bg-black/5 dark:hover:bg-white/10" onClick={() => setParams(defaultParams)}><RotateCcw className="size-3.5" />重置</button>
-                <motion.button type="button" whileHover={reducedMotion ? undefined : { y: -1 }} whileTap={reducedMotion ? undefined : { scale: 0.97 }} className="canvas-angle-generate flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-3 text-[var(--fs-label)] font-semibold" style={{ background: theme.node.activeStroke, color: theme.node.panel }} onClick={() => onConfirm(params)}><Send className="size-3.5" />生成新角度</motion.button>
+                <motion.button type="button" whileHover={reducedMotion ? undefined : { y: -1 }} whileTap={reducedMotion ? undefined : { scale: 0.97 }} className="canvas-angle-generate flex h-8 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-3 text-[var(--fs-label)] font-semibold" style={{ background: theme.node.activeStroke, color: theme.node.panel }} onClick={() => onConfirm(params, showPrompt ? (promptDraft ?? buildAnglePrompt(params)) : undefined)}><Send className="size-3.5" />生成新角度</motion.button>
             </div>
         </SpotlightSurface>
     );

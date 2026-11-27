@@ -522,6 +522,11 @@ export function useCanvasMediaTools({
         message.success(config.sourceMode === "image" ? "已创建全景查看节点" : "已创建全景生成节点");
     }, [pageUi, projectId, message, setConnections, setNodes]);
 
+    // 浮条“生成 720° 全景图”直接建节点：球形 2:1、当前图为源，不弹配置窗。
+    const createPanoramaViewerDirect = useCallback((node: CanvasNodeData) => {
+        createPanoramaViewerWithConfig(node, "", { projection: "spherical", sourceMode: "image", referenceImages: [], directImageUrl: null, smartBase: true });
+    }, [createPanoramaViewerWithConfig]);
+
     const addPanoramaCaptureNode = useCallback(async (node: CanvasNodeData, dataUrl: string, title: string) => {
         const operation = beginMediaOperation();
         if (!operation.isCurrent()) return;
@@ -651,6 +656,7 @@ export function useCanvasMediaTools({
         setSubtitleEraseNodeId,
         openPanoramaConfig,
         createPanoramaViewerWithConfig,
+        createPanoramaViewerDirect,
         addPanoramaCaptureNode,
         panoramaConfigNodeId,
         setPanoramaConfigNodeId,

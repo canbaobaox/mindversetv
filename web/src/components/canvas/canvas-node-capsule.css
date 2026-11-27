@@ -1,0 +1,122 @@
+/* 节点胶囊浮条（一期换皮）：深灰半透明圆角胶囊 + 白字白图标。
+   颜色是按梦由心生 S2 画布实测定的固定深色浮条，深浅主题下同一套，
+   不跟随主题 token 走——这是有意为之，不是散写字面颜色。 */
+.canvas-node-capsule {
+    display: flex;
+    height: 40px;
+    max-width: 100%;
+    align-items: center;
+    gap: 2px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(28, 28, 32, 0.88);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    color: #fff;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+
+.canvas-node-capsule-button {
+    display: inline-flex;
+    height: 32px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    outline: none;
+}
+
+.canvas-node-capsule-button:hover:not(:disabled),
+.canvas-node-capsule-button.is-active {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.canvas-node-capsule-button:focus-visible {
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.7);
+}
+
+.canvas-node-capsule-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.canvas-node-capsule-button .canvas-node-capsule-icon {
+    display: grid;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    place-items: center;
+}
+
+.canvas-node-capsule-separator {
+    width: 1px;
+    height: 20px;
+    flex-shrink: 0;
+    margin: 0 4px;
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.canvas-node-capsule-close {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-node-capsule-close:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.canvas-node-capsule-close:focus-visible {
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.7);
+}
+
+/* 节点右边缘中点的青色实心“＋”触发点：直径 20px，白“＋”，
+   悬停或点选节点时可见，点后发光呈激活态。 */
+.canvas-node-plus-trigger {
+    position: absolute;
+    z-index: var(--z-node-toolbar);
+    display: grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: #22d3ee;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    color: #fff;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-node-plus-trigger:hover {
+    background: #06b6d4;
+}
+
+.canvas-node-plus-trigger:focus-visible {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 4px rgba(34, 211, 238, 0.7);
+}
+
+.canvas-node-plus-trigger.is-active {
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.35), 0 0 12px rgba(34, 211, 238, 0.8);
+}

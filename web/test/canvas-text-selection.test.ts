@@ -84,6 +84,8 @@ describe("text node selection (#429)", () => {
                 createCanvasStageOverlayProps({
                     dialogNode: resolvePromptDialogNode(result),
                     toolbarNode: result,
+                    nodes: [result],
+                    capsuleNodeId: result.id,
                 }),
             ),
         );

@@ -16,7 +16,8 @@ export type ToolbarTool = {
 };
 
 // Conservative horizontal footprint (including 20px outer margin) for the core
-// video dock items (AI超分 + 关键帧截取 + 视频二创 + 视频处理 + 视频后期 + 视频设置 + 3 utility icons).
+// video dock items (关键帧截取 + 视频二创 + 视频处理 + 视频后期 + 视频设置 + 3 utility icons).
+// 旧 dock 已换成胶囊条；本函数仍供更多菜单分组与既有测试复用。
 export const VIDEO_TOOLBAR_BASE_WIDTH = 796;
 const DRAFT_TO_FINAL_BUTTON_WIDTH = 112;
 
@@ -42,7 +43,7 @@ const VIDEO_PROCESSING_IDS = [
     "extractAudio",
     "subtitleErase",
     "watermarkErase",
-    "privacyProtect",
+    // 隐私打码随旧工具栏一起下线：本地暂不支持，点了也用不了，不再进浮条/更多。
     "depthCapture",
 ];
 const VIDEO_POST_PRODUCTION_IDS = ["subtitles", "timeline"];

@@ -9,6 +9,7 @@ import { CanvasNodeActionContext } from "@/components/canvas/canvas-node-action-
 import { CanvasNodeGraphContext } from "@/components/canvas/canvas-node-graph-context";
 import { UpscaleNodePanel } from "@/components/canvas/nodes/upscale-node";
 import { CanvasNodeToolbar } from "@/components/canvas/canvas-node-toolbar";
+import { CanvasNodePlusTrigger } from "@/components/canvas/canvas-node-plus-trigger";
 
 const CanvasNodeLightingPanel = lazy(() =>
     import("@/components/canvas/canvas-node-lighting-dialog").then((module) => ({ default: module.CanvasNodeLightingPanel })),
@@ -78,6 +79,8 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
     const { fitCanvasContent, handleViewportChange, previewViewport, setZoomScale } = viewportController;
     const { nodes } = document;
     const selectedNodeIds = pageUi((state) => state.selectedNodeIds);
+    const hoveredNodeId = pageUi((state) => state.hoveredNodeId);
+    const capsuleNodeId = pageUi((state) => state.toolbarNodeId);
     const nodeImageSettingsOpen = pageUi((state) => state.nodeImageSettingsOpen);
     const setDialogNodeId = pageUi((state) => state.setDialogNodeId);
     const pickTargetId = useCanvasPickConnectStore((state) => state.pickConnectTargetNodeId);
@@ -101,7 +104,6 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
     } = dialogs;
     const {
         mediaTools,
-        createUpscaleProcessingNode,
         setAngleNodeId,
         setLightingNodeId,
         setEmotionNodeId,
@@ -173,6 +175,7 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
         openInlineVideoTrim,
         openInlineVideoRetake,
         openPanoramaConfig,
+        createPanoramaViewerDirect,
         openPortraitTextureEditor,
         openVideoCrop,
         segmentRunningMode,
@@ -193,6 +196,25 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
     const { renderCanvasNodePanel, retryCanvasNode } = actions;
     const isUpscalePanel = dialogNode?.type === CanvasNodeType.Upscale;
 
+    // 一期换皮：图片/视频节点不再随选中出整条 dock，只由右边缘“＋”开胶囊。
+    // 胶囊开给谁由 toolbarNodeId（点“＋”时写）决定；其余节点仍按选中出旧 dock。
+    const capsuleChromeHidden = isMediaGenerating || isCanvasNodeMoving || nodeImageSettingsOpen || annotationNodeId || maskEditNodeId || emotionNodeId || angleNodeId || (dialogNode && !isCanvasMediaResultNode(dialogNode)) || textEditorNodeId || inlineVideoEditor?.mode === "retake";
+    const hoveredNode = hoveredNodeId ? nodes.find((item) => item.id === hoveredNodeId) ?? null : null;
+    const capsuleNode = capsuleNodeId ? nodes.find((item) => item.id === capsuleNodeId) ?? null : null;
+    const toolbarNodeForBar = capsuleChromeHidden
+        ? null
+        : toolbarNode && (toolbarNode.type === CanvasNodeType.Image || toolbarNode.type === CanvasNodeType.Video)
+          ? capsuleNode
+          : toolbarNode;
+    const plusCandidate = hoveredNode ?? toolbarNode;
+    const plusNode = !capsuleChromeHidden
+        && plusCandidate
+        && (plusCandidate.type === CanvasNodeType.Image || plusCandidate.type === CanvasNodeType.Video)
+        && Boolean(plusCandidate.metadata?.content || plusCandidate.metadata?.storageKey)
+        && !isCanvasNodeGenerating(plusCandidate)
+        ? plusCandidate
+        : null;
+
     return (
         <>
             {angleNode?.metadata?.content || angleNode?.metadata?.storageKey ? (
@@ -210,8 +232,8 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
                         dataUrl={angleNode.metadata?.content || ""}
                         storageKey={angleNode.metadata?.storageKey}
                         onClose={() => setAngleNodeId(null)}
-                        onConfirm={(params) => {
-                            void generateAngleNode(angleNode, params);
+                        onConfirm={(params, prompt) => {
+                            void generateAngleNode(angleNode, params, prompt);
                         }}
                     />
                 </CanvasNodePanelOverlay>
@@ -327,7 +349,7 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
             ) : null}
 
             <CanvasNodeToolbar
-                node={isMediaGenerating || isCanvasNodeMoving || nodeImageSettingsOpen || annotationNodeId || maskEditNodeId || emotionNodeId || angleNodeId || (dialogNode && !isCanvasMediaResultNode(dialogNode)) || textEditorNodeId || inlineVideoEditor?.mode === "retake" ? null : toolbarNode}
+                node={toolbarNodeForBar}
                 workspaceMode={workspaceMode}
                 viewport={viewport}
                 containerRef={containerRef}
@@ -350,13 +372,14 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
                 onSplit={(node, params) => void splitImageNode(node, params)}
                 onLayerSplit={readOnly ? undefined : (node) => void generation.generateImageLayers(node)}
                 onUpscale={(node) => setUpscaleNodeId(node.id)}
-                onSuperResolve={createUpscaleProcessingNode}
                 onDraftToFinal={generation.generateFinalVideoFromDraftNode}
                 onVideoEditOperation={generation.createVideoEditNodeFromVideo}
                 onVideoRetake={!readOnly && toolbarNode?.type === CanvasNodeType.Video && generation.canRetakeVideo(toolbarNode) ? openVideoRetakePanel : undefined}
                 onAngle={(node) => { setDialogNodeId(null); setAngleNodeId((current) => (current === node.id ? null : node.id)); }}
                 onLighting={(node) => { setDialogNodeId(null); setLightingNodeId((current) => (current === node.id ? null : node.id)); }}
-                onPanorama={openPanoramaConfig}
+                onPanorama={createPanoramaViewerDirect}
+                onPanoramaConfig={openPanoramaConfig}
+                onClose={() => pageUi.getState().setToolbarNodeId(null)}
                 onViewImage={(node) => setPreviewNodeId(node.id)}
                 onExtractVideoFrames={extractVideoFrameAt}
                 onExtractAudioFromVideo={(node) => void extractAudioFromVideo(node)}
@@ -375,6 +398,18 @@ export function CanvasProjectStageOverlays(props: CanvasProjectStageOverlaysProp
                 onToggleLocked={(node) => toggleNodeLocked(node.id)}
                 onQuickReference={readOnly ? undefined : (node) => openQuickConnectionMenu(node, "source")}
                 onDelete={(node) => deleteNodes(new Set([node.id]))}
+            />
+
+            <CanvasNodePlusTrigger
+                node={plusNode}
+                viewport={viewport}
+                containerRef={containerRef}
+                active={Boolean(plusNode && capsuleNode?.id === plusNode.id)}
+                onOpen={(node) => {
+                    pageUi.getState().setSelectedNodeIds(new Set([node.id]));
+                    pageUi.getState().setToolbarNodeId(node.id);
+                }}
+                onClose={() => pageUi.getState().setToolbarNodeId(null)}
             />
 
             {isMiniMapOpen && !focusMode ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} canvasContainerRef={containerRef} onViewportPreviewChange={previewViewport} onViewportChange={handleViewportChange} /> : null}

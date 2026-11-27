@@ -71,7 +71,9 @@ describe("canvas node drag overlays", () => {
             for (const [index, metadata] of states.entries()) {
                 toolbars.length = 0;
                 const toolbarNode = makeCanvasNode("media-1", type, metadata);
-                renderToStaticMarkup(createElement(CanvasProjectStageOverlays, createCanvasStageOverlayProps({ toolbarNode })));
+                // 一期换皮：图片/视频胶囊只由“＋”（toolbarNodeId）打开；
+                // 生成中照旧不出浮条，生成完恢复——断言对象仍是同一个节点。
+                renderToStaticMarkup(createElement(CanvasProjectStageOverlays, createCanvasStageOverlayProps({ toolbarNode, nodes: [toolbarNode], capsuleNodeId: toolbarNode.id })));
                 expect(toolbars[0]?.node).toEqual(index < 6 ? null : toolbarNode);
             }
         });
@@ -113,6 +115,8 @@ describe("canvas node drag overlays", () => {
                 CanvasProjectStageOverlays,
                 createCanvasStageOverlayProps({
                     toolbarNode,
+                    nodes: [toolbarNode],
+                    capsuleNodeId: toolbarNode.id,
                     isCanvasNodeMoving: false,
                 }),
             ),

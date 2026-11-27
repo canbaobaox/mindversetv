@@ -30,7 +30,7 @@ export function CanvasGridSplitPicker({ onPick }: { onPick: (params: ImageSplitP
             className="canvas-grid-split-picker"
             data-canvas-no-zoom
             role="dialog"
-            aria-label="宫格切分"
+            aria-label="宫格拆分"
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}

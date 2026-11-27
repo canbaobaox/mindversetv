@@ -145,7 +145,7 @@ const imageToolDefinitions: ImageToolDefinition[] = [
     {
         id: "split",
         workflow: { operationId: "image.split", outputType: "image" },
-        label: "宫格切分",
+        label: "宫格拆分",
         section: "拆分与标记",
         description: "按行列拆成多个图片节点",
         icon: () => <Grid2x2 className="size-3.5" />,
