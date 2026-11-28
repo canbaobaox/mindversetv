@@ -269,6 +269,8 @@ export function serviceModelProfile(channel: ModelChannel, item: ChannelModelCat
             protocol: definition?.value,
             authType: definition ? definition.authType : existing?.authType,
             ...("defaultOptions" in presetModel && presetModel.defaultOptions ? { defaultOptions: presetModel.defaultOptions } : {}),
+            // 已存价优先（可能是拉取到的实时价，比手抄价新）；没有才用预置的手抄价。
+            ...(!existing?.pricing && presetModel.pricing ? { pricing: presetModel.pricing } : {}),
             capabilityConfig: existing?.capability === presetModel.capability && existing?.capabilityConfig
                 ? existing.capabilityConfig
                 : presetModel.capabilityConfig as NonNullable<ModelChannel["modelProfiles"]>[number]["capabilityConfig"],
@@ -294,7 +296,7 @@ export function serviceModelProfile(channel: ModelChannel, item: ChannelModelCat
     if (fullvideoFull && capability === "video" && !inherited) proposed = item.supportedEndpointTypes?.includes("full-video") ? "full-video" : undefined;
     const definition = protocols.find((p) => p.value === proposed && p.capability === capability && p.enabled !== false);
     const protocol = definition?.value;
-    return { ...existing, model: item.id, displayName: existing?.displayName || item.displayName, capability, protocol, authType: definition ? definition.authType : existing?.authType, capabilitySource: existing?.capability === capability ? existing.capabilitySource : undefined, capabilityConfig: existing?.capability === capability && existing.capabilityConfig ? existing.capabilityConfig : (capability === "image" || capability === "video") && protocol ? defaultModelCapabilityConfig(protocol, item.id, protocols) : undefined };
+    return { ...existing, model: item.id, displayName: existing?.displayName || item.displayName, capability, protocol, authType: definition ? definition.authType : existing?.authType, capabilitySource: existing?.capability === capability ? existing.capabilitySource : undefined, capabilityConfig: existing?.capability === capability && existing.capabilityConfig ? existing.capabilityConfig : (capability === "image" || capability === "video") && protocol ? defaultModelCapabilityConfig(protocol, item.id, protocols) : undefined, ...(item.pricing ? { pricing: item.pricing } : {}) };
 }
 
 export function channelAllowsEmptyAPIKey(channel: Pick<ModelChannel, "models" | "modelProfiles" | "interfaceType">, protocols?: ModelProtocolDefinition[]) {

@@ -84,6 +84,129 @@ const IMAGE_CAPABILITY_CONFIG = {
   },
 };
 
+// 在通用生图配置上改几个字段，拼出单个模型的生图能力。只改 ImageCapabilityConfig
+// 里本来就有的表达位，不新造字段。
+function myxsaiImageCapability({ size, quality, transparentBackground, outputFormat, maxOutputs, maxImages }) {
+  const config = structuredClone(IMAGE_CAPABILITY_CONFIG);
+  if (size) config.image.size = { ...config.image.size, ...size };
+  if (quality) config.image.quality = { ...config.image.quality, ...quality };
+  if (transparentBackground) config.image.transparentBackground = { ...config.image.transparentBackground, ...transparentBackground };
+  if (outputFormat) config.image.outputFormat = { ...config.image.outputFormat, ...outputFormat };
+  if (maxOutputs !== undefined) config.image.maxOutputs = maxOutputs;
+  if (maxImages !== undefined) config.image.references.maxImages = maxImages;
+  return config;
+}
+
+// 分模型生图能力的版本号：预置表里的生图配置改动时一起递增。宿主
+// modelCapabilityConfigFor 对带 imageCapabilitiesVersion 的 profile 原样采用
+// 其 capabilityConfig，不走 Seedream 分族兜底替换
+// （web/src/lib/model-capabilities.ts:387），所以 5.5 的无透明背景、张数 50、
+// 1K/1.5K/2K 档位等能真正落到面板上；已存 profile 由 upgradeMyxsaiModelProfile
+// 按版本号同步，版本一致才不动。本插件的生图配置都通过宿主的
+// sanitizeServerImageCapability 形状校验（references/size/quality/
+// transparentBackground/responseFormat/outputFormat 齐全），所以宿主的目录合并
+// 也会保留带版本的已存配置（channel-model-catalog.ts 保留分支）。
+export const MYXSAI_IMAGE_CAPABILITIES_VERSION = "myxsai-1";
+
+// 分模型生图能力：数值与选项来自梦由心生模型广场实录（抄录 2026-11-28，
+// 见 docs/interface.md），只填实录里有的；没有实录的模型（doubao-seedream-5-0-pro-260628、
+// kling-v3）不在这张表里，继续用通用配置并在预置旁注明“未验证”。
+// 宿主渲染语义（web/src/lib/image-size-presets.ts、image-settings-panel.tsx）：
+// size.parameter "aspect_ratio" + quality 值能映射 1K/2K/4K 档位时，面板出“分辨率”
+// 档位按钮 + 宽高比网格，单独的“质量”区被隐藏；quality 不支持时面板不出分辨率区，
+// 但也拼不出宽高比预设（比例网格为空，见 interface.md）；transparentBackground
+// supported 才出透明背景开关；maxOutputs > 1 才出张数区。
+const MYXSAI_IMAGE_CAPABILITY_BY_MODEL = {
+  // tt-image-2.5：宽高比 自适应/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/2:1/1:2/21:9/9:21
+  // ＋自定义；分辨率 自适应/1K/2K/4K；画质 自适应/低/中/高/超高/极致；透明背景有
+  // （三档：不要/要/自适应）；张数上限 50。画质档按宿主既有映射写进 quality.values
+  // （low→1K、medium→2K、high→4K）：面板上低/中/高以分辨率档位按钮出现，单独的
+  // 质量区被隐藏；xhigh（超高）/max（极致）没有对应的档位按钮，面板上选不到；
+  // 自适应画质只是 quality 默认值 auto，选过档位后回不去。透明背景站上是三档，
+  // 宿主类型只有 boolean，“自适应”档无法表达，这里只声明 supported:true、default:false，
+  // 面板只出一个开关。allowCustom:true，但画布高级设置面板以 presetsOnly 渲染，
+  // 不出自定义比例输入框，自定义比例在面板上填不了。
+  "tt-image-2.5": myxsaiImageCapability({
+    size: {
+      parameter: "aspect_ratio",
+      values: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "2:1", "1:2", "21:9", "9:21"],
+      default: "auto",
+      allowCustom: true,
+    },
+    quality: { supported: true, values: ["auto", "low", "medium", "high", "xhigh", "max"], default: "auto" },
+    transparentBackground: { supported: true, default: false },
+    maxOutputs: 50,
+  }),
+  // banana-pro：宽高比 自动/1:1/2:3/3:2/3:4/4:3/4:5/5:4/9:16/16:9/21:9（无自定义）；
+  // 分辨率 1K/2K/4K（无自适应）；无画质档、无透明背景、无格式；参考图最多 14 张；
+  // 张数上限 50。站上 Banana 没有画质档，1K/2K/4K 是分辨率档；宿主没有独立的
+  // 分辨率字段，按宿主既有模式（agnes/grok：quality 字段借作分辨率档位）写进
+  // quality.values，面板上显示为“分辨率”区。宽高比有自动，分辨率无自适应（默认 2K）。
+  "banana-pro": myxsaiImageCapability({
+    size: {
+      parameter: "aspect_ratio",
+      values: ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+      default: "auto",
+      allowCustom: false,
+    },
+    quality: { supported: true, values: ["1k", "2k", "4k"], default: "2k" },
+    transparentBackground: { supported: false, default: false },
+    maxOutputs: 50,
+    maxImages: 14,
+  }),
+  // doubao-seedream-5-5-261028：宽高比 自动/1:1/4:3/3:4/16:9/9:16/3:2/2:3/21:9；
+  // 分辨率 1K/1.5K/2K（无 4K、无自适应）；输出格式 JPEG/PNG；无画质档、无透明背景；
+  // 参考图最多 10 张；张数上限 50。
+  // 注意——本配置能真正落到面板上：生图 profile 带 imageCapabilitiesVersion，
+  // 宿主 modelCapabilityConfigFor 原样采用插件配置，不走 Seedream 分族兜底替换
+  // （web/src/lib/model-capabilities.ts:387）。仍有两项表达不进面板：① 宽高比列表
+  // 无处可写，宿主 Seedream 面板用固定的 IMAGE_RATIOS（10 档，含站上没有的
+  // 4:5/5:4）渲染；② 输出格式 JPEG/PNG 写不进配置：ImageCapabilityConfig.outputFormat
+  // 只有 supported，没有值列表。见 interface.md。
+  "doubao-seedream-5-5-261028": myxsaiImageCapability({
+    size: { parameter: "size", values: ["1K", "1.5K", "2K"], default: "2K", allowCustom: true },
+    quality: { supported: false, values: [], default: "auto" },
+    transparentBackground: { supported: false, default: false },
+    outputFormat: { supported: true },
+    maxOutputs: 50,
+    maxImages: 10,
+  }),
+  // qwen-image：宽高比 自动/1:1/2:3/3:2/3:4/4:3/9:16/16:9/21:9；无单独分辨率；
+  // 无画质档、无透明背景、无格式；张数上限 50。无分辨率按现有 profile 语义表达：
+  // quality 不支持，面板不显示分辨率区。但宿主只有“比例×档位”才能拼出宽高比预设，
+  // 无档位时比例网格为空（面板显示“未配置预设尺寸”），宽高比在面板上选不了，
+  // 只能走 size 默认 auto（不发 aspect_ratio）——宿主侧限制，见 interface.md。
+  // 提示词优化开关宿主面板没有对应控件，不接。
+  "qwen-image": myxsaiImageCapability({
+    size: {
+      parameter: "aspect_ratio",
+      values: ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"],
+      default: "auto",
+      allowCustom: false,
+    },
+    quality: { supported: false, values: [], default: "auto" },
+    transparentBackground: { supported: false, default: false },
+    maxOutputs: 50,
+  }),
+  // mj_imagine：宽高比 1:1/16:9/9:16/4:3/3:4/3:2/2:3/4:5/5:4/21:9（无自动、无自定义）；
+  // 参考图最多 4 张；张数上限 50。质量 0.25/0.5/1/2 倍率、风格化、混乱度、Raw 风格：
+  // 宿主面板没有对应控件，且媒体协议 manifest（package.json）根本没有 quality 参数，
+  // 声明 quality.values 也发不出去，故不声明 quality。比例网格同 qwen-image：
+  // 无档位时面板比例网格为空。
+  "mj_imagine": myxsaiImageCapability({
+    size: {
+      parameter: "aspect_ratio",
+      values: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9"],
+      default: "1:1",
+      allowCustom: false,
+    },
+    quality: { supported: false, values: [], default: "auto" },
+    transparentBackground: { supported: false, default: false },
+    maxOutputs: 50,
+    maxImages: 4,
+  }),
+};
+
 const VIDEO_CAPABILITY_CONFIG = {
   version: 1,
   video: {
@@ -112,6 +235,14 @@ const VIDEO_CAPABILITY_CONFIG = {
 const SEEDANCE_VIDEO_CAPABILITY_CONFIG = structuredClone(VIDEO_CAPABILITY_CONFIG);
 SEEDANCE_VIDEO_CAPABILITY_CONFIG.video.operations = [...SEEDANCE_VIDEO_CAPABILITY_CONFIG.video.operations, "extend"];
 
+// 手抄价格：全部来自梦由心生模型广场公开卡片价（“最低……起”的数字原样抄，
+// 不加币种符号、不换算），抄录日期 2026-11-28；形状是 MyxsaiModelPrice
+// { priceMin, priceMax?, outputPriceMin?, billingMode }。站上给不出唯一对应价的
+// 模型（qwen-image、doubao-seedance-2-5-260628、seedance-2.5-guanfang、wan3.0）
+// 不写 pricing，面板显示“价格待确认”，原因见各条目旁与 docs/interface.md。
+// icon 是 lobehub 图标 id（对照 web/node_modules/@lobehub/icons/es/toc.json 现查；
+// toc 里没有的 Wan 不写 icon）。GLM 用 ChatGLM：toc 里没有 GLM 本身，用智谱
+// ChatGLM 产品图标。
 export const MYXSAI_PRESET_MODELS = [
   // ---- 聊天：POST /v1/chat/completions（宿主通用 chat-completion）----
   {
@@ -121,6 +252,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "text",
     protocol: "chat-completion",
     endpoint: "POST /v1/chat/completions",
+    icon: "Doubao",
+    // 价格手抄：梦由心生模型广场，2026-11-28。输入 6.7924，输出 34.1095。
+    pricing: { priceMin: 6.7924, outputPriceMin: 34.1095, billingMode: "按token" },
     capabilityConfig: structuredClone(TEXT_CAPABILITY_CONFIG),
   },
   {
@@ -130,6 +264,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "text",
     protocol: "chat-completion",
     endpoint: "POST /v1/chat/completions",
+    icon: "Kimi",
+    // 价格手抄：梦由心生模型广场，2026-11-28。输入 22.149，输出 110.745。
+    pricing: { priceMin: 22.149, outputPriceMin: 110.745, billingMode: "按token" },
     capabilityConfig: structuredClone(TEXT_CAPABILITY_CONFIG),
   },
   {
@@ -139,6 +276,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "text",
     protocol: "chat-completion",
     endpoint: "POST /v1/chat/completions",
+    icon: "DeepSeek",
+    // 价格手抄：梦由心生模型广场，2026-11-28。输入 1.9004，输出 5.7012。
+    pricing: { priceMin: 1.9004, outputPriceMin: 5.7012, billingMode: "按token" },
     capabilityConfig: structuredClone(TEXT_CAPABILITY_CONFIG),
   },
   {
@@ -148,6 +288,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "text",
     protocol: "chat-completion",
     endpoint: "POST /v1/chat/completions",
+    icon: "Qwen",
+    // 价格手抄：梦由心生模型广场，2026-11-28。输入 10.1191，输出 30.2437。
+    pricing: { priceMin: 10.1191, outputPriceMin: 30.2437, billingMode: "按token" },
     capabilityConfig: structuredClone(TEXT_CAPABILITY_CONFIG),
   },
   {
@@ -157,6 +300,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "text",
     protocol: "chat-completion",
     endpoint: "POST /v1/chat/completions",
+    icon: "ChatGLM",
+    // 价格手抄：梦由心生模型广场，2026-11-28。输入 1.9491，输出 6.8219。
+    pricing: { priceMin: 1.9491, outputPriceMin: 6.8219, billingMode: "按token" },
     capabilityConfig: structuredClone(TEXT_CAPABILITY_CONFIG),
   },
   {
@@ -166,6 +312,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "text",
     protocol: "chat-completion",
     endpoint: "POST /v1/chat/completions",
+    icon: "Minimax",
+    // 价格手抄：梦由心生模型广场，2026-11-28。输入 1.4766，输出 5.9064。
+    pricing: { priceMin: 1.4766, outputPriceMin: 5.9064, billingMode: "按token" },
     capabilityConfig: structuredClone(TEXT_CAPABILITY_CONFIG),
   },
   // ---- 生图：媒体协议 POST /v1/media/generate ----
@@ -176,7 +325,10 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "image",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
-    capabilityConfig: structuredClone(IMAGE_CAPABILITY_CONFIG),
+    icon: "Doubao",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.1183/次。
+    pricing: { priceMin: 0.1183, billingMode: "按次" },
+    capabilityConfig: structuredClone(MYXSAI_IMAGE_CAPABILITY_BY_MODEL["doubao-seedream-5-5-261028"]),
   },
   {
     model: "banana-pro",
@@ -185,7 +337,10 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "image",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
-    capabilityConfig: structuredClone(IMAGE_CAPABILITY_CONFIG),
+    icon: "NanoBanana",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.0812/次。
+    pricing: { priceMin: 0.0812, billingMode: "按次" },
+    capabilityConfig: structuredClone(MYXSAI_IMAGE_CAPABILITY_BY_MODEL["banana-pro"]),
   },
   {
     model: "qwen-image",
@@ -194,7 +349,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "image",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
-    capabilityConfig: structuredClone(IMAGE_CAPABILITY_CONFIG),
+    icon: "Qwen",
+    // 无价格：站上暂无法显示价格，不编。
+    capabilityConfig: structuredClone(MYXSAI_IMAGE_CAPABILITY_BY_MODEL["qwen-image"]),
   },
   {
     model: "doubao-seedream-5-0-pro-260628",
@@ -203,6 +360,10 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "image",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Doubao",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.2658/次。
+    pricing: { priceMin: 0.2658, billingMode: "按次" },
+    // 生图能力未验证：站上无该模型实录，继续用通用配置（带版本，宿主原样采用）。
     capabilityConfig: structuredClone(IMAGE_CAPABILITY_CONFIG),
   },
   {
@@ -212,7 +373,10 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "image",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
-    capabilityConfig: structuredClone(IMAGE_CAPABILITY_CONFIG),
+    icon: "Midjourney",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.4134/次。
+    pricing: { priceMin: 0.4134, billingMode: "按次" },
+    capabilityConfig: structuredClone(MYXSAI_IMAGE_CAPABILITY_BY_MODEL["mj_imagine"]),
   },
   {
     model: "kling-v3",
@@ -221,6 +385,13 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "image",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Kling",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.1772/次。
+    pricing: { priceMin: 0.1772, billingMode: "按次" },
+    // 分类核对（2026-11-28）：站上把“可灵-V3”列在图片类（0.1772/次），视频类
+    // 另有不同条目“可灵-V3-video”；应用内预置的模型 ID 就是 kling-v3，对应站上
+    // 图片类的那条，所以 capability 保持 "image"，不要改成 video。
+    // 生图能力未验证：站上无该模型实录，继续用通用配置。
     capabilityConfig: structuredClone(IMAGE_CAPABILITY_CONFIG),
   },
   // ---- 生视频：媒体协议 POST /v1/media/generate ----
@@ -231,6 +402,8 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Doubao",
+    // 无价格：站上 Seedance 2.5 各变体价格不同，无法确定对应哪张卡，不编。
     capabilityConfig: structuredClone(SEEDANCE_VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -240,6 +413,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Kling",
+    // 价格手抄：梦由心生模型广场，2026-11-28。1.1628/秒。
+    pricing: { priceMin: 1.1628, billingMode: "按秒" },
     capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -249,6 +425,10 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Hailuo",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.0487/秒。站上海螺 H3 非 Max
+    // 非升 2K 的各模式均为 0.0487/秒。
+    pricing: { priceMin: 0.0487, billingMode: "按秒" },
     capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -258,6 +438,8 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Doubao",
+    // 无价格：站上 Seedance 2.5 各变体价格不同，无法确定对应哪张卡，不编。
     capabilityConfig: structuredClone(SEEDANCE_VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -267,6 +449,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Kling",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.7309/秒。
+    pricing: { priceMin: 0.7309, billingMode: "按秒" },
     capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -276,6 +461,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Hailuo",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.0487/秒。
+    pricing: { priceMin: 0.0487, billingMode: "按秒" },
     capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -285,6 +473,9 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    icon: "Vidu",
+    // 价格手抄：梦由心生模型广场，2026-11-28。0.2284/秒。
+    pricing: { priceMin: 0.2284, billingMode: "按秒" },
     capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
   },
   {
@@ -294,6 +485,8 @@ export const MYXSAI_PRESET_MODELS = [
     capability: "video",
     protocol: MYXSAI_MEDIA_PROTOCOL,
     endpoint: "POST /v1/media/generate",
+    // 无 icon：lobehub toc 里没有 Wan，不写 icon，宿主侧无图标时显示默认占位图标。
+    // 无价格：站上“万相 3.0”0.1705/秒与“万相3.0 文生视频”0.443/秒，无法确定对应哪条，不编。
     capabilityConfig: structuredClone(VIDEO_CAPABILITY_CONFIG),
   },
   // 注意：音频没有已验证的模型 ID，静态预置里故意不放音频模型。
@@ -327,16 +520,11 @@ export function upgradeMyxsaiModelProfile(profile, channel, presetModels = MYXSA
   if (!profile || typeof profile !== "object") return profile;
   const isMyxsaiProtocol = String(profile.protocol || "").startsWith("myxsai-");
   if (!isMyxsaiProtocol && !isMyxsaiChannelLike(channel)) return profile;
-  if (
-    (typeof profile.imageCapabilitiesVersion === "string" && profile.imageCapabilitiesVersion.trim()) ||
-    (typeof profile.videoCapabilitiesVersion === "string" && profile.videoCapabilitiesVersion.trim())
-  ) {
-    return profile;
-  }
   const preset = presetModels.find((item) => item.model === profile.model);
   if (!preset) return profile;
 
   let next = profile;
+
   if (next.protocol !== preset.protocol || next.capability !== preset.capability) {
     next = {
       ...next,
@@ -345,22 +533,40 @@ export function upgradeMyxsaiModelProfile(profile, channel, presetModels = MYXSA
       protocol: preset.protocol,
       authType: "bearer",
     };
-    if (next.capabilitySource !== "user") {
-      return {
-        ...next,
-        capabilityConfig: structuredClone(preset.capabilityConfig),
-      };
-    }
-    return next;
   }
 
-  if (next.capabilitySource !== "user") {
-    if (stableJson(next.capabilityConfig) !== stableJson(preset.capabilityConfig)) {
-      return {
+  // 预置的手抄价只补缺不覆盖：已存价可能是拉取到的实时价（buildChannel 里
+  // 拉取条目优先于预置，见 buildMyxsaiModelChannel），比手抄价新，覆盖就丢了；
+  // 预置无值时也不动。手抄价本身过期后靠重新同步（buildChannel 重建）更新，
+  // 不在这里覆盖。
+  if (!next.pricing && preset.pricing) {
+    next = { ...next, pricing: structuredClone(preset.pricing) };
+  }
+  // 图标以预置为准：预置是可渲染的 lobehub id，拉取到的站方图标字段未验证过、
+  // 宿主不认 URL 形状，留着只会回落到默认图标。
+  if (preset.icon && next.icon !== preset.icon) {
+    next = { ...next, icon: preset.icon };
+  }
+
+  if (next.capabilitySource === "user") return next;
+
+  // 生图能力按版本号同步：带 imageCapabilitiesVersion 的 profile，宿主原样采用
+  // 其 capabilityConfig（不走 Seedream 分族兜底），所以版本号必须跟预置表一起
+  // 走；版本一致且配置相同才不动。旧的“带版本就直接返回”会让已存 profile 永远
+  // 收不到预置改动，这里按版本号比较，不再无条件返回。
+  const presetImageVersion = preset.capability === "image" && preset.capabilityConfig?.image
+    ? MYXSAI_IMAGE_CAPABILITIES_VERSION
+    : undefined;
+  if (presetImageVersion) {
+    if (next.imageCapabilitiesVersion !== presetImageVersion || stableJson(next.capabilityConfig) !== stableJson(preset.capabilityConfig)) {
+      next = {
         ...next,
+        imageCapabilitiesVersion: presetImageVersion,
         capabilityConfig: structuredClone(preset.capabilityConfig),
       };
     }
+  } else if (stableJson(next.capabilityConfig) !== stableJson(preset.capabilityConfig)) {
+    next = { ...next, capabilityConfig: structuredClone(preset.capabilityConfig) };
   }
   return next;
 }
@@ -392,8 +598,16 @@ export function buildMyxsaiModelChannel({
     capability: item.capability,
     protocol: item.protocol,
     authType: "bearer",
+    // 价格与图标字段名与宿主认的名字一致：pricing（宿主 MyxsaiModelPrice 与后端
+    // 目录快照都认 pricing 这个字段名）、icon（宿主 modelProfiles[].icon）。
+    ...(item.icon ? { icon: item.icon } : {}),
+    ...(item.pricing ? { pricing: structuredClone(item.pricing) } : {}),
     ...(item.defaultOptions ? { defaultOptions: item.defaultOptions } : {}),
     ...(item.capabilityConfig ? { capabilityConfig: structuredClone(item.capabilityConfig) } : {}),
+    // 版本化生图配置：宿主对带 imageCapabilitiesVersion 的 profile 原样采用
+    // 其 capabilityConfig（不走 Seedream 分族兜底替换），分模型配置才能真正
+    // 落到面板上；改动预置表时把版本号一起递增，升级靠版本号同步。
+    ...(item.capability === "image" && item.capabilityConfig?.image ? { imageCapabilitiesVersion: MYXSAI_IMAGE_CAPABILITIES_VERSION } : {}),
   }));
 
   const existingCustomModels = Array.isArray(existingChannel?.models)
@@ -428,23 +642,65 @@ const TYPED_MODEL_PROTOCOL = { chat: "chat-completion", image: MYXSAI_MEDIA_PROT
 const TYPED_MODEL_ENDPOINT = { chat: "POST /v1/chat/completions", image: "POST /v1/media/generate", video: "POST /v1/media/generate" };
 const TYPED_MODEL_CAPABILITY_CONFIG = { chat: TEXT_CAPABILITY_CONFIG, image: IMAGE_CAPABILITY_CONFIG, video: VIDEO_CAPABILITY_CONFIG };
 
+// 拉取条目自带的类型字段：任一存在即用它校验。站方字段名未验证过，
+// 依次认 modelType / type / category / model_type；值只认 chat/text、image、
+// video、audio 这组词（大小写不敏感），认不出的值不丢弃、按请求时的 type 走。
+const TYPED_MODEL_TYPE_FIELDS = ["modelType", "type", "category", "model_type"];
+const TYPED_MODEL_TYPE_VALUES = { chat: "chat", text: "chat", image: "image", video: "video", audio: "audio" };
+
+function declaredTypedModelType(entry) {
+  if (!entry || typeof entry !== "object") return undefined;
+  for (const field of TYPED_MODEL_TYPE_FIELDS) {
+    const raw = entry[field];
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    return TYPED_MODEL_TYPE_VALUES[raw.trim().toLowerCase()];
+  }
+  return undefined;
+}
+
+// 拉取到的生图模型按模型 id 查分模型能力表（tt-image-2.5 等只有拉取时才出现，
+// 不在静态预置里）；查不到的继续用通用配置。-token 变体（banana-pro-token、
+// tt-image-2.5-token 等）是站上单独列出的卡片、价格不同、是不同的可调用 ID，
+// 这里不做归一、不合并，各自成行。
+function typedModelCapabilityConfig(type, id) {
+  if (type === "image") {
+    const perModel = MYXSAI_IMAGE_CAPABILITY_BY_MODEL[id];
+    return structuredClone(perModel || IMAGE_CAPABILITY_CONFIG);
+  }
+  const config = TYPED_MODEL_CAPABILITY_CONFIG[type];
+  return config ? structuredClone(config) : undefined;
+}
+
 function normalizeTypedModelEntry(entry, type) {
   const id = typeof entry === "string" ? entry.trim() : String(entry?.id || entry?.model || entry?.name || "").trim();
   if (!id) return null;
   const capability = TYPED_MODEL_CAPABILITY[type];
   if (!capability) return null;
+  // 条目自带类型字段时优先用它校验：与请求时的 type 不一致的丢弃（返回 null）。
+  const declaredType = declaredTypedModelType(entry);
+  if (declaredType && declaredType !== type) return null;
   const displayName = typeof entry === "object" && entry && typeof entry.displayName === "string" && entry.displayName.trim()
     ? entry.displayName.trim()
     : id;
-  const price = extractMyxsaiPrice(entry);
+  const pricing = extractMyxsaiPrice(entry);
+  // 图标：站方 /v1/media/models 是否带图标字段尚未用真 Key 验证过，字段名也未验证，
+  // 依次取 icon / logo / avatar_url，有就保留；没有就不写，宿主侧显示默认占位图标。
+  const icon = typeof entry === "object" && entry
+    ? ["icon", "logo", "avatar_url"]
+        .map((field) => entry[field])
+        .find((value) => typeof value === "string" && value.trim())?.trim()
+    : undefined;
+  const capabilityConfig = typedModelCapabilityConfig(type, id);
   const profile = {
     model: id,
     displayName,
     capability,
-    ...(price ? { price } : {}),
+    ...(pricing ? { pricing } : {}),
+    ...(icon ? { icon } : {}),
     ...(TYPED_MODEL_PROTOCOL[type] ? { protocol: TYPED_MODEL_PROTOCOL[type] } : {}),
     ...(TYPED_MODEL_ENDPOINT[type] ? { endpoint: TYPED_MODEL_ENDPOINT[type] } : {}),
-    ...(TYPED_MODEL_CAPABILITY_CONFIG[type] ? { capabilityConfig: structuredClone(TYPED_MODEL_CAPABILITY_CONFIG[type]) } : {}),
+    ...(capabilityConfig ? { capabilityConfig } : {}),
+    ...(type === "image" && capabilityConfig?.image ? { imageCapabilitiesVersion: MYXSAI_IMAGE_CAPABILITIES_VERSION } : {}),
   };
   return profile;
 }
@@ -454,17 +710,40 @@ function normalizeTypedModelEntry(entry, type) {
 // billing_mode）。数值单位站方未说明，不加币种符号、不换算；接口没给价格
 // （price_available 为 false，或 price_min 不是数字）时返回 null，调用方
 // 显示“价格待确认”。/v1/media/models 是否带这些字段尚未用真 Key 验证过。
+// 发出的字段名统一是 pricing（见 buildMyxsaiModelChannel 与
+// normalizeTypedModelEntry），里面的形状是 MyxsaiModelPrice（驼峰：priceMin /
+// priceMax / outputPriceMin / billingMode）。读入时两种写法都认：站方接口是
+// 下划线，插件自己手抄的 pricing 对象是驼峰。
+function pickFiniteNumber(...candidates) {
+  for (const value of candidates) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function pickOptionalFiniteNumber(...candidates) {
+  const value = pickFiniteNumber(...candidates);
+  return value === null ? undefined : value;
+}
+
+function pickBillingMode(...candidates) {
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 export function extractMyxsaiPrice(entry) {
   const source = entry && typeof entry === "object"
     ? (entry.price && typeof entry.price === "object" ? entry.price : entry.pricing && typeof entry.pricing === "object" ? entry.pricing : entry)
     : null;
   if (!source) return null;
-  if (source.price_available === false) return null;
-  const priceMin = typeof source.price_min === "number" && Number.isFinite(source.price_min) && source.price_min >= 0 ? source.price_min : null;
+  if (source.price_available === false || source.priceAvailable === false) return null;
+  const priceMin = pickFiniteNumber(source.price_min, source.priceMin);
   if (priceMin === null) return null;
-  const priceMax = typeof source.price_max === "number" && Number.isFinite(source.price_max) && source.price_max >= 0 ? source.price_max : undefined;
-  const outputPriceMin = typeof source.output_price_min === "number" && Number.isFinite(source.output_price_min) && source.output_price_min >= 0 ? source.output_price_min : undefined;
-  const billingMode = typeof source.billing_mode === "string" && source.billing_mode.trim() ? source.billing_mode.trim() : undefined;
+  const priceMax = pickOptionalFiniteNumber(source.price_max, source.priceMax);
+  const outputPriceMin = pickOptionalFiniteNumber(source.output_price_min, source.outputPriceMin);
+  const billingMode = pickBillingMode(source.billing_mode, source.billingMode);
   return {
     priceMin,
     ...(priceMax !== undefined ? { priceMax } : {}),

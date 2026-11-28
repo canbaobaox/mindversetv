@@ -6,6 +6,9 @@
 // 数字 + 计费单位，不加币种符号、不换算、不编造。
 // 接口没给价格（price_available 为 false，或 price_min 不是数字）时返回 null，
 // 调用方显示“价格待确认”。
+// 价格有三种写法，都认：① 平铺在记录上的下划线字段（广场公开接口）；
+// ② 嵌在 myxsaiPrice 里的驼峰字段（后端目录快照 PublicChannelModel）；
+// ③ 嵌在 pricing 里的驼峰字段（插件拉取到的目录）。只取价格字段，其余不透传。
 
 export type MyxsaiModelPrice = {
     priceMin: number;
@@ -32,14 +35,25 @@ function formatPriceNumber(value: number): string {
 export function sanitizeMyxsaiModelPrice(value: unknown): MyxsaiModelPrice | null {
     if (!value || typeof value !== "object") return null;
     const record = value as Record<string, unknown>;
-    if (record.price_available === false) return null;
-    const priceMin = toFiniteNumber(record.price_min);
+    // 价格可能嵌在 myxsaiPrice（后端目录快照）或 pricing（插件拉取）里，也可能
+    // 直接平铺在记录上（模型广场公开接口）；三种形状都认，字段名驼峰与下划线
+    // 两种写法都认（驼峰优先，与后端解析一致）。
+    const source = (record.myxsaiPrice && typeof record.myxsaiPrice === "object"
+        ? record.myxsaiPrice
+        : record.pricing && typeof record.pricing === "object"
+          ? record.pricing
+          : record) as Record<string, unknown>;
+    if (source.price_available === false || source.priceAvailable === false) return null;
+    const priceMin = toFiniteNumber(source.priceMin) ?? toFiniteNumber(source.price_min);
     if (priceMin === null) return null;
-    const billingMode = typeof record.billing_mode === "string" && record.billing_mode.trim() ? record.billing_mode.trim() : undefined;
+    const priceMax = toOptionalFiniteNumber(source.priceMax) ?? toOptionalFiniteNumber(source.price_max);
+    const outputPriceMin = toOptionalFiniteNumber(source.outputPriceMin) ?? toOptionalFiniteNumber(source.output_price_min);
+    const billingModeRaw = source.billingMode ?? source.billing_mode;
+    const billingMode = typeof billingModeRaw === "string" && billingModeRaw.trim() ? billingModeRaw.trim() : undefined;
     return {
         priceMin,
-        ...(toOptionalFiniteNumber(record.price_max) !== undefined ? { priceMax: toOptionalFiniteNumber(record.price_max)! } : {}),
-        ...(toOptionalFiniteNumber(record.output_price_min) !== undefined ? { outputPriceMin: toOptionalFiniteNumber(record.output_price_min)! } : {}),
+        ...(priceMax !== undefined ? { priceMax } : {}),
+        ...(outputPriceMin !== undefined ? { outputPriceMin } : {}),
         ...(billingMode ? { billingMode } : {}),
     };
 }

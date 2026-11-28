@@ -35,6 +35,17 @@ test("BytePlus import selects Ark without changing third-party or saved protocol
     expect(serviceModelProfile({ ...channel, modelProfiles: [saved] }, item, protocols)).toEqual(saved);
 });
 
+test("serviceModelProfile 给梦由心生新模型补价：预置取手抄价，目录项取拉取价", () => {
+    const channel = createModelChannel({ id: "myxsai", baseUrl: "https://api.lk888.ai" });
+    // 预置模型 banana-pro：已存 profile 没有价时用预置的手抄价（模型广场，2026-11-28）。
+    expect(serviceModelProfile(channel, { id: "banana-pro" }, protocols)).toMatchObject({ pricing: { priceMin: 0.0812, billingMode: "按次" } });
+    // 已存的实时价优先，不被手抄价覆盖。
+    const saved = { model: "banana-pro", capability: "image" as const, protocol: "myxsai-media" as const, pricing: { priceMin: 0.09, billingMode: "按次" } };
+    expect(serviceModelProfile({ ...channel, modelProfiles: [saved] }, { id: "banana-pro" }, protocols).pricing).toEqual({ priceMin: 0.09, billingMode: "按次" });
+    // 非预置模型 tt-image-2.5：目录项自带的拉取价透传。
+    expect(serviceModelProfile(channel, { id: "tt-image-2.5", pricing: { priceMin: 0.05, billingMode: "按次" } }, protocols)).toMatchObject({ pricing: { priceMin: 0.05, billingMode: "按次" } });
+});
+
 test("persisted boolean video options are normalized without turning false back on", () => {
     const channel = createModelChannel({ id: "custom", models: ["seedance-2.0-mini"], modelProfiles: [{ model: "seedance-2.0-mini", capability: "video", protocol: "newapi" }] });
     for (const enabled of [true, false]) {

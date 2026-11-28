@@ -146,10 +146,11 @@ function createMyxsaiSettingsPanel(host) {
       const staticIds = new Set(MYXSAI_PRESET_MODELS.map((item) => item.model));
       const fetchedById = new Map(fetchedProfiles.map((item) => [item.model, item]));
       return [
-        // 静态预置模型本身不带价格；在线拉取到的同名模型若带价格，把价格并进来。
+        // 静态预置自带手抄价（pricing）；在线拉取到的同名模型若带价格，以在线价覆盖
+        // （拉取端点是否带价格字段尚未用真 Key 验证过）。
         ...MYXSAI_PRESET_MODELS.map((item) => {
           const fetched = fetchedById.get(item.model);
-          return fetched?.price ? { ...item, price: fetched.price } : item;
+          return fetched?.pricing ? { ...item, pricing: fetched.pricing } : item;
         }),
         ...fetchedProfiles.filter((item) => !staticIds.has(item.model)),
       ];
@@ -621,7 +622,7 @@ function createMyxsaiSettingsPanel(host) {
                 h(
                   "div",
                   { style: { fontSize: "11px", marginTop: "2px" } },
-                  formatMyxsaiPrice(item.price) ?? "价格待确认",
+                  formatMyxsaiPrice(item.pricing) ?? "价格待确认",
                 ),
                 isFetched
                   ? h(

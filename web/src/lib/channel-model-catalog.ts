@@ -173,15 +173,15 @@ export function mergeFetchedChannelModelProfiles(channel: ModelChannel, catalog:
         }
         if (existing) {
             if (!catalogVideo && managed && (!item.modelType || item.modelType === "video") && versionedVideoCapability(existing.capabilityConfig?.video, existing.videoCapabilitiesVersion)) {
-                next.push({ ...existing, ...(item.displayName ? { displayName: item.displayName } : {}), videoPricing: sanitizeVideoPriceQuote(item.videoPricing) });
+                next.push({ ...existing, ...(item.displayName ? { displayName: item.displayName } : {}), videoPricing: sanitizeVideoPriceQuote(item.videoPricing), ...(item.pricing ? { pricing: item.pricing } : {}) });
                 continue;
             }
             if (!sourcedImage && (inferredCapability || existing.capability) === "image" && existing.imageCapabilitiesVersion && sanitizeServerImageCapability(existing.capabilityConfig?.image)) {
-                next.push({ ...existing, ...(item.displayName ? { displayName: item.displayName } : {}) });
+                next.push({ ...existing, ...(item.displayName ? { displayName: item.displayName } : {}), ...(item.pricing ? { pricing: item.pricing } : {}) });
                 continue;
             }
             if (sourcedImage) {
-                next.push({ ...existing, model: item.id, capability: "image", protocol: inferredProtocol || existing.protocol || "openai-image", ...(item.displayName ? { displayName: item.displayName } : {}), capabilitySource: undefined, capabilityConfig: { version: 1, image: sourcedImage }, imageCapabilitiesVersion: item.imageCapabilitiesVersion });
+                next.push({ ...existing, model: item.id, capability: "image", protocol: inferredProtocol || existing.protocol || "openai-image", ...(item.displayName ? { displayName: item.displayName } : {}), capabilitySource: undefined, capabilityConfig: { version: 1, image: sourcedImage }, imageCapabilitiesVersion: item.imageCapabilitiesVersion, ...(item.pricing ? { pricing: item.pricing } : {}) });
                 continue;
             }
             const protocol = inferredProtocol || existing.protocol;
@@ -209,6 +209,7 @@ export function mergeFetchedChannelModelProfiles(channel: ModelChannel, catalog:
                 ...existing,
                 ...(existing.imageCapabilitiesVersion !== undefined ? { imageCapabilitiesVersion: "", capabilityConfig: undefined } : {}),
                 ...(item.videoPricing !== undefined || existing.videoPricing !== undefined ? { videoPricing: sanitizeVideoPriceQuote(item.videoPricing) } : {}),
+                ...(item.pricing ? { pricing: item.pricing } : {}),
                 ...(item.displayName ? { displayName: item.displayName } : {}),
                 capability,
                 ...(protocol ? { protocol } : {}),
@@ -233,6 +234,7 @@ export function mergeFetchedChannelModelProfiles(channel: ModelChannel, catalog:
             model: item.id,
             ...(sourcedImage ? { imageCapabilitiesVersion: item.imageCapabilitiesVersion } : {}),
             ...(item.videoPricing !== undefined ? { videoPricing: sanitizeVideoPriceQuote(item.videoPricing) } : {}),
+            ...(item.pricing ? { pricing: item.pricing } : {}),
             ...(item.displayName ? { displayName: item.displayName } : {}),
             capability,
             protocol,
@@ -273,7 +275,13 @@ export function applyFetchedChannelModelCatalog(
             if ((hasServerCapability || isModuleWorkflowRefresh) && (!hasUserModelCapability(previous) || previous.capability !== profile.capability)) {
                 return profile;
             }
-            return profile.videoPricing !== undefined ? { ...previous, videoPricing: profile.videoPricing } : previous;
+            // 已存在模型默认保留旧 profile，但视频价与梦由心生扁平价要跟目录刷新走，
+            // 否则 merge 透传进来的新价格在这里又被旧 profile 盖掉。
+            return {
+                ...previous,
+                ...(profile.pricing !== undefined ? { pricing: profile.pricing } : {}),
+                ...(profile.videoPricing !== undefined ? { videoPricing: profile.videoPricing } : {}),
+            };
         }).concat((channel.modelProfiles || []).filter((profile) => !profiles.some((item) => item.model === profile.model))
             .map((profile) => profile.videoPricing ? { ...profile, videoPricing: null } : profile)),
     };

@@ -726,6 +726,37 @@ describe("public channel model catalog", () => {
         expect(profiles.find((p) => p.model === "custom-vid-pro")?.videoPricing).toEqual(pricing);
     });
 
+    test("mergeFetchedChannelModelProfiles 透传梦由心生扁平价，新模型与已存在模型都不丢 pricing", () => {
+        const price = { priceMin: 0.0812, billingMode: "按次" };
+        const channel = createModelChannel({
+            id: "myxsai",
+            name: "梦由心生AI",
+            baseUrl: "https://api.lk888.ai",
+            apiKey: "fixture",
+            models: ["old-model"],
+            modelProfiles: [{ model: "old-model", capability: "image", protocol: "openai-image", pricing: { priceMin: 0.05, billingMode: "按次" } }],
+        });
+        const merged = mergeFetchedChannelModelProfiles(channel, [
+            { id: "old-model", modelType: "image", pricing: price },
+            { id: "new-model", modelType: "image", pricing: price },
+        ]);
+        expect(merged.find((p) => p.model === "old-model")?.pricing).toEqual(price);
+        expect(merged.find((p) => p.model === "new-model")?.pricing).toEqual(price);
+        // 没有价格的目录项不把旧价格清掉。
+        const kept = mergeFetchedChannelModelProfiles({ ...channel, modelProfiles: merged }, [{ id: "old-model", modelType: "image" }]);
+        expect(kept.find((p) => p.model === "old-model")?.pricing).toEqual(price);
+        // 设置页“更新全部渠道”走 applyFetched：已存在模型的旧 profile 也要跟新价走。
+        const applied = applyFetchedChannelModelCatalog(channel, {
+            models: ["old-model", "new-model"],
+            catalog: [
+                { id: "old-model", modelType: "image", pricing: price },
+                { id: "new-model", modelType: "image", pricing: price },
+            ],
+        });
+        expect(applied.modelProfiles?.find((p) => p.model === "old-model")?.pricing).toEqual(price);
+        expect(applied.modelProfiles?.find((p) => p.model === "new-model")?.pricing).toEqual(price);
+    });
+
     test("hasDeclaredModelCapability 仅把带真实 capabilityConfig 的 user 标记视为用户显式限制", () => {
         const channel = createModelChannel({
             id: "byok-custom",

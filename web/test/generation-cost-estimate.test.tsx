@@ -105,6 +105,21 @@ describe("formatInlineCostEstimate", () => {
             ),
         ).toBeNull();
 
+        // 梦由心生扁平价同样是 Variable 估价：有 label 时节点面板底栏直接显示
+        // 费率（"0.0812/次"），而不是“价格待确认”；Amount 始终为空，不进 CNY 总额。
+        expect(
+            formatInlineCostEstimate({
+                amount: null,
+                label: "0.0812/次",
+                variable: true,
+                basis: "0.0812/次 × 2 张（梦由心生模型广场）",
+                text: "0.0812/次 × 2 张（梦由心生模型广场）",
+            }),
+        ).toEqual({
+            label: "0.0812/次",
+            tooltip: "0.0812/次 × 2 张（梦由心生模型广场）",
+        });
+
         // 无价格时不留空白：显示“价格待确认”，原因放 Tooltip；绝不编数字。
         expect(
             formatInlineCostEstimate({

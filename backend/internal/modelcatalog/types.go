@@ -266,11 +266,24 @@ type PublicChannelModel struct {
 	CapabilityConfig map[string]any             `json:"capabilityConfig,omitempty"`
 	VideoPricing     map[string]any             `json:"videoPricing,omitempty"`
 	// Pricing is the managed channel's published price row; other channels have none.
-	Pricing            *pricing.Table          `json:"pricing,omitempty"`
+	Pricing *pricing.Table `json:"pricing,omitempty"`
+	// MyxsaiPrice is the 梦由心生 flat price (per request / per second / per
+	// token, unit undisclosed by the square): it cannot live in Pricing, whose
+	// Table shape is CNY-only for official channels.
+	MyxsaiPrice        *MyxsaiFlatPrice        `json:"myxsaiPrice,omitempty"`
 	AudioOptions       *AudioGenerationOptions `json:"audioOptions,omitempty"`
 	Available          bool                    `json:"available"`
 	CapabilityDeclared *bool                   `json:"-"`
 	ManagedBeefTV      *bool                   `json:"-"`
+}
+
+// MyxsaiFlatPrice is the narrow allow-listed flat quote for a 梦由心生 model:
+// only the price fields, no currency claim (the square never states the unit).
+type MyxsaiFlatPrice struct {
+	PriceMin       float64  `json:"priceMin"`
+	PriceMax       *float64 `json:"priceMax,omitempty"`
+	OutputPriceMin *float64 `json:"outputPriceMin,omitempty"`
+	BillingMode    string   `json:"billingMode,omitempty"`
 }
 
 type ChannelModelCatalogOption struct {

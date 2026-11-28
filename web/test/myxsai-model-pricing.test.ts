@@ -1,4 +1,6 @@
-// 梦由心生模型价格格式化：只认模型广场公开接口实测过的字段名，不编造价格。
+// 梦由心生模型价格格式化：只认实测过的字段名与形状，不编造价格。
+// 除模型广场公开接口的平铺下划线字段外，也认后端目录快照的 myxsaiPrice
+// 与插件拉取的 pricing 两种驼峰嵌套写法。
 import { expect, test } from "bun:test";
 import { formatMyxsaiModelPrice, sanitizeMyxsaiModelPrice } from "../src/lib/myxsai-model-pricing";
 
@@ -21,4 +23,17 @@ test("formatMyxsaiModelPrice 接口没给价格时返回 null，调用方显示�
 test("sanitizeMyxsaiModelPrice 只保留已验证的价格字段", () => {
     expect(sanitizeMyxsaiModelPrice({ price_min: 0.05, price_max: 0.1, output_price_min: 0.2, price_available: true, billing_mode: "按次", vendor: "x" })).toEqual({ priceMin: 0.05, priceMax: 0.1, outputPriceMin: 0.2, billingMode: "按次" });
     expect(sanitizeMyxsaiModelPrice({ price_min: -1, price_available: true })).toBeNull();
+});
+
+test("sanitizeMyxsaiModelPrice 认后端目录快照的 myxsaiPrice 与插件拉取的 pricing 驼峰写法", () => {
+    // 后端 PublicChannelModel 的 myxsaiPrice 字段（驼峰）。
+    expect(sanitizeMyxsaiModelPrice({ myxsaiPrice: { priceMin: 0.0812, billingMode: "按次" } })).toEqual({ priceMin: 0.0812, billingMode: "按次" });
+    // 插件拉取到的 pricing 对象（驼峰）。
+    expect(sanitizeMyxsaiModelPrice({ pricing: { priceMin: 6.7924, outputPriceMin: 34.1095, billingMode: "按token" } })).toEqual({ priceMin: 6.7924, outputPriceMin: 34.1095, billingMode: "按token" });
+    // 平铺的驼峰字段也认。
+    expect(sanitizeMyxsaiModelPrice({ priceMin: 0.05, billingMode: "按秒" })).toEqual({ priceMin: 0.05, billingMode: "按秒" });
+    // price_available 为 false 时三种形状都返回 null。
+    expect(sanitizeMyxsaiModelPrice({ myxsaiPrice: { priceMin: 0.05, priceAvailable: false } })).toBeNull();
+    expect(sanitizeMyxsaiModelPrice({ pricing: { priceMin: 0.05, priceAvailable: false } })).toBeNull();
+    expect(sanitizeMyxsaiModelPrice({ myxsaiPrice: { priceMin: "0.05" } })).toBeNull();
 });

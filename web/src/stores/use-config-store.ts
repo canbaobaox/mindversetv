@@ -12,6 +12,7 @@ import { normalizeVideoBoolean, normalizeVideoDuration, normalizeVideoResolution
 import { defaultModelCapabilityConfig, upgradeGPTImageCapability, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { useUserStore } from "@/stores/use-user-store";
 import type { VideoPriceQuote } from "@/lib/video-pricing";
+import type { MyxsaiModelPrice } from "@/lib/myxsai-model-pricing";
 import { upgradeBuiltinModelProfile } from "@/lib/builtin-service-presets";
 export { buildApiUrl, isSystemProxyBaseUrl, resolveBackendApiUrl, systemProxyChannelId } from "@/lib/channel-url";
 
@@ -66,6 +67,9 @@ export type ModelChannel = {
         mediaCapabilities?: MediaCapabilities;
         mediaCapabilitiesVersion?: string;
         videoPricing?: VideoPriceQuote | null;
+        // 梦由心生扁平价（模型广场 price_min 等字段原样透传，单位站方未说明，
+        // 不加币种符号）；插件侧把 pricing 字段发进 profile，后端估价走扁平分支。
+        pricing?: MyxsaiModelPrice | null;
         defaultOptions?: Record<string, unknown>;
     }>;
 };

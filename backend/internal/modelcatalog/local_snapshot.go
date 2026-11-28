@@ -2,6 +2,7 @@ package modelcatalog
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
@@ -147,6 +148,68 @@ func (item LocalChannelModel) PublicPrices() (map[string]any, *pricing.Table) {
 	return quote, table
 }
 
+// MyxsaiPrice reads the 梦由心生 flat price out of the profile's raw pricing
+// JSON, allow-listing only the four price fields (priceMin / priceMax /
+// outputPriceMin / billingMode). Either spelling is accepted — camelCase as
+// the plugin emits it, snake_case as the square/catalog path writes it —
+// camelCase wins when both are present. Anything else is never forwarded, and
+// a missing or non-finite-non-negative priceMin yields no price at all.
+func (item LocalChannelModel) MyxsaiPrice() *MyxsaiFlatPrice {
+	if item.ChannelID != "myxsai" || len(item.Pricing) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(item.Pricing, &fields) != nil {
+		return nil
+	}
+	// Per-field tolerant decode: a mistyped optional field is dropped, not
+	// fatal to the whole quote; a mistyped priceMin just falls through to the
+	// other spelling.
+	numberField := func(camel, snake string) *float64 {
+		for _, key := range []string{camel, snake} {
+			raw, ok := fields[key]
+			if !ok {
+				continue
+			}
+			var value float64
+			if json.Unmarshal(raw, &value) != nil {
+				continue
+			}
+			if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+				continue
+			}
+			return &value
+		}
+		return nil
+	}
+	stringField := func(camel, snake string) string {
+		for _, key := range []string{camel, snake} {
+			raw, ok := fields[key]
+			if !ok {
+				continue
+			}
+			var value string
+			if json.Unmarshal(raw, &value) != nil {
+				continue
+			}
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+		return ""
+	}
+	priceMin := numberField("priceMin", "price_min")
+	if priceMin == nil {
+		return nil
+	}
+	return &MyxsaiFlatPrice{
+		PriceMin:       *priceMin,
+		PriceMax:       numberField("priceMax", "price_max"),
+		OutputPriceMin: numberField("outputPriceMin", "output_price_min"),
+		BillingMode:    stringField("billingMode", "billing_mode"),
+	}
+}
+
 // PublicCatalogFromLocalSnapshot projects a desktop provider snapshot into the
 // sanitized public catalog without leaking upstream URLs, headers or keys.
 func PublicCatalogFromLocalSnapshot(body []byte, workflow ...WorkflowLookup) (*CatalogResponse, error) {
@@ -223,6 +286,9 @@ func PublicCatalogFromLocalSnapshot(body []byte, workflow ...WorkflowLookup) (*C
 		public.CapabilityDeclared = &declared
 		public.ManagedBeefTV = &managedBeefTV
 		public.VideoPricing, public.Pricing = item.PublicPrices()
+		// PublicPrices 仍只放行官方渠道的 Table（人民币形状装不下站方单位未说明
+		// 的扁平价）；梦由心生扁平价走这条窄路、只放行价格字段。
+		public.MyxsaiPrice = item.MyxsaiPrice()
 		index, exists := indexes[item.ChannelID]
 		if !exists {
 			index = len(channels)

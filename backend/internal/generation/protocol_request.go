@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -180,11 +181,26 @@ func applyImageResponseFormatOption(request *protocol.GenerationRequest, input I
 	request.ProviderOptions[namespace] = options
 }
 
+// imageTierNamePattern matches resolution tier names ("1K", "1.5K", "2K",
+// "4K", …): a billed tier, not a frame ratio. Most adapters still need the
+// tier to flow through AspectRatio — the Agent Plan Seedream manifest maps
+// body.size from request.aspectRatio with a default passthrough, and the
+// builtin adapter copies AspectRatio onto body.size — so tiers are only
+// omitted for myxsai-media, whose aspect_ratio field rejects them (the site
+// accepts only real ratios there; verified 2026-11-22 for resolution values,
+// 1.5K-aspect_ratio itself is unverified and therefore never sent).
+var imageTierNamePattern = regexp.MustCompile(`(?i)^\d+(\.\d+)?K$`)
+
 // protocolImageAspectRatio keeps the canvas size for protocol AspectRatio unless
 // the capability field is size and the adapter copies that value onto body.size
 // with no ratio table of its own (openai-images).
 func ProtocolImageAspectRatio(input Input) string {
 	raw := strings.TrimSpace(input.Config.Size)
+	// myxsai-media only: a tier name must not reach the site's aspect_ratio
+	// field. Every other adapter keeps the old passthrough behaviour.
+	if strings.TrimSpace(input.Config.InterfaceType) == "myxsai-media" && imageTierNamePattern.MatchString(raw) {
+		return ""
+	}
 	key, value := ImageSizeParameter(input.ImageCapability, input.Config.Size)
 	if key != "size" || value == "" {
 		return raw

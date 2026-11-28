@@ -203,12 +203,64 @@ func estimatePreparedTarget(item preparedEstimateTarget) pricing.Estimate {
 		table = pricing.FromVideoQuote(item.model.VideoPricing)
 	}
 	if table == nil {
+		if flat := item.model.MyxsaiPrice; flat != nil {
+			return estimateMyxsaiFlatPrice(flat, item.request)
+		}
 		if item.channelID != beeftv.ChannelID {
 			return pricing.Unknown("自带 Key 的渠道暂无价格，按该渠道实际计费")
 		}
 		return pricing.Unknown("这个模型暂无价格")
 	}
 	return pricing.Quote(table, item.request)
+}
+
+// estimateMyxsaiFlatPrice quotes a 梦由心生 model from its flat square price.
+// The amount is never filled: the square never states the unit, so the figure
+// must not enter any CNY total. The rate is shown as a Variable label instead.
+func estimateMyxsaiFlatPrice(flat *modelcatalog.MyxsaiFlatPrice, request pricing.Target) pricing.Estimate {
+	const source = "梦由心生模型广场"
+	amount := flatPriceNumber(flat.PriceMin)
+	var label, text string
+	switch strings.TrimSpace(flat.BillingMode) {
+	case "按次":
+		count := max(request.Count, 1)
+		unit := "次"
+		if request.Kind == "image" {
+			unit = "张"
+		}
+		label = amount + "/次"
+		text = label + " × " + strconv.Itoa(count) + " " + unit + "（" + source + "）"
+	case "按秒":
+		label = amount + "/秒"
+		if request.Seconds > 0 {
+			text = label + " × " + strconv.FormatFloat(request.Seconds, 'f', -1, 64) + " 秒（" + source + "）"
+		} else {
+			text = label + "，按实际时长结算（" + source + "）"
+		}
+	case "按token":
+		if flat.OutputPriceMin != nil {
+			label = "输入 " + amount + "/百万 token，输出 " + flatPriceNumber(*flat.OutputPriceMin) + "/百万 token"
+		} else {
+			label = amount + "/百万 token"
+		}
+		text = label + "（" + source + "）"
+	default:
+		label = amount
+		text = label + "（" + source + "）"
+	}
+	return pricing.Estimate{Label: label, Variable: true, Basis: text, Text: text}
+}
+
+// flatPriceNumber matches the frontend formatPriceNumber: at most 4 decimals,
+// trailing zeros stripped, no currency symbol.
+func flatPriceNumber(value float64) string {
+	text := strconv.FormatFloat(value, 'f', 4, 64)
+	text = strings.TrimRight(text, "0")
+	text = strings.TrimRight(text, ".")
+	if text == "" {
+		return "0"
+	}
+	return text
 }
 
 func splitEstimateModelKey(modelKey string) (string, string) {

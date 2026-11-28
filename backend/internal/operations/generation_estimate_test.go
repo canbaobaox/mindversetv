@@ -215,6 +215,51 @@ func TestGenerationEstimatePrefersServerPricingForBeefTVAndKeepsBYOKLocal(t *tes
 	}
 }
 
+func TestGenerationEstimateMyxsaiFlatPrice(t *testing.T) {
+	price := func(min float64, mode string, output *float64) *modelcatalog.MyxsaiFlatPrice {
+		return &modelcatalog.MyxsaiFlatPrice{PriceMin: min, BillingMode: mode, OutputPriceMin: output}
+	}
+	output := 8.0
+	catalog := modelcatalog.NewCatalogResponse(modelcatalog.CatalogSourceSystem, nil, []modelcatalog.PublicChannelCatalog{
+		{ID: "myxsai", Models: []modelcatalog.PublicChannelModel{
+			{ID: "seedream", ModelKey: "doubao-seedream-5-5-261028", Capability: "image", MyxsaiPrice: price(0.0812, "按次", nil)},
+			{ID: "seedance", ModelKey: "doubao-seedance-2-5-260628", Capability: "video", MyxsaiPrice: price(0.1181, "按秒", nil)},
+			{ID: "chat", ModelKey: "deepseek-v4-pro", Capability: "text", MyxsaiPrice: price(2, "按token", &output)},
+			{ID: "bare", ModelKey: "bare-model", Capability: "image", MyxsaiPrice: price(0.1, "", nil)},
+			{ID: "noprice", ModelKey: "noprice-model", Capability: "image"},
+		}},
+	})
+	probe := &estimateProbe{catalog: &catalog}
+	got := EstimateGenerationCost(probe, []EstimateTarget{
+		{ModelKey: "myxsai::doubao-seedream-5-5-261028", Kind: "image", Parameters: map[string]string{"count": "2"}},
+		{ModelKey: "myxsai::doubao-seedance-2-5-260628", Kind: "video", Parameters: map[string]string{"vquality": "720p", "seconds": "5"}},
+		{ModelKey: "myxsai::doubao-seedance-2-5-260628", Kind: "video", Parameters: map[string]string{"vquality": "720p"}},
+		{ModelKey: "myxsai::deepseek-v4-pro", Kind: "text"},
+		{ModelKey: "myxsai::bare-model", Kind: "image"},
+		{ModelKey: "myxsai::noprice-model", Kind: "image"},
+	})
+	want := []struct{ label, text string }{
+		{"0.0812/次", "0.0812/次 × 2 张（梦由心生模型广场）"},
+		{"0.1181/秒", "0.1181/秒 × 5 秒（梦由心生模型广场）"},
+		{"0.1181/秒", "0.1181/秒，按实际时长结算（梦由心生模型广场）"},
+		{"输入 2/百万 token，输出 8/百万 token", "输入 2/百万 token，输出 8/百万 token（梦由心生模型广场）"},
+		{"0.1", "0.1（梦由心生模型广场）"},
+		{"", "自带 Key 的渠道暂无价格，按该渠道实际计费"},
+	}
+	for i, item := range want {
+		estimate := got.Items[i]
+		if estimate.Label != item.label || estimate.Text != item.text {
+			t.Fatalf("item %d: label=%q text=%q, want label=%q text=%q", i, estimate.Label, estimate.Text, item.label, item.text)
+		}
+		if i < 5 && (!estimate.Variable || estimate.Amount != nil) {
+			t.Fatalf("item %d: flat estimate must be variable with no CNY amount: %+v", i, estimate)
+		}
+	}
+	if got.Summary.Priced != 0 || got.Summary.Unknown != 6 {
+		t.Fatalf("flat estimates must not enter the CNY total: %+v", got.Summary)
+	}
+}
+
 func TestGenerationEstimateFallsBackToLocalCatalogOnServerError(t *testing.T) {
 	probe := &serverEstimateProbe{
 		estimateProbe: estimateProbe{catalog: estimateCatalog(t)},

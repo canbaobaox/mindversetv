@@ -1,5 +1,6 @@
 import type { ModelCapability } from "@/stores/use-config-store";
 import type { ModelProtocolDefinition } from "@/lib/model-protocols";
+import type { MyxsaiModelPrice } from "@/lib/myxsai-model-pricing";
 import {
     clearInMemoryPartnerCatalogForReloadTest,
     clearPartnerCatalogStoreForTest,
@@ -31,6 +32,8 @@ export type BuiltinPresetModel = {
     displayName: string;
     capability: string;
     protocol: string;
+    // 梦由心生预置模型的手抄价（模型广场，2026-11-28）；服务编辑器用它给新模型补价。
+    pricing?: MyxsaiModelPrice;
     defaultOptions?: Record<string, unknown>;
     capabilityConfig?: unknown;
 };

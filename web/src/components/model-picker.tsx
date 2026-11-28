@@ -209,14 +209,17 @@ export function ModelPicker({
                 }}
             >
                 {providerMenu ? (
-                    <span className="provider-model-menu-row-copy">
-                        <span className="truncate">{pickerModelDisplayName(config, displayModel, showConfiguredModelName)}</span>
-                        {shortDisabledReason ? (
-                            <span className="provider-model-disabled-reason" style={{ color: disabledColor }}>
-                                {shortDisabledReason}
-                            </span>
-                        ) : null}
-                    </span>
+                    <>
+                        <ModelOptionIcon config={config} model={displayModel} />
+                        <span className="provider-model-menu-row-copy">
+                            <span className="truncate">{pickerModelDisplayName(config, displayModel, showConfiguredModelName)}</span>
+                            {shortDisabledReason ? (
+                                <span className="provider-model-disabled-reason" style={{ color: disabledColor }}>
+                                    {shortDisabledReason}
+                                </span>
+                            ) : null}
+                        </span>
+                    </>
                 ) : (
                     <ModelLabel config={config} model={displayModel} showConfiguredModelName={showConfiguredModelName} disabledReason={shortDisabledReason} mutedColor={disabledColor} />
                 )}
@@ -313,6 +316,7 @@ export function ModelPicker({
                 >
                     <span className="canvas-model-picker-label flex min-w-0 items-center gap-1.5">
                         {currentCompatibilityError ? <AlertCircle className="size-3.5 shrink-0" style={{ color: "var(--status-warning)" }} aria-hidden="true" /> : null}
+                        {current ? <ModelOptionIcon config={config} model={current} size={12} /> : null}
                         <span className="min-w-0 flex-1 truncate">{triggerLabel}</span>
                     </span>
                     <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
@@ -353,16 +357,19 @@ function ModelLabel({
     mutedColor?: string;
 }) {
     return (
-        <span className="canvas-model-picker-option-content flex w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden">
-            <span className="canvas-model-picker-option-name block w-full min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">
-                {pickerModelDisplayName(config, model, showConfiguredModelName)}
-            </span>
-            {disabledReason ? (
-                <span className="canvas-model-picker-option-reason block w-full min-w-0 truncate text-[11px] font-normal leading-tight" style={mutedColor ? { color: mutedColor } : undefined}>
-                    {disabledReason}
+        <>
+            <ModelOptionIcon config={config} model={model} />
+            <span className="canvas-model-picker-option-content flex w-full min-w-0 flex-col items-start justify-center gap-1 overflow-hidden">
+                <span className="canvas-model-picker-option-name block w-full min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">
+                    {pickerModelDisplayName(config, model, showConfiguredModelName)}
                 </span>
-            ) : null}
-        </span>
+                {disabledReason ? (
+                    <span className="canvas-model-picker-option-reason block w-full min-w-0 truncate text-[11px] font-normal leading-tight" style={mutedColor ? { color: mutedColor } : undefined}>
+                        {disabledReason}
+                    </span>
+                ) : null}
+            </span>
+        </>
     );
 }
 
@@ -377,6 +384,19 @@ function pickerModelOptionLabel(config: AiConfig, model: string, showConfiguredM
 }
 
 
-export function ModelIcon({ config, model, icon }: { config?: AiConfig; model?: string; icon?: string }) {
-    return <ModelLogo icon={icon || (config && model ? modelIcon(config, model) : "")} size={14} className="opacity-80" />;
+export function ModelIcon({ config, model, icon, size = 14 }: { config?: AiConfig; model?: string; icon?: string; size?: number }) {
+    return <ModelLogo icon={icon || (config && model ? modelIcon(config, model) : "")} size={size} className="opacity-80" />;
+}
+
+// 选项行 / 触发器上的模型图标：有图标走 ModelLogo，没有时用 displayName 首字符
+// （中文取首字）做字母占位，样式只用现有主题 token，不散写字面颜色。
+function ModelOptionIcon({ config, model, size = 14 }: { config: AiConfig; model: string; size?: number }) {
+    if (modelIcon(config, model)) return <ModelIcon config={config} model={model} size={size} />;
+    const name = modelDisplayName(config, model).trim();
+    const letter = name ? Array.from(name)[0] : "?";
+    return (
+        <span aria-hidden className="flex shrink-0 items-center justify-center rounded bg-muted font-medium text-muted-foreground" style={{ width: size, height: size, fontSize: Math.max(9, Math.round(size * 0.7)) }}>
+            {letter}
+        </span>
+    );
 }

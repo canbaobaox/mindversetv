@@ -107,6 +107,166 @@ wenyinos/ai-image-generator `lib/utils.js`）提交体都是
   拉到的视频模型无回退会落到 `proposed = undefined`，需用户手动选协议）。
 - 音频不设回退：没有已验证的音频协议，拉到的音频模型不自动指派协议。
 
+## 价格字段：`pricing`（v2.3.10）
+
+插件发出的价格字段名是 `pricing`，不是 `price`（`client/presets.js`：
+`buildMyxsaiModelChannel` 的 presetProfiles 与 `normalizeTypedModelEntry`；
+`client/index.js` 面板读 `item.pricing`）。宿主 `MyxsaiModelPrice` 类型与后端
+目录快照（`backend/internal/modelcatalog/catalog_fetch.go` 拼好的 `pricing`
+对象）都认 `pricing` 这个字段名。里面的形状是 MyxsaiModelPrice（驼峰）：
+`{ priceMin, priceMax?, outputPriceMin?, billingMode }`，billingMode 取值
+“按次 / 按秒 / 按token”。`extractMyxsaiPrice` 读入时两种写法都认：站方接口
+的下划线（`price_min` 等）与手抄对象的驼峰（`priceMin` 等）。
+
+手抄价全部来自梦由心生模型广场公开卡片价（“最低……起”的数字原样抄，不加币种
+符号、不换算），抄录日期 2026-11-28：
+
+| 模型 | 价格 |
+| --- | --- |
+| doubao-seed-2-1-pro-260628 | 输入 6.7924，输出 34.1095 /百万 token |
+| kimi-k3 | 输入 22.149，输出 110.745 /百万 token |
+| deepseek-v4-pro | 输入 1.9004，输出 5.7012 /百万 token |
+| qwen4-max | 输入 10.1191，输出 30.2437 /百万 token |
+| glm-5.3 | 输入 1.9491，输出 6.8219 /百万 token |
+| MiniMax-M3.1-Flash | 输入 1.4766，输出 5.9064 /百万 token |
+| doubao-seedream-5-5-261028 | 0.1183/次 |
+| banana-pro | 0.0812/次 |
+| doubao-seedream-5-0-pro-260628 | 0.2658/次 |
+| mj_imagine | 0.4134/次 |
+| kling-v3 | 0.1772/次 |
+| kling-v4-video | 1.1628/秒 |
+| kling-v4-flash | 0.7309/秒 |
+| hailuo-h3 | 0.0487/秒（站上海螺 H3 非 Max 非升 2K 的各模式均为 0.0487/秒） |
+| hailuo-h3-cankaosheng | 0.0487/秒 |
+| viduq4-preview | 0.2284/秒 |
+
+没抄的（留无价，面板显示“价格待确认”，不编）：qwen-image（站上暂无法显示
+价格）；doubao-seedance-2-5-260628、seedance-2.5-guanfang（站上 Seedance 2.5
+各变体价格不同，无法确定对应哪张卡）；wan3.0（站上“万相 3.0”0.1705/秒与
+“万相3.0 文生视频”0.443/秒，无法确定对应哪条）。
+
+注意：宿主 `sanitizeMyxsaiModelPrice`（`web/src/lib/myxsai-model-pricing.ts`）
+读的是下划线字段（`record.pricing ?? record` 里的 `price_min`）；插件面板
+`formatMyxsaiPrice` 读驼峰。插件发出的驼峰 pricing 只在插件面板与
+presetProfiles 里流通，宿主模型服务页的价格来自后端目录快照（下划线），两者
+字段名相同、内层写法不同，不要混用。
+
+## 图标：lobehub id（v2.3.10）
+
+- 每个预置模型带 `icon`（lobehub 图标 id），对照
+  `web/node_modules/@lobehub/icons/es/toc.json` 现查：豆包 / 豆包 Seedream /
+  豆包 Seedance 三族都用 `Doubao`；Kimi 用 `Kimi`；DeepSeek 用 `DeepSeek`；
+  Qwen 用 `Qwen`；GLM 用 `ChatGLM`（toc 里没有 GLM 本身，用智谱 ChatGLM 产品
+  图标）；MiniMax 用 `Minimax`；MiniMax Hailuo 用 `Hailuo`；Banana 用
+  `NanoBanana`；Midjourney 用 `Midjourney`；Kling 用 `Kling`；Vidu 用
+  `Vidu`。Wan：toc 里没有对应 id，不写 icon。
+- `buildMyxsaiModelChannel` 的 presetProfiles 把 icon 带上；宿主读
+  `modelProfiles[].icon`（`web/src/stores/use-config-store.ts` `modelIcon`，
+  `web/src/components/model-logo.tsx` `ModelLogo`）。无图标时 ModelLogo 回落为
+  默认 Cpu 图标。
+- `normalizeTypedModelEntry` 保留站方返回的图标字段，依次取 icon / logo /
+  avatar_url（字段名未验证过，`/v1/media/models` 是否带图标字段尚未用真 Key
+  验证）。
+
+## 分类：kling-v3 与类型校验（v2.3.10）
+
+- kling-v3 保持 capability `"image"`：站上把“可灵-V3”列在图片类（0.1772/次），
+  视频类另有不同条目“可灵-V3-video”；应用内预置的模型 ID 就是 kling-v3，对应
+  站上图片类的那条，不要改成 video。
+- `normalizeTypedModelEntry`：条目自带类型字段（modelType / type / category /
+  model_type，任一存在即用）时优先用它校验，与请求时的 type 参数不一致的丢弃
+  （返回 null）；值只认 chat/text、image、video、audio，认不出的值不丢弃、按
+  请求时的 type 走；没有自带类型字段的保持原有行为。
+- `-token` 变体（banana-pro-token、tt-image-2.5-token 等）保持分开两行：站上
+  把它们列为不同卡片、价格不同，是不同的可调用 ID，不合并、不归一。
+
+## 分模型生图能力（v2.3.10）
+
+`client/presets.js` 的 `MYXSAI_IMAGE_CAPABILITY_BY_MODEL` 按站上实录分模型写
+生图能力（抄录 2026-11-28），只填实录里有的；静态预置与按类型拉取到的同名
+模型（tt-image-2.5 只有拉取时才出现）共用这张表。
+
+| 模型 | 宽高比 | 分辨率 | 画质 | 透明背景 | 参考图上限 | 张数上限 |
+| --- | --- | --- | --- | --- | --- | --- |
+| tt-image-2.5 | 自适应/1:1/16:9/9:16/4:3/3:4/3:2/2:3/5:4/4:5/2:1/1:2/21:9/9:21＋自定义 | 自适应/1K/2K/4K | 自适应/低/中/高/超高/极致 | 有（三档） | 通用 10 张 | 50 |
+| banana-pro | 自动/1:1/2:3/3:2/3:4/4:3/4:5/5:4/9:16/16:9/21:9（无自定义） | 1K/2K/4K（无自适应） | 无 | 无 | 14 张 | 50 |
+| doubao-seedream-5-5-261028 | 自动/1:1/4:3/3:4/16:9/9:16/3:2/2:3/21:9 | 1K/1.5K/2K（无 4K、无自适应） | 无 | 无 | 10 张 | 50 |
+| qwen-image | 自动/1:1/2:3/3:2/3:4/4:3/9:16/16:9/21:9 | 无 | 无 | 无 | 通用 10 张 | 50 |
+| mj_imagine | 1:1/16:9/9:16/4:3/3:4/3:2/2:3/4:5/5:4/21:9（无自动、无自定义） | 无 | 见下 | 无 | 4 张 | 50 |
+| doubao-seedream-5-0-pro-260628、kling-v3 | 未验证，继续用通用配置 | — | — | — | 通用 10 张 | 通用 1 张 |
+
+### 宿主渲染语义（只读核对，未改 web/src）
+
+- 面板组件核对：高级设置入口是
+  `web/src/components/canvas/canvas-image-settings-popover.tsx`（`高级设置`
+  触发器，`aria-label={`高级设置：${summary}`}`）→
+  `web/src/components/image-settings-panel.tsx`（`ImageSettingsPanel`）。报告
+  说的组件就是这一个。截图里“分辨率 1K/2K/4K＋质量＋透明背景同时出现”与插件
+  通用配置对不上（通用配置 quality / transparentBackground 均不支持）：唯一
+  能同时出现三者的宿主配置，是模型没有 capabilityConfig 时的默认 fallback
+  （`defaultImageCapabilityConfig`：quality auto/low/medium/high +
+  transparentBackground 支持 + 像素尺寸预设 → 1K/2K/4K 档）。所以截图那个模型
+  当时走的是宿主默认配置，不是插件配置。
+- 按模型配置的生效链：`modelCapabilityConfigFor`（`web/src/lib/model-capabilities.ts`）
+  → `mergeConfiguredImageCapability` 合并插件配置 → 非 Seedream 模型按插件
+  配置渲染；`size.values` / `size.presets` 拼出分辨率档位与宽高比网格
+  （`web/src/lib/image-size-presets.ts` `imageSizePresets`、`imageResolutionUsesQuality`；
+  `size.parameter` 为 `aspect_ratio` 且 quality 值能映射 1K/2K/4K 档位时，面板
+  出“分辨率”档位按钮＋宽高比网格，单独的“质量”区被隐藏），`quality.supported`
+  才出质量区，`transparentBackground.supported` 才出透明背景开关，
+  `maxOutputs > 1` 才出张数区，`references.maxImages` 只做校验与上限。
+- Seedream 分族兜底（已被版本化配置绕过）：`modelCapabilityConfigFor`
+  （`model-capabilities.ts:403`）经 `upgradeGPTImageCapability`，对所有
+  Seedream 模型整段替换为 `seedreamImageCapability`
+  （`web/src/lib/seedream-image.ts`，与协议无关）：size 值固定为
+  1K/1.5K/2K（5.5 与 Pro）或 2K/4K（Lite），transparentBackground 支持
+  （modern 族），outputFormat 支持（modern 族），maxOutputs 15，maxImages 10
+  （modern）/ 14。但本插件的生图 profile 都带 `imageCapabilitiesVersion`
+  （`MYXSAI_IMAGE_CAPABILITIES_VERSION`），宿主在替换之前先按版本直通原样采用
+  插件配置（`model-capabilities.ts:387`），所以 5.5 的
+  `transparentBackground.supported:false`、`maxOutputs:50`、1K/1.5K/2K 档位、
+  maxImages 10 都能真正落到面板上。仍表达不进面板的两项：宽高比列表无处可写
+  （宿主 Seedream 面板用固定的 `IMAGE_RATIOS` 10 档渲染，含站上没有的
+  4:5/5:4）、输出格式 JPEG/PNG 无字段可写（`ImageCapabilityConfig.outputFormat`
+  只有 supported，没有值列表）。
+- 版本化直通（已启用）：profile 带 `imageCapabilitiesVersion` 且
+  `capabilityConfig.image` 通过 `sanitizeServerImageCapability` 时，
+  `modelCapabilityConfigFor` 原样采用插件配置、不走 Seedream 替换
+  （`model-capabilities.ts:387`）。本插件的生图配置都通过该形状校验
+  （references/size/quality/transparentBackground/responseFormat/outputFormat
+  齐全，maxOutputs ≥ 1）。`upgradeMyxsaiModelProfile` 按版本号同步：版本一致
+  且配置相同才不动，版本不一致时同步 capabilityConfig +
+  imageCapabilitiesVersion + pricing + icon；用户自定义的 capabilityConfig
+  （capabilitySource 为 "user"）不覆盖。改动预置表里的生图配置时，把
+  `MYXSAI_IMAGE_CAPABILITIES_VERSION` 一起递增，否则已存 profile 收不到改动。
+
+### 接不上的选项（已核对，不编）
+
+- 提交链（`package.json` 的 manifest 参数只有 model / prompt / images /
+  aspect_ratio / resolution / duration；后端
+  `backend/internal/generation/protocol_request.go`：`request.Resolution` 取自
+  `VQuality`，manifest 不读 `request.quality`）：面板档位选择写的是
+  `config.quality`，不会作为 resolution 发给站方；真正发出去的 resolution 是
+  画布 vquality 默认值（常为 `"720"`，被 manifest allowlist 挡掉→不发）。
+  aspect_ratio 会发（size → `request.aspectRatio`）。quality /
+  transparentBackground / outputFormat / count 均不在 manifest 参数里，发不出去。
+- mj_imagine：质量 0.25/0.5/1/2 倍率、风格化、混乱度、Raw 风格，宿主面板没有
+  对应控件，且 manifest 没有 quality 参数，声明 `quality.values` 也发不出去，
+  故不声明。qwen-image：提示词优化开关宿主面板没有对应控件，不接。
+- qwen-image / mj_imagine：无分辨率档位时宿主拼不出宽高比预设，面板比例网格
+  为空（显示“未配置预设尺寸”），宽高比在面板上选不了，只能走 size 默认
+  （qwen-image 为 auto，即不发 aspect_ratio；mj_imagine 为 1:1）。这是宿主
+  “比例×档位”预设机制的限制，不是插件配置缺字段。
+- tt-image-2.5：画质超高（xhigh）/极致（max）没有对应的档位按钮，面板上选
+  不到；自适应画质只是 quality 默认值 auto，选过档位后回不去；透明背景站上是
+  三档（不要/要/自适应），宿主类型只有 boolean，“自适应”档无法表达，面板只出
+  一个开关；自定义比例 allowCustom:true，但画布高级设置面板以 presetsOnly
+  渲染，不出自定义比例输入框，自定义比例在面板上填不了。另：9:21 在宿主
+  `imagePresetForRatio` 里会按约分显示为 3:7（同一比例）。
+- banana-pro：站上没有画质档，1K/2K/4K 是分辨率档；宿主没有独立的分辨率字段，
+  按宿主既有模式（agnes/grok：quality 字段借作分辨率档位）写进
+  `quality.values`，面板上显示为“分辨率”区。
+
 ## 需真 Key 实测清单
 
 1. 拿一次真实生图任务的提交响应与每次轮询响应的原始 JSON 全文，逐字段对照
