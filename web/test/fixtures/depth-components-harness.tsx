@@ -9,7 +9,7 @@ document.documentElement.classList.toggle("dark", params.has("dark"));
 document.body.classList.add("app-user-overlays");
 document.body.style.background = "var(--background)";
 document.body.style.color = "var(--foreground)";
-let state: DepthComponentState = { status: params.has("installed") ? "ready" : "not_installed", variant: "cuda", dataDir: "C:\\Users\\Creator\\AppData\\Roaming\\BeefTV", downloadBytes: 3.5 * 1024 ** 3, requiredBytes: 14 * 1024 ** 3, freeBytes: (params.has("low-space") ? 2.3 : 40) * 1024 ** 3, downloadedBytes: 0 };
+let state: DepthComponentState = { status: params.has("installed") ? "ready" : "not_installed", variant: "cuda", dataDir: "C:\\Users\\Creator\\AppData\\Roaming\\BeefTV", downloadBytes: 3.5 * 1024 ** 3, requiredBytes: 14 * 1024 ** 3, freeBytes: (params.has("low-space") ? 2.3 : 40) * 1024 ** 3, downloadedBytes: 0, manualDownloadURL: "https://github.com/canbaobaox/mindversetv/releases/tag/depth-runtime-v2", runtimeArchivePath: "C:\\Users\\Creator\\AppData\\Roaming\\BeefTV\\downloads\\beeftv-depth-runtime-v1-windows-amd64-cuda.zip", modelPath: "C:\\Users\\Creator\\AppData\\Roaming\\BeefTV\\models\\video-depth-anything-small\\v1\\checkpoints\\video_depth_anything_vits.pth" };
 const calls = { downloads: 0, pauses: 0, tasks: 0 };
 Object.assign(window, { depthHarness: {
     calls,

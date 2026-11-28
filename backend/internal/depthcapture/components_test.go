@@ -235,6 +235,61 @@ func TestComponentStatusFallsBackToCPUWhenManifestIsCPUOnly(t *testing.T) {
 	}
 }
 
+func TestReleasePageURLForManualDownload(t *testing.T) {
+	cases := map[string]string{
+		"https://github.com/canbaobaox/mindversetv/releases/download/depth-runtime-v2/depth-runtime-manifest.v2.json":     "https://github.com/canbaobaox/mindversetv/releases/tag/depth-runtime-v2",
+		"https://github.com/glanderness/BeefTV/releases/download/v1.5.5/beeftv-depth-runtime-v1-darwin-arm64.zip":         "https://github.com/glanderness/BeefTV/releases/tag/v1.5.5",
+		"https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/depth-runtime-v2/depth-runtime-manifest.json": "",
+		"https://updates.beefapi.com/beeftv/components/depth-runtime-v2/depth-runtime-manifest.json":                      "",
+		"https://github.com/canbaobaox/mindversetv/releases/tag/depth-runtime-v2":                                         "",
+		"https://github.com/canbaobaox/mindversetv":                                                                       "",
+		"": "",
+	}
+	for manifestURL, want := range cases {
+		if got := releasePageURL(manifestURL); got != want {
+			t.Errorf("releasePageURL(%q) = %q, want %q", manifestURL, got, want)
+		}
+	}
+}
+
+func TestComponentStatusExposesManualDownloadPlacement(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := cpuOnlySignedManifest(t, private)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(envelope)
+	}))
+	defer server.Close()
+	dataDir := t.TempDir()
+	svc := New(Deps{GOOS: "windows", GOARCH: "amd64", DataDir: dataDir, WindowsManifestPublicKeyBase64: base64.StdEncoding.EncodeToString(public), NVIDIA: func(context.Context) bool { return true }, Getenv: func(key string) string {
+		if key == manifestEnv {
+			return server.URL
+		}
+		return ""
+	}})
+	state, err := svc.ComponentStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The test manifest is not hosted on a GitHub Release page, so there is
+	// no manual-download link, but the placement paths must still come from
+	// the same layout Ensure verifies.
+	if state.ManualDownloadURL != "" {
+		t.Fatalf("unexpected manual URL for a non-GitHub manifest: %q", state.ManualDownloadURL)
+	}
+	if !strings.HasSuffix(state.RuntimeArchivePath, "downloads\\depth-runtime-v1-windows-amd64-cpu.zip") && !strings.HasSuffix(state.RuntimeArchivePath, "downloads/depth-runtime-v1-windows-amd64-cpu.zip") {
+		t.Fatalf("runtime archive path: %q", state.RuntimeArchivePath)
+	}
+	if !strings.HasSuffix(state.ModelPath, "models/video-depth-anything-small/v1/checkpoints/video_depth_anything_vits.pth") && !strings.HasSuffix(state.ModelPath, `models\video-depth-anything-small\v1\checkpoints\video_depth_anything_vits.pth`) {
+		t.Fatalf("model path: %q", state.ModelPath)
+	}
+	if !strings.HasPrefix(state.RuntimeArchivePath, dataDir) || !strings.HasPrefix(state.ModelPath, dataDir) {
+		t.Fatalf("placement paths must stay under the data dir: %+v", state)
+	}
+}
+
 type cpuOnlyManifestInstaller struct{ t *testing.T }
 
 func (i cpuOnlyManifestInstaller) Ensure(_ context.Context, options depthruntime.EnsureOptions) (depthruntime.Installation, error) {

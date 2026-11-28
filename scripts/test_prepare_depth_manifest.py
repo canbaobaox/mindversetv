@@ -12,6 +12,7 @@ spec.loader.exec_module(module)
 
 class ManifestTests(unittest.TestCase):
     def fixture(self, root):
+        (root / module.MODEL_NAME).write_bytes(b"model")
         for variant in ("cpu", "cuda"):
             name = f"beeftv-depth-runtime-v1-windows-amd64-{variant}.zip"
             content = b"runtime"
@@ -27,11 +28,15 @@ class ManifestTests(unittest.TestCase):
                 (root / name).write_bytes(content)
             (root / (name + ".json")).write_text(json.dumps(meta), encoding="utf-8-sig")
 
+    def model_kwargs(self):
+        content = b"model"
+        return {"model_size": len(content), "model_sha256": hashlib.sha256(content).hexdigest()}
+
     def test_complete_packages_and_parts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
-            payload = module.prepare(root)
+            payload = module.prepare(root, **self.model_kwargs())
             self.assertEqual(len(payload["runtimes"]), 2)
             self.assertEqual(len(payload["runtimes"]["windows-amd64/cuda"]["parts"]), 2)
             cpu_name = "beeftv-depth-runtime-v1-windows-amd64-cpu.zip"
@@ -49,17 +54,33 @@ class ManifestTests(unittest.TestCase):
             part = root / "beeftv-depth-runtime-v1-windows-amd64-cuda.zip.part-002"
             part.write_bytes(b"xxxx")
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
-                module.prepare(root)
+                module.prepare(root, **self.model_kwargs())
+
+    def test_missing_model_file_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            (root / module.MODEL_NAME).unlink()
+            with self.assertRaisesRegex(ValueError, "model file missing"):
+                module.prepare(root, **self.model_kwargs())
+
+    def test_model_hash_mismatch_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            (root / module.MODEL_NAME).write_bytes(b"other")
+            with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                module.prepare(root, **self.model_kwargs())
 
     def test_cpu_only_ignores_cuda_packages(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
-            payload = module.prepare(root, cpu_only=True)
+            payload = module.prepare(root, cpu_only=True, **self.model_kwargs())
             self.assertEqual(list(payload["runtimes"]), ["windows-amd64/cpu"])
             part = root / "beeftv-depth-runtime-v1-windows-amd64-cuda.zip.part-002"
             part.write_bytes(b"xxxx")
-            payload = module.prepare(root, cpu_only=True)
+            payload = module.prepare(root, cpu_only=True, **self.model_kwargs())
             self.assertEqual(list(payload["runtimes"]), ["windows-amd64/cpu"])
 
     def test_rejects_wrong_assembled_hash(self):
@@ -71,7 +92,7 @@ class ManifestTests(unittest.TestCase):
             meta["sha256"] = "0" * 64
             path.write_text(json.dumps(meta))
             with self.assertRaisesRegex(ValueError, "assembled runtime mismatch"):
-                module.prepare(root)
+                module.prepare(root, **self.model_kwargs())
 
 
 if __name__ == "__main__":

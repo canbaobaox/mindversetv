@@ -8,6 +8,8 @@ import sys
 # HuggingFace 官方地址（与官方权重同一份，sha 已核对）。
 GITHUB_BASE = "https://github.com/canbaobaox/mindversetv/releases/download/depth-runtime-v2/"
 MODEL_NAME = "video_depth_anything_vits.pth"
+MODEL_SIZE = 116440756
+MODEL_SHA256 = "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609"
 MODEL_HF_URL = "https://huggingface.co/depth-anything/Video-Depth-Anything-Small/resolve/main/video_depth_anything_vits.pth"
 
 
@@ -29,7 +31,17 @@ def verify_file(root, entry):
     return {"urls": component_urls(name), "size": entry["size"], "sha256": digest}
 
 
-def prepare(root, cpu_only=False):
+def verify_model(root, size=MODEL_SIZE, sha256=MODEL_SHA256):
+    # The GitHub URL is only truthful if the model file is staged for upload:
+    # dist/depth/* is what `gh release upload` publishes. Fail loudly instead
+    # of shipping a manifest whose first model URL 404s.
+    try:
+        verify_file(root, {"name": MODEL_NAME, "size": size, "sha256": sha256})
+    except FileNotFoundError:
+        raise ValueError("model file missing from release staging: " + MODEL_NAME) from None
+
+
+def prepare(root, cpu_only=False, model_size=MODEL_SIZE, model_sha256=MODEL_SHA256):
     runtimes = {}
     for variant in ("cpu",) if cpu_only else ("cpu", "cuda"):
         name = f"beeftv-depth-runtime-v1-windows-amd64-{variant}.zip"
@@ -53,11 +65,12 @@ def prepare(root, cpu_only=False):
             artifact = verify_file(root, meta)
         artifact.update(files=meta["files"], expandedSize=meta["expandedSize"])
         runtimes[f"windows-amd64/{variant}"] = artifact
+    verify_model(root, model_size, model_sha256)
     model_urls = [GITHUB_BASE + MODEL_NAME, MODEL_HF_URL]
     return {"version": 2, "runtimes": runtimes, "model": {
         "urls": model_urls,
-        "size": 116440756,
-        "sha256": "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609",
+        "size": model_size,
+        "sha256": model_sha256,
     }}
 
 

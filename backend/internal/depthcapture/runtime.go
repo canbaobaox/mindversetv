@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"strings"
 
 	"infinite-canvas/backend/internal/depthruntime"
@@ -95,4 +96,21 @@ func defaultFallbackManifest() *depthruntime.Manifest {
 
 func componentSources(name, original string) []string {
 	return []string{componentCOSBase + name, componentR2Base + name, original}
+}
+
+// releasePageURL derives the GitHub Release page for a manifest hosted under
+// github.com/<owner>/<repo>/releases/download/<tag>/... . The manifest URL
+// is the single source of truth; no second Release address is hardcoded.
+// Manifests on other hosts have no release page to link to, so it returns ""
+// and the UI hides manual download instead of linking nowhere.
+func releasePageURL(manifestURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(manifestURL))
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 5 || parts[2] != "releases" || parts[3] != "download" || parts[4] == "" {
+		return ""
+	}
+	return "https://github.com/" + parts[0] + "/" + parts[1] + "/releases/tag/" + parts[4]
 }

@@ -47,6 +47,24 @@ var ErrVariantUnavailable = errors.New("深度组件清单缺少对应的 Window
 
 const modelSize = int64(116440756)
 const modelSHA = "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609"
+const modelFileName = "video_depth_anything_vits.pth"
+
+// modelPath returns the local file a manually downloaded model must occupy
+// for Ensure to accept it without downloading.
+func modelPath(dataDir string) string {
+	return filepath.Join(dataDir, "models", "video-depth-anything-small", "v1", "checkpoints", modelFileName)
+}
+
+// PlacementPaths returns the two local files a manual download must provide:
+// the runtime archive and the model weights. Paths come from the same layout
+// Ensure verifies, so a placed file matching size and SHA256 is accepted.
+func PlacementPaths(dataDir, platform, variant string) (archivePath, modelFilePath string, err error) {
+	paths, err := runtimeLayout(dataDir, platform, variant)
+	if err != nil {
+		return "", "", err
+	}
+	return paths.Archive, modelPath(dataDir), nil
+}
 
 type Plan struct {
 	DownloadBytes int64  `json:"downloadBytes"`
@@ -61,7 +79,7 @@ func Inspect(ctx context.Context, dataDir, platform, variant string) (Installati
 		return Installation{}, err
 	}
 	modelRuntime := filepath.Join(dataDir, "models", "video-depth-anything-small", "v1")
-	model := filepath.Join(modelRuntime, "checkpoints", "video_depth_anything_vits.pth")
+	model := filepath.Join(modelRuntime, "checkpoints", modelFileName)
 	expected := Artifact{Size: modelSize, SHA256: modelSHA}
 	if raw, err := os.ReadFile(filepath.Join(paths.Root, ".installation.json")); err == nil {
 		var installed Artifact
@@ -90,8 +108,8 @@ func DownloadPlan(ctx context.Context, options EnsureOptions) (Plan, error) {
 	}
 	runtimeReady := installedRuntime(paths, options.Platform)
 	archiveReady := runtimeReady || verifyFileContext(ctx, paths.Archive, artifact) == nil
-	modelPath := filepath.Join(options.DataDir, "models", "video-depth-anything-small", "v1", "checkpoints", "video_depth_anything_vits.pth")
-	return installationPlan(options.DataDir, artifact, manifest.Model, archiveReady, verifyFileContext(ctx, modelPath, manifest.Model) == nil, runtimeReady)
+	modelFile := modelPath(options.DataDir)
+	return installationPlan(options.DataDir, artifact, manifest.Model, archiveReady, verifyFileContext(ctx, modelFile, manifest.Model) == nil, runtimeReady)
 }
 
 func installedRuntime(paths runtimePaths, platform string) bool {

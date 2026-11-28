@@ -53,6 +53,25 @@ test("confirmed first-use download continues only after installation succeeds", 
     } finally { await page.close(); }
 }, 30000);
 
+test("failed download offers a manual download link with placement paths", async () => {
+    const page = await browser.newPage();
+    try {
+        await page.goto(server.url.toString());
+        await page.getByText("尚未安装", { exact: true }).waitFor();
+        const link = page.getByRole("link", { name: "手动下载组件（打开仓库发布页）", exact: true });
+        await link.waitFor();
+        expect(await link.getAttribute("href")).toBe("https://github.com/canbaobaox/mindversetv/releases/tag/depth-runtime-v2");
+        await page.getByText(/beeftv-depth-runtime-v1-windows-amd64-cuda\.zip/).waitFor();
+        await page.getByText(/video_depth_anything_vits\.pth/).waitFor();
+        // Files placed manually: the panel only re-checks on demand while
+        // nothing is downloading, so "重新检查" is the real user flow here.
+        await page.evaluate(() => (window as any).depthHarness.ready());
+        await page.getByRole("button", { name: "重新检查", exact: true }).click();
+        await page.getByText("已安装，可以使用", { exact: true }).waitFor();
+        expect(await page.getByRole("link", { name: "手动下载组件（打开仓库发布页）", exact: true }).count()).toBe(0);
+    } finally { await page.close(); }
+}, 30000);
+
 test("settings download pauses and resumes explicitly, failures preserve a retry action", async () => {
     const page = await browser.newPage();
     try {

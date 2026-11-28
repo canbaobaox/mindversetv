@@ -48,6 +48,10 @@ jobs:
           pattern: depth-runtime-*
           merge-multiple: true
           path: dist/depth
+      - name: Fetch model weights for release
+        run: |
+          set -euo pipefail
+          curl -L --fail -o dist/depth/video_depth_anything_vits.pth https://huggingface.co/depth-anything/Video-Depth-Anything-Small/resolve/main/video_depth_anything_vits.pth
       - name: Verify all packages and sign installer manifest
         run: |
           set -euo pipefail

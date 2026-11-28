@@ -62,6 +62,12 @@ export function DepthComponentsPanel({ initialState, onReady, onCancel, onOpenSe
                     try { await onCancel(); } catch(cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); }
                 }}>{running(state) ? "暂停并返回" : "暂不下载"}</Button> : null}
             </div>
+            {state.manualDownloadURL && state.status !== "ready" ? <div className="space-y-1 leading-6">
+                <p>下载太慢或失败时，也可以手动下载：在发布页下载下面两个文件，放到对应位置，再点“继续下载”或“重新检查”，应用会直接校验已下载好的文件，不用重新下载。</p>
+                <p><a href={state.manualDownloadURL} target="_blank" rel="noopener noreferrer" onClick={(event) => { const url = state.manualDownloadURL; if (window.runtime?.BrowserOpenURL && url) { event.preventDefault(); window.runtime.BrowserOpenURL(url); } }}>手动下载组件（打开仓库发布页）</a></p>
+                {state.runtimeArchivePath ? <p className="break-all">运行包：{state.runtimeArchivePath}</p> : null}
+                {state.modelPath ? <p className="break-all">模型：{state.modelPath}</p> : null}
+            </div> : null}
         </> : null}
         {error || state?.error ? <p role="alert" className="break-words text-destructive">{error || state?.error}</p> : null}
         {!state && error ? <Button onClick={() => void refresh(true)}>重新检查</Button> : null}

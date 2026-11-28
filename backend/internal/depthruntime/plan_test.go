@@ -11,6 +11,32 @@ import (
 	"testing"
 )
 
+func TestPlacementPathsMatchInstallLayout(t *testing.T) {
+	dataDir := t.TempDir()
+	cases := []struct {
+		platform, variant, archiveSuffix, modelSuffix string
+	}{
+		{"windows-amd64", "cpu", "downloads/depth-runtime-v1-windows-amd64-cpu.zip", "models/video-depth-anything-small/v1/checkpoints/video_depth_anything_vits.pth"},
+		{"windows-amd64", "cuda", "downloads/depth-runtime-v1-windows-amd64-cuda.zip", "models/video-depth-anything-small/v1/checkpoints/video_depth_anything_vits.pth"},
+		{"darwin-arm64", "mps", "downloads/depth-runtime-v1-darwin-arm64.zip", "models/video-depth-anything-small/v1/checkpoints/video_depth_anything_vits.pth"},
+	}
+	for _, tc := range cases {
+		archive, model, err := PlacementPaths(dataDir, tc.platform, tc.variant)
+		if err != nil {
+			t.Fatalf("PlacementPaths(%s/%s): %v", tc.platform, tc.variant, err)
+		}
+		if !strings.HasSuffix(archive, tc.archiveSuffix) && !strings.HasSuffix(archive, strings.ReplaceAll(tc.archiveSuffix, "/", "\\")) {
+			t.Errorf("archive(%s/%s) = %q", tc.platform, tc.variant, archive)
+		}
+		if !strings.HasSuffix(model, tc.modelSuffix) && !strings.HasSuffix(model, strings.ReplaceAll(tc.modelSuffix, "/", "\\")) {
+			t.Errorf("model(%s/%s) = %q", tc.platform, tc.variant, model)
+		}
+	}
+	if _, _, err := PlacementPaths(dataDir, "linux-amd64", "cpu"); err == nil {
+		t.Error("PlacementPaths must reject unsupported platforms")
+	}
+}
+
 func TestMetadataAndSpaceCheckNeverDownloadArtifacts(t *testing.T) {
 	var artifacts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

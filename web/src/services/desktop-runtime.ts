@@ -118,6 +118,11 @@ export type DepthComponentState = {
     freeBytes: number;
     downloadedBytes: number;
     error?: string;
+    // Manual download guidance, served from the same layout Ensure verifies.
+    // Absent when the manifest is not hosted on a GitHub Release page.
+    manualDownloadURL?: string;
+    runtimeArchivePath?: string;
+    modelPath?: string;
 };
 export type ReferenceStorageConfig = { enabled: boolean; endpoint: string; bucket: string; region: string; accessKeyId: string; publicBaseURL: string; hasSecret: boolean };
 

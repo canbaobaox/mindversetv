@@ -19,6 +19,15 @@ type ComponentState struct {
 	FreeBytes       uint64 `json:"freeBytes"`
 	DownloadedBytes int64  `json:"downloadedBytes"`
 	Error           string `json:"error,omitempty"`
+	// ManualDownloadURL is the Release page for manual download. Empty when
+	// the manifest is not hosted on a GitHub Release page; the UI then hides
+	// the manual-download guidance instead of linking nowhere.
+	ManualDownloadURL string `json:"manualDownloadURL,omitempty"`
+	// RuntimeArchivePath and ModelPath are the local files a manual download
+	// must provide. They come from the same layout Ensure verifies, so a
+	// placed file matching size and SHA256 is accepted without downloading.
+	RuntimeArchivePath string `json:"runtimeArchivePath,omitempty"`
+	ModelPath          string `json:"modelPath,omitempty"`
 }
 
 // ComponentStatus may fetch small release metadata, but never installs or runs a component.
@@ -77,6 +86,11 @@ func (s *Service) ComponentStatus(ctx context.Context, refresh ...bool) (Compone
 		state.DownloadBytes = plan.DownloadBytes
 		state.RequiredBytes = plan.RequiredBytes
 		state.FreeBytes = plan.FreeBytes
+		state.ManualDownloadURL = releasePageURL(options.ManifestURL)
+		if archivePath, modelPath, err := depthruntime.PlacementPaths(s.dataDir, platform, state.Variant); err == nil {
+			state.RuntimeArchivePath = archivePath
+			state.ModelPath = modelPath
+		}
 	}
 	s.componentMu.Lock()
 	defer s.componentMu.Unlock()

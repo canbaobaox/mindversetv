@@ -107,7 +107,7 @@ func Ensure(ctx context.Context, options EnsureOptions) (Installation, error) {
 	modelRuntime := filepath.Join(options.DataDir, "models", "video-depth-anything-small", "v1")
 	python := paths.Python
 	toolDir := paths.ToolDir
-	modelPath := filepath.Join(modelRuntime, "checkpoints", "video_depth_anything_vits.pth")
+	modelPath := filepath.Join(modelRuntime, "checkpoints", modelFileName)
 	archivePath := paths.Archive
 	runtimeReady := installedRuntime(paths, options.Platform)
 	archiveReady := runtimeReady || verifyFileContext(ctx, archivePath, runtimeArtifact) == nil
