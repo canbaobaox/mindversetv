@@ -444,6 +444,10 @@ func TestBundledPluginDirsManifestAndDesktopAgentHostResolution(t *testing.T) {
 		// Muse video plugin (via muse2api relay), shipped with the
 		// installer since v2.3.7.
 		"beeftv-plugin-muse": false,
+		// Prompt board plugin (tutorial fill-in-the-blank panel, docked
+		// next to Workflow in the canvas top bar), shipped with the
+		// installer since v2.3.8.
+		"beeftv-plugin-prompt-board": false,
 	}
 	for _, name := range names {
 		if _, ok := wantNames[name]; !ok {

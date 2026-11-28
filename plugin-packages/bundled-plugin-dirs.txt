@@ -1,3 +1,4 @@
 beeftv-plugin-market
 beeftv-plugin-myxsai
 beeftv-plugin-muse
+beeftv-plugin-prompt-board

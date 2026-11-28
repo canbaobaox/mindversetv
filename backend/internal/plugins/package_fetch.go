@@ -825,6 +825,7 @@ var BundledBuiltinPluginNames = []string{
 	"beeftv-plugin-market",
 	"beeftv-plugin-myxsai",
 	"beeftv-plugin-muse",
+	"beeftv-plugin-prompt-board",
 }
 
 var (
@@ -842,7 +843,7 @@ func isBundledBuiltinPlugin(name string) bool {
 }
 
 // BundledSampleDir resolves a built-in plugin package directory shipped with
-// MindVerseTV (beeftv-plugin-market, beeftv-plugin-myxsai and beeftv-plugin-muse). Market plugins are
+// MindVerseTV (beeftv-plugin-market, beeftv-plugin-myxsai, beeftv-plugin-muse and beeftv-plugin-prompt-board). Market plugins are
 // never bundled inside the desktop app and are always installed online.
 func BundledSampleDir(name string) (string, bool) {
 	executable, _ := runtimeExecutable()

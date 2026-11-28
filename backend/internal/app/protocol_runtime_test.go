@@ -53,7 +53,7 @@ func TestPluginViewIncludesDocumentationForEveryOfficialProtocol(t *testing.T) {
 	// The plugin market ships next to the protocol packages as a preinstalled
 	// npm-format package. The retired partner plugins are no longer bundled
 	// or installable.
-	for _, builtinDir := range []string{"beeftv-plugin-market", "beeftv-plugin-myxsai", "beeftv-plugin-muse"} {
+	for _, builtinDir := range []string{"beeftv-plugin-market", "beeftv-plugin-myxsai", "beeftv-plugin-muse", "beeftv-plugin-prompt-board"} {
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "plugin-packages", builtinDir, "package.json")); err == nil {
 			expectedCount++
 		}
