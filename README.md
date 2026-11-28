@@ -18,6 +18,7 @@ Windows 安装包在 [Releases](https://github.com/canbaobaox/mindversetv/releas
 
 ## 最近更新
 
+- **[v2.3.10](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.10)** — 模型选择器：16 个梦由心生模型显示手抄价（模型广场，2026-11-28），生图下拉框不再混视频模型，模型带厂商图标，生图高级设置按模型变（TT Image 2.5/纳米香蕉 Pro/即梦 5.5/Qwen Image/MJ Imagine 各用站上真实选项）。
 - **[v2.3.9](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.9)** — 深度捕捉下载失败时可手动下载：对话框与存储设置页给仓库发布页链接与放置路径，放好文件再点“继续下载”或“重新检查”直接校验；清单生成脚本加模型文件校验。
 - **[v2.3.8](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.8)** — 合并上游 v2.5.0（创作助手 2.0、画布媒体工作流、应用内网络代理、新模型协议），画布工具栏三期（“＋”胶囊浮条、5 项提示词模板、主体与高清 1080P），提示词板镶顶栏＋缩小，A2 七项修复。
 - **[v2.3.7](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.7)** — 新增 Muse 视频插件（经 muse2api 中继，视频走 JSON 提交，时长 5/6/8/10 秒、画幅 16:9/9:16），修复轮询 404 时报错文案显示整段 JSON。

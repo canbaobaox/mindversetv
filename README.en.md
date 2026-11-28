@@ -36,6 +36,7 @@
 
 ## Recent updates
 
+- **[v2.3.10](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.10)** — Model selector: 16 MindVerse models now show hand-copied square prices (Nov 28, 2026), the image dropdown no longer mixes in video models, models show vendor icons, and image advanced settings follow each model (TT Image 2.5 / Banana Pro / Seedream 5.5 / Qwen Image / MJ Imagine each use the site's real options).
 - **[v2.3.9](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.9)** — Depth capture can now be downloaded manually when the in-app download fails: the dialog and storage settings link to the Release page with placement paths, so files put in place are verified on “Continue download” or “Recheck”; the manifest script now verifies the model file is staged before writing its URL.
 - **[v2.3.8](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.8)** — Merge upstream v2.5.0 (assistant 2.0, canvas media workflows, in-app proxy, new model protocols), canvas toolbar phases 1–3 ("+" capsule bar, 5 prompt templates, subject tools and 1080P HD), prompt board docked in the top bar with collapse, and 7 A2 fixes.
 - **[v2.3.7](https://github.com/canbaobaox/mindversetv/releases/tag/v2.3.7)** — Add the Muse video plugin (via the muse2api relay; video submits as JSON, durations 5/6/8/10s, aspect ratios 16:9/9:16), and fix poll-404 error messages showing raw JSON instead of the Chinese reason.
