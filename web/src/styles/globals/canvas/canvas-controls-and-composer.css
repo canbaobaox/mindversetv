@@ -229,6 +229,12 @@
         width: 14px;
     }
 
+    /* 无图标模型的字母占位：字母由 data-letter 经 ::before 渲染，不进 DOM 文本，
+       选项行的文本内容保持只有模型名（浏览器测试按 allTextContents() 断言）。 */
+    .canvas-model-picker-option-letter::before {
+        content: attr(data-letter);
+    }
+
     .canvas-model-picker-empty {
         font-size: 11px;
         padding: 22px 12px;

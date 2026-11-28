@@ -390,13 +390,14 @@ export function ModelIcon({ config, model, icon, size = 14 }: { config?: AiConfi
 
 // 选项行 / 触发器上的模型图标：有图标走 ModelLogo，没有时用 displayName 首字符
 // （中文取首字）做字母占位，样式只用现有主题 token，不散写字面颜色。
+// 字母经 CSS ::before + attr(data-letter) 渲染（见 canvas-controls-and-composer.css），
+// 不进 DOM 文本：选项行的文本内容须保持只有模型名（canvas-creation-preferences
+// 等浏览器测试按 allTextContents() 断言选项文本，字母若写成 DOM 文本会变成 "vvideo-a"）。
 function ModelOptionIcon({ config, model, size = 14 }: { config: AiConfig; model: string; size?: number }) {
     if (modelIcon(config, model)) return <ModelIcon config={config} model={model} size={size} />;
     const name = modelDisplayName(config, model).trim();
     const letter = name ? Array.from(name)[0] : "?";
     return (
-        <span aria-hidden className="flex shrink-0 items-center justify-center rounded bg-muted font-medium text-muted-foreground" style={{ width: size, height: size, fontSize: Math.max(9, Math.round(size * 0.7)) }}>
-            {letter}
-        </span>
+        <span aria-hidden data-letter={letter} className="canvas-model-picker-option-letter flex shrink-0 items-center justify-center rounded bg-muted font-medium text-muted-foreground" style={{ width: size, height: size, fontSize: Math.max(9, Math.round(size * 0.7)) }} />
     );
 }
